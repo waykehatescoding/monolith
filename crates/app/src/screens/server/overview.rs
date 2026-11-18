@@ -1,7 +1,9 @@
 use std::path::Path;
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
+use monolith_theme::widget::{sized, sized_icon};
 use std::time::{Duration, Instant};
 
-use iced::widget::{button, column, container, row, text, Space};
+use iced::widget::{column, container, row, text, Space};
 use iced::{clipboard, Alignment, Color, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
 use monolith_core::types::{
@@ -281,8 +283,7 @@ fn address_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
     row![
         text(label).size(TEXT_SM).style(style::muted).width(52),
         text(value.clone()).size(TEXT_MD).font(MONO),
-        button(icon(Icon::Copy, 16.0))
-            .padding(6)
+        sized_icon(icon(Icon::Copy, 14.0), BUTTON_SM)
             .style(style::icon_button)
             .on_press(Message::Copy(value)),
     ]
@@ -323,13 +324,12 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             "Stopping",
             state.busy == Some(Busy::Stop),
             Some(Message::Stop).filter(|_| idle),
-            style::secondary,
-        ),
+            style::secondary, BUTTON_MD),
         ServerRuntimeStatus::Stopping => {
-            busy_button("Stop", "Stopping", true, None, style::secondary)
+            busy_button("Stop", "Stopping", true, None, style::secondary, BUTTON_MD)
         }
         ServerRuntimeStatus::Starting => {
-            busy_button("Start", "Starting", true, None, style::primary)
+            busy_button("Start", "Starting", true, None, style::primary, BUTTON_MD)
         }
         ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle if !state.eula_accepted => {
             busy_button(
@@ -337,16 +337,14 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
                 "Accepting",
                 state.busy == Some(Busy::Eula),
                 Some(Message::AcceptEula).filter(|_| idle),
-                style::primary,
-            )
+                style::primary, BUTTON_MD)
         }
         ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle => busy_button(
             "Start",
             "Starting",
             state.busy == Some(Busy::Start),
             Some(Message::Start).filter(|_| idle && state.eula_accepted),
-            style::primary,
-        ),
+            style::primary, BUTTON_MD),
     };
 
     let actions = row![
@@ -356,15 +354,13 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             "Restarting",
             state.busy == Some(Busy::Restart),
             Some(Message::Restart).filter(|_| idle && online),
-            style::secondary,
-        ),
+            style::secondary, BUTTON_MD),
         busy_button(
             if sharing { "Stop sharing" } else { "Share online" },
             "Working",
             state.busy == Some(Busy::Share),
             Some(Message::Share).filter(|_| idle),
-            style::secondary,
-        ),
+            style::secondary, BUTTON_MD),
     ]
     .spacing(SPACE_2);
 
@@ -455,8 +451,7 @@ fn console_tail<'a>(state: &'a State) -> Element<'a, Message> {
                 .size(TEXT_SM)
                 .style(style::faint)
                 .width(Length::Fill),
-            button(text("Open console").size(TEXT_SM).font(UI_MEDIUM))
-                .padding([4, 10])
+            sized(text("Open console").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
                 .style(style::ghost)
                 .on_press(Message::Open(Tab::Console)),
         ]
@@ -508,15 +503,13 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
                 "Accepting",
                 state.busy == Some(Busy::Eula),
                 Some(Message::AcceptEula).filter(|_| idle),
-                style::primary,
-            )),
+                style::primary, BUTTON_MD)),
         ));
     }
 
     if let Some(error) = &state.error {
         let dismiss = || -> Element<'a, Message> {
-            button(text("Dismiss").size(TEXT_MD).font(UI_MEDIUM))
-                .padding([8, 16])
+            sized(text("Dismiss").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                 .style(style::ghost)
                 .on_press(Message::Dismiss)
                 .into()
@@ -528,8 +521,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             } else {
                 format!("Use port {port}")
             };
-            let fix = button(text(label).size(TEXT_MD).font(UI_MEDIUM))
-                .padding([8, 16])
+            let fix = sized(text(label).size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                 .style(style::secondary);
             let fix: Element<'a, Message> = match idle {
                 true => fix.on_press(Message::UsePort(port)).into(),
@@ -540,8 +532,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         let action = match fix {
             Some(fix) => Some(fix),
             None if error == NO_TOKEN => Some(
-                button(text("Open Sharing settings").size(TEXT_MD).font(UI_MEDIUM))
-                    .padding([8, 16])
+                sized(text("Open Sharing settings").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                     .style(style::secondary)
                     .on_press(Message::OpenSharing)
                     .into(),
@@ -597,8 +588,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
                     "Starting",
                     state.busy == Some(Busy::Start),
                     Some(Message::Start).filter(|_| idle),
-                    style::primary,
-                ),
+                    style::primary, BUTTON_MD),
             ]
             .spacing(SPACE_4)
             .align_y(Alignment::Center),

@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
+use monolith_theme::widget::{sized};
 use iced::widget::{button, column, container, row, scrollable, text, text_input, toggler, Space};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
@@ -329,8 +331,7 @@ fn action<'a>(
     look: fn(&Theme, button::Status) -> button::Style,
     enabled: bool,
 ) -> Element<'a, Message> {
-    button(text(label).size(TEXT_SM).font(UI_MEDIUM))
-        .padding([6, 12])
+    sized(text(label).size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
         .style(look)
         .on_press_maybe(enabled.then_some(message))
         .into()
@@ -434,8 +435,7 @@ fn whitelist_section(state: &State) -> Element<'_, Message> {
             .padding([8, 12])
             .width(Length::Fill)
             .style(style::input),
-        button(text("Add player").size(TEXT_MD).font(UI_MEDIUM))
-            .padding([8, 16])
+        sized(text("Add player").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
             .style(style::primary)
             .on_press_maybe((!state.busy).then_some(Message::AddWhitelist)),
     ]
@@ -485,8 +485,7 @@ fn ban_section(state: &State) -> Element<'_, Message> {
             .padding([8, 12])
             .width(Length::Fill)
             .style(style::input),
-        button(text("Ban player").size(TEXT_MD).font(UI_MEDIUM))
-            .padding([8, 16])
+        sized(text("Ban player").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
             .style(style::danger)
             .on_press_maybe((!state.busy).then_some(Message::AddBan)),
     ]

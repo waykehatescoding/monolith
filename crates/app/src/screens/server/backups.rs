@@ -1,5 +1,7 @@
 use std::path::Path;
 
+use monolith_theme::token::{BUTTON_MD};
+use monolith_theme::widget::{sized, sized_icon};
 use chrono::{DateTime, Local};
 use iced::widget::{
     button, column, container, progress_bar, row, rule, scrollable, text, text_input, toggler,
@@ -339,8 +341,7 @@ fn action<'a>(
     look: fn(&Theme, button::Status) -> button::Style,
     message: Option<Message>,
 ) -> Element<'a, Message> {
-    button(content)
-        .padding([6, 14])
+    sized(content, BUTTON_MD)
         .style(look)
         .on_press_maybe(message)
         .into()
@@ -372,8 +373,7 @@ fn entry_row<'a>(backup: &'a BackupEntry, can_restore: bool, busy: bool) -> Elem
             can_restore.then(|| Message::Restore(backup.filename.clone())),
         ),
         tooltip(
-            button(icon(Icon::Trash, 16.0))
-                .padding(8)
+            sized_icon(icon(Icon::Trash, 16.0), BUTTON_MD)
                 .style(style::danger)
                 .on_press_maybe((!busy).then(|| Message::Delete(backup.filename.clone()))),
             container(text("Delete backup").size(TEXT_XS).color(INK))

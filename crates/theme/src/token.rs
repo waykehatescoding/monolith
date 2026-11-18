@@ -1,4 +1,4 @@
-use iced::Color;
+use iced::{Color, Padding};
 
 pub const GROUND: Color = Color::from_rgb8(0x0e, 0x0f, 0x11);
 pub const LAYER_1: Color = Color::from_rgb8(0x15, 0x17, 0x1a);
@@ -47,3 +47,26 @@ pub const FOCUS_WIDTH: f32 = 2.0;
 pub const CONTROL_HEIGHT: f32 = 32.0;
 pub const SIDEBAR_WIDTH: f32 = 248.0;
 pub const TITLE_BAR_HEIGHT: f32 = 36.0;
+
+#[derive(Clone, Copy)]
+pub struct ButtonSize {
+    pub height: f32,
+    pub padding: Padding,
+    pub icon: f32,
+}
+
+pub const BUTTON_SM: ButtonSize = ButtonSize {
+    height: 28.0,
+    padding: Padding { top: 4.0, right: 10.0, bottom: 4.0, left: 10.0 },
+    icon: 14.0,
+};
+pub const BUTTON_MD: ButtonSize = ButtonSize {
+    height: 34.0,
+    padding: Padding { top: 8.0, right: 16.0, bottom: 8.0, left: 16.0 },
+    icon: 16.0,
+};
+pub const BUTTON_LG: ButtonSize = ButtonSize {
+    height: 40.0,
+    padding: Padding { top: 10.0, right: 20.0, bottom: 10.0, left: 20.0 },
+    icon: 16.0,
+};

@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use monolith_theme::token::{BUTTON_MD};
+use monolith_theme::widget::{sized, sized_icon};
 use chrono::{DateTime, Local, Utc};
 use iced::widget::canvas::{self, Canvas, Path, Stroke};
 use iced::widget::text::Alignment;
@@ -265,8 +267,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
 
     if server.analytics_enabled != Some(true) {
         let label = if state.enabling { "Enabling" } else { "Enable analytics" };
-        let enable = button(text(label).size(TEXT_MD))
-            .padding([SPACE_2, SPACE_4])
+        let enable = sized(text(label).size(TEXT_MD), BUTTON_MD)
             .style(style::primary)
             .on_press_maybe((!state.enabling).then_some(Message::Enable))
             .into();
@@ -279,8 +280,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
 
     match (&state.load, &state.report) {
         (Load::Failed(error), _) => {
-            let retry = button(text("Try again").size(TEXT_MD))
-                .padding([SPACE_2, SPACE_4])
+            let retry = sized(text("Try again").size(TEXT_MD), BUTTON_MD)
                 .style(style::secondary)
                 .on_press(Message::Reload)
                 .into();
@@ -346,8 +346,7 @@ fn report_view<'a>(state: &'a State, report: &'a Report) -> Element<'a, Message>
                 .into()
         }))
         .spacing(SPACE_1),
-        button(icon(Icon::Restart, 16.0))
-            .padding(SPACE_2)
+        sized_icon(icon(Icon::Restart, 16.0), BUTTON_MD)
             .style(style::icon_button)
             .on_press_maybe((!state.refreshing).then_some(Message::Reload)),
     ]

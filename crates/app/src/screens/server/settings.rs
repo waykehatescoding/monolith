@@ -1,7 +1,9 @@
 use iced::widget::{
-    button, column, container, pick_list, progress_bar, row, rule, scrollable, slider, text,
+    column, container, pick_list, progress_bar, row, rule, scrollable, slider, text,
     text_editor, text_input, toggler, Space,
 };
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
+use monolith_theme::widget::{sized};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
 use monolith_core::java_manager::discover_installed_javas;
@@ -806,7 +808,7 @@ fn save_row<'a>(
     }
     footer
         .push(Space::new().width(Length::Fill))
-        .push(busy_button(label, busy_label, busy, message, style::primary))
+        .push(busy_button(label, busy_label, busy, message, style::primary, BUTTON_MD))
         .into()
 }
 
@@ -836,8 +838,7 @@ fn general<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Messag
                     Message::JavaPath
                 )
                 .width(Length::Fill),
-                button(text("Browse").size(TEXT_MD))
-                    .padding([8, 12])
+                sized(text("Browse").size(TEXT_MD), BUTTON_MD)
                     .style(style::secondary)
                     .on_press(Message::BrowseJava)
             ]
@@ -952,15 +953,13 @@ fn gameplay(state: &State) -> Element<'_, Message> {
         )
     };
     let error = state.props_error();
-    let toggle_raw = button(
+    let toggle_raw = sized(
         text(if state.raw_open {
             "Back to simple settings"
         } else {
             "Edit as text"
         })
-        .size(TEXT_MD),
-    )
-    .padding([8, 12])
+        .size(TEXT_MD), BUTTON_MD)
     .style(style::ghost)
     .on_press(Message::ToggleRaw);
     let dirty = state.raw_open || state.props != state.saved_props;
@@ -1047,8 +1046,7 @@ fn reliability<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Me
         times = times.push(
             row![
                 text(time.as_str()).font(MONO).size(TEXT_MD).width(Length::Fill),
-                button(text("Remove").size(TEXT_SM))
-                    .padding([4, 10])
+                sized(text("Remove").size(TEXT_SM), BUTTON_SM)
                     .style(style::ghost)
                     .on_press_maybe((!saving).then_some(Message::RemoveTime(index)))
             ]
@@ -1071,8 +1069,7 @@ fn reliability<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Me
             "Saving",
             saving,
             (!state.new_time.trim().is_empty()).then_some(Message::AddTime),
-            style::secondary
-        )
+            style::secondary, BUTTON_MD)
     ]
     .spacing(SPACE_2)]
     .spacing(SPACE_2);
@@ -1142,8 +1139,7 @@ fn platform<'a>(state: &'a State, server: &'a ServerRecord, ctx: &'a Ctx) -> Ele
                     .size(TEXT_SM)
                     .color(CORAL)
                     .width(Length::Fill),
-                button(text("Retry").size(TEXT_MD))
-                    .padding([8, 12])
+                sized(text("Retry").size(TEXT_MD), BUTTON_MD)
                     .style(style::secondary)
                     .on_press(Message::RetryVersions)
             ]
@@ -1180,8 +1176,7 @@ fn platform<'a>(state: &'a State, server: &'a ServerRecord, ctx: &'a Ctx) -> Ele
         rows.push(
             row![
                 Space::new().width(Length::Fill),
-                button(text("Cancel").size(TEXT_MD))
-                    .padding([8, 12])
+                sized(text("Cancel").size(TEXT_MD), BUTTON_MD)
                     .style(style::ghost)
                     .on_press(Message::CancelPlatform),
                 busy_button(
@@ -1189,8 +1184,7 @@ fn platform<'a>(state: &'a State, server: &'a ServerRecord, ctx: &'a Ctx) -> Ele
                     "Changing",
                     false,
                     ready.then_some(Message::ApplyPlatform),
-                    style::danger
-                )
+                    style::danger, BUTTON_MD)
             ]
             .spacing(SPACE_2)
             .align_y(Alignment::Center)
@@ -1229,8 +1223,7 @@ fn danger<'a>(state: &'a State, ctx: &'a Ctx, server: &'a ServerRecord) -> Eleme
                     "Exporting",
                     state.exporting,
                     Some(Message::Export),
-                    style::secondary,
-                ),
+                    style::secondary, BUTTON_MD),
             ),
             setting(
                 "Remove from this PC",
@@ -1244,8 +1237,7 @@ fn danger<'a>(state: &'a State, ctx: &'a Ctx, server: &'a ServerRecord) -> Eleme
                     "Deleting",
                     false,
                     idle.then_some(Message::Delete),
-                    style::danger,
-                ),
+                    style::danger, BUTTON_MD),
             ),
         ],
     )

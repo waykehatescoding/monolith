@@ -1,4 +1,6 @@
 use std::collections::{HashMap, HashSet};
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
+use monolith_theme::widget::{sized, sized_icon};
 use std::fmt;
 use std::time::Duration;
 
@@ -721,8 +723,7 @@ fn centered_message<'a>(
     .align_x(Alignment::Center);
     if let Some((label, message)) = action {
         content = content.push(Space::new().height(SPACE_2)).push(
-            button(text(label).size(TEXT_MD).font(UI_MEDIUM))
-                .padding([SPACE_2, SPACE_4])
+            sized(text(label).size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                 .style(style::primary)
                 .on_press(message),
         );
@@ -755,8 +756,7 @@ fn tabs(state: &State) -> Element<'_, Message> {
             format!("Update all ({pending})")
         };
         bar = bar.push(Space::new().width(Length::Fill)).push(
-            button(text(label).size(TEXT_MD).font(UI_MEDIUM))
-                .padding([SPACE_2, SPACE_4])
+            sized(text(label).size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                 .style(style::secondary)
                 .on_press_maybe((!state.updating_all).then_some(Message::UpdateAll)),
         );
@@ -783,8 +783,7 @@ fn installed_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message>
                 .size(TEXT_MD)
                 .style(style::muted),
                 Space::new().height(SPACE_2),
-                button(text("Browse Modrinth").size(TEXT_MD).font(UI_MEDIUM))
-                    .padding([SPACE_2, SPACE_4])
+                sized(text("Browse Modrinth").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                     .style(style::primary)
                     .on_press(Message::ShowPane(Pane::Browse)),
             ]
@@ -824,8 +823,7 @@ fn installed_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message>
                         .style(style::colored(MOSS)),
                 )
                 .push(
-                    button(text("Update").size(TEXT_SM).font(UI_MEDIUM))
-                        .padding([SPACE_1 + 2.0, SPACE_3])
+                    sized(text("Update").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
                         .style(style::secondary)
                         .on_press_maybe(
                             (!busy).then(|| Message::Update(entry.project_id.clone())),
@@ -837,14 +835,12 @@ fn installed_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message>
         if state.confirming.as_deref() == Some(entry.project_id.as_str()) {
             line = line
                 .push(
-                    button(text("Keep").size(TEXT_SM).font(UI_MEDIUM))
-                        .padding([SPACE_1 + 2.0, SPACE_3])
+                    sized(text("Keep").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
                         .style(style::secondary)
                         .on_press(Message::AskRemove(None)),
                 )
                 .push(
-                    button(text("Delete file").size(TEXT_SM).font(UI_MEDIUM))
-                        .padding([SPACE_1 + 2.0, SPACE_3])
+                    sized(text("Delete file").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
                         .style(style::danger)
                         .on_press_maybe((!busy).then(|| {
                             Message::Remove(entry.project_id.clone(), entry.title.clone())
@@ -852,8 +848,7 @@ fn installed_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message>
                 );
         } else {
             line = line.push(
-                button(text("Remove").size(TEXT_SM).font(UI_MEDIUM))
-                    .padding([SPACE_1 + 2.0, SPACE_3])
+                sized(text("Remove").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
                     .style(style::danger)
                     .on_press_maybe(
                         (!busy).then(|| Message::AskRemove(Some(entry.project_id.clone()))),
@@ -904,13 +899,12 @@ fn result_row<'a>(state: &'a State, hit: &'a ModrinthSearchHit) -> Element<'a, M
             .center_x(Length::Fixed(84.0))
             .into()
     } else {
-        button(
+        sized(
             text(if installing { "Installing" } else { "Install" })
                 .size(TEXT_SM)
                 .font(UI_MEDIUM)
                 .width(Length::Fill)
-                .align_x(Alignment::Center),
-        )
+                .align_x(Alignment::Center), BUTTON_MD)
         .width(Length::Fixed(84.0))
         .padding([SPACE_1 + 2.0, SPACE_3])
         .style(style::secondary)
@@ -933,12 +927,10 @@ fn result_row<'a>(state: &'a State, hit: &'a ModrinthSearchHit) -> Element<'a, M
 
 fn browse_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message> {
     let search_button = if state.searching {
-        button(ghost_label(Icon::Search, "Searching"))
-            .padding([SPACE_2, SPACE_4])
+        sized(ghost_label(Icon::Search, "Searching"), BUTTON_MD)
             .style(style::secondary)
     } else {
-        button(primary_label(Icon::Search, "Search"))
-            .padding([SPACE_2, SPACE_4])
+        sized(primary_label(Icon::Search, "Search"), BUTTON_MD)
             .style(style::primary)
             .on_press(Message::Search)
     };
@@ -989,12 +981,10 @@ fn browse_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message> {
                     .size(TEXT_SM)
                     .style(style::muted),
                 Space::new().width(Length::Fill),
-                button(icon(Icon::ChevronLeft, 16.0))
-                    .padding(SPACE_2)
+                sized_icon(icon(Icon::ChevronLeft, 16.0), BUTTON_MD)
                     .style(style::icon_button)
                     .on_press_maybe((can_page && state.page > 0).then_some(Message::Page(false))),
-                button(icon(Icon::ChevronRight, 16.0))
-                    .padding(SPACE_2)
+                sized_icon(icon(Icon::ChevronRight, 16.0), BUTTON_MD)
                     .style(style::icon_button)
                     .on_press_maybe(
                         (can_page && u64::from(last) < found.total_hits)
@@ -1040,8 +1030,7 @@ fn drawer<'a>(state: &'a State, detail: &'a Detail) -> Element<'a, Message> {
         ]
         .spacing(2)
         .width(Length::Fill),
-        button(icon(Icon::Close, 16.0))
-            .padding(SPACE_2)
+        sized_icon(icon(Icon::Close, 14.0), BUTTON_SM)
             .style(style::icon_button)
             .on_press(Message::Close),
     ]
@@ -1128,13 +1117,12 @@ fn drawer<'a>(state: &'a State, detail: &'a Detail) -> Element<'a, Message> {
         "Install"
     };
     body = body.push(
-        button(
+        sized(
             text(label)
                 .size(TEXT_MD)
                 .font(UI_MEDIUM)
                 .width(Length::Fill)
-                .align_x(Alignment::Center),
-        )
+                .align_x(Alignment::Center), BUTTON_MD)
         .width(Length::Fill)
         .padding([SPACE_2 + 2.0, SPACE_4])
         .style(style::primary)
@@ -1145,8 +1133,7 @@ fn drawer<'a>(state: &'a State, detail: &'a Detail) -> Element<'a, Message> {
     );
     if let Some(url) = link {
         body = body.push(
-            button(ghost_label(Icon::ExternalLink, "View on Modrinth"))
-                .padding([SPACE_2, SPACE_3])
+            sized(ghost_label(Icon::ExternalLink, "View on Modrinth"), BUTTON_MD)
                 .style(style::ghost)
                 .on_press(Message::OpenLink(url)),
         );

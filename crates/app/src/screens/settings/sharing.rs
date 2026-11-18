@@ -1,4 +1,6 @@
 use iced::widget::{button, column, container, progress_bar, row, scrollable, text, text_input, toggler};
+use monolith_theme::token::{BUTTON_MD};
+use monolith_theme::widget::{sized, sized_icon};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
 use monolith_core::types::{NgrokAuthtokenValidation, SuccessResult};
@@ -228,7 +230,7 @@ fn action<'a>(
     let content = row![icon(glyph, 16.0), text(label).size(TEXT_MD).font(UI_MEDIUM)]
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
-    let base = button(content).padding([8, 14]).on_press_maybe(message);
+    let base = sized(content, BUTTON_MD).on_press_maybe(message);
     if primary {
         base.style(style::primary).into()
     } else {
@@ -413,8 +415,7 @@ fn lan_section(state: &State) -> Element<'_, Message> {
     let address: Element<Message> = match &state.local_ip {
         Some(ip) => row![
             text(ip.as_str()).size(TEXT_MD).font(MONO),
-            button(icon(Icon::Copy, 16.0))
-                .padding(6)
+            sized_icon(icon(Icon::Copy, 16.0), BUTTON_MD)
                 .style(style::icon_button)
                 .on_press(Message::CopyIp)
         ]

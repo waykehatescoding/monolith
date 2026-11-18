@@ -1,4 +1,6 @@
 use std::collections::HashSet;
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
+use monolith_theme::widget::{sized};
 use std::path::PathBuf;
 
 use iced::widget::{
@@ -578,19 +580,17 @@ fn heading<'a>(title: String, detail: &'a str) -> Column<'a, Message> {
 }
 
 fn primary<'a>(label: &'a str, on_press: Option<Message>) -> Element<'a, Message> {
-    busy_button(label, label, false, on_press, style::primary)
+    busy_button(label, label, false, on_press, style::primary, BUTTON_MD)
 }
 
 fn back<'a>() -> Element<'a, Message> {
-    button(
+    sized(
         row![
             icon(Icon::ChevronLeft, 16.0),
             text("Back").size(TEXT_MD).font(UI_MEDIUM)
         ]
         .spacing(SPACE_1)
-        .align_y(Alignment::Center),
-    )
-    .padding([8, 12])
+        .align_y(Alignment::Center), BUTTON_MD)
     .style(style::ghost)
     .on_press(Message::Back)
     .into()
@@ -616,8 +616,7 @@ fn step_layout<'a>(
 }
 
 fn link<'a>(label: &'a str, message: Message) -> Element<'a, Message> {
-    button(text(label).size(TEXT_SM).font(UI_MEDIUM))
-        .padding([4, 8])
+    sized(text(label).size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
         .style(style::ghost)
         .on_press(message)
         .into()
@@ -710,8 +709,7 @@ fn platform_step(state: &State) -> Column<'_, Message> {
                 .size(TEXT_SM)
                 .style(style::colored(CORAL))
                 .width(Length::Fill),
-            button(text("Try again").size(TEXT_SM).font(UI_MEDIUM))
-                .padding([6, 12])
+            sized(text("Try again").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
                 .style(style::secondary)
                 .on_press(Message::RetryVersions)
         ]
@@ -814,7 +812,7 @@ fn plugin_chips<'a>(state: &'a State, members: &[&'a DefaultPlugin]) -> Element<
         let key = plugin_key(plugin);
         let on = !state.disabled.contains(key);
         chips = chips.push(
-            button(
+            sized(
                 row![
                     icon_colored(
                         if on { Icon::Check } else { Icon::Plus },
@@ -824,9 +822,7 @@ fn plugin_chips<'a>(state: &'a State, members: &[&'a DefaultPlugin]) -> Element<
                     text(plugin_title(plugin)).size(TEXT_SM)
                 ]
                 .spacing(SPACE_1)
-                .align_y(Alignment::Center),
-            )
-            .padding([4, 10])
+                .align_y(Alignment::Center), BUTTON_SM)
             .style(if on { style::secondary } else { style::ghost })
             .on_press(Message::Plugin(key.to_string())),
         );
@@ -854,8 +850,7 @@ fn plugins_step(state: &State) -> Column<'_, Message> {
                 text("Add the plugins you want on every new server in Server defaults. They will show up here.")
                     .size(TEXT_SM)
                     .style(style::muted),
-                button(text("Open server defaults").size(TEXT_MD).font(UI_MEDIUM))
-                    .padding([8, 16])
+                sized(text("Open server defaults").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                     .style(style::secondary)
                     .on_press(Message::OpenDefaults),
             ]
@@ -1046,15 +1041,13 @@ fn done_step(state: &State) -> Column<'_, Message> {
             .font(MONO)
             .size(TEXT_LG)
             .width(Length::Fill),
-        button(
+        sized(
             row![
                 icon(Icon::Copy, 16.0),
                 text("Copy").size(TEXT_MD).font(UI_MEDIUM)
             ]
             .spacing(SPACE_2)
-            .align_y(Alignment::Center)
-        )
-        .padding([6, 12])
+            .align_y(Alignment::Center), BUTTON_MD)
         .style(style::secondary)
         .on_press_maybe(joined.map(|_| Message::CopyAddress))
     ]
@@ -1079,12 +1072,10 @@ fn done_step(state: &State) -> Column<'_, Message> {
     }
 
     let actions = row![
-        button(text("Create another").size(TEXT_MD).font(UI_MEDIUM))
-            .padding([8, 12])
+        sized(text("Create another").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
             .style(style::ghost)
             .on_press(Message::Another),
-        button(text("Open server").size(TEXT_MD).font(UI_MEDIUM))
-            .padding([8, 16])
+        sized(text("Open server").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
             .style(style::secondary)
             .on_press(Message::Open),
         Space::new().width(Length::Fill),
@@ -1093,8 +1084,7 @@ fn done_step(state: &State) -> Column<'_, Message> {
             "Starting",
             state.starting,
             Some(Message::Start),
-            style::primary
-        ),
+            style::primary, BUTTON_MD),
     ]
     .spacing(SPACE_2)
     .align_y(Alignment::Center);

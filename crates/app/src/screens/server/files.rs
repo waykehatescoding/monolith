@@ -1,4 +1,6 @@
 use std::path::{Path, PathBuf};
+use monolith_theme::token::{BUTTON_MD};
+use monolith_theme::widget::{sized, sized_icon};
 use std::time::Duration;
 
 use iced::widget::{
@@ -656,8 +658,7 @@ fn icon_action<'a>(
     look: fn(&iced::Theme, button::Status) -> button::Style,
 ) -> Element<'a, Message> {
     hint(
-        button(icon_colored(glyph, 16.0, INK_SECONDARY))
-            .padding(6)
+        sized_icon(icon_colored(glyph, 16.0, INK_SECONDARY), BUTTON_MD)
             .style(look)
             .on_press(message),
         label,
@@ -676,7 +677,7 @@ fn labeled<'a>(
     ]
     .spacing(SPACE_2)
     .align_y(Alignment::Center);
-    let base = button(body).padding([6, 12]).style(look);
+    let base = sized(body, BUTTON_MD).style(look);
     match message {
         Some(message) => base.on_press(message).into(),
         None => base.into(),
@@ -781,10 +782,8 @@ fn prompt_view<'a>(prompt: &'a Prompt, busy: bool) -> Element<'a, Message> {
                 "Working",
                 busy,
                 Some(Message::PromptSubmit),
-                style::primary
-            ),
-            button(text("Cancel").size(TEXT_MD).font(UI_MEDIUM))
-                .padding([8, 16])
+                style::primary, BUTTON_MD),
+            sized(text("Cancel").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                 .style(style::ghost)
                 .on_press_maybe((!busy).then_some(Message::PromptCancel)),
         ]
@@ -939,14 +938,12 @@ fn editor_view<'a>(editor: &'a Editor) -> Element<'a, Message> {
         header = header
             .push(text("Save before leaving?").size(TEXT_MD).style(style::muted))
             .push(
-                button(text("Discard").size(TEXT_MD).font(UI_MEDIUM))
-                    .padding([6, 12])
+                sized(text("Discard").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                     .style(style::danger)
                     .on_press(Message::Discard),
             )
             .push(
-                button(text("Keep editing").size(TEXT_MD).font(UI_MEDIUM))
-                    .padding([6, 12])
+                sized(text("Keep editing").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                     .style(style::secondary)
                     .on_press(Message::KeepEditing),
             )
@@ -955,8 +952,7 @@ fn editor_view<'a>(editor: &'a Editor) -> Element<'a, Message> {
                 "Saving",
                 editor.saving,
                 Some(Message::Save),
-                style::primary,
-            ));
+                style::primary, BUTTON_MD));
     } else {
         header = header
             .push(labeled(
@@ -970,8 +966,7 @@ fn editor_view<'a>(editor: &'a Editor) -> Element<'a, Message> {
                 "Saving",
                 editor.saving,
                 editor.dirty.then_some(Message::Save),
-                style::primary,
-            ));
+                style::primary, BUTTON_MD));
     }
 
     let area = text_editor(&editor.content)

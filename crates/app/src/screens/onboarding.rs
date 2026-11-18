@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 
-use iced::widget::{button, column, container, row, text};
+use monolith_theme::token::{BUTTON_LG};
+use monolith_theme::widget::{sized};
+use iced::widget::{column, container, row, text};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
 use monolith_core::java_manager::{discover_installed_javas, InstalledJava};
@@ -82,7 +84,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
-    let create = button(
+    let create = sized(
         row![
             icon_colored(Icon::Plus, 16.0, GROUND),
             text("Create your first server")
@@ -90,9 +92,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
                 .font(UI_SEMIBOLD)
         ]
         .spacing(SPACE_2)
-        .align_y(Alignment::Center),
-    )
-    .padding([8, 16])
+        .align_y(Alignment::Center), BUTTON_LG)
     .style(style::primary)
     .on_press_maybe((!state.importing).then_some(Message::Create));
 
@@ -101,8 +101,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
         "Importing",
         state.importing,
         Some(Message::Import),
-        style::secondary,
-    );
+        style::secondary, BUTTON_LG);
 
     let mut content = column![
         app_mark(40.0),

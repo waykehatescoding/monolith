@@ -1,6 +1,6 @@
 use crate::icon::{icon_colored, Icon};
 use crate::style;
-use crate::token::{INK, SPACE_2, TEXT_XS, TITLE_BAR_HEIGHT};
+use crate::token::{ButtonSize, INK, SPACE_2, TEXT_XS, TITLE_BAR_HEIGHT};
 use iced::widget::{button, column, container, mouse_area, row, svg, text, tooltip, Button, MouseArea, Row, Space, Tooltip};
 use iced::window::Direction;
 use iced::{mouse, Color, Element, Length, Theme};
@@ -94,4 +94,17 @@ pub fn resize_grips<'a, M: Clone + 'a>(on_resize: impl Fn(Direction) -> M) -> El
         ],
     ]
     .into()
+}
+
+pub fn sized<'a, M: 'a>(content: impl Into<Element<'a, M, Theme>>, size: ButtonSize) -> Button<'a, M, Theme> {
+    button(container(content).center_y(Length::Fill))
+        .height(Length::Fixed(size.height))
+        .padding(size.padding)
+}
+
+pub fn sized_icon<'a, M: 'a>(content: impl Into<Element<'a, M, Theme>>, size: ButtonSize) -> Button<'a, M, Theme> {
+    button(container(content).center(Length::Fill))
+        .width(Length::Fixed(size.height))
+        .height(Length::Fixed(size.height))
+        .padding(0)
 }

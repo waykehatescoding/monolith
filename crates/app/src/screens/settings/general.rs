@@ -1,4 +1,6 @@
 use iced::widget::{button, column, container, progress_bar, row, scrollable, text, toggler, Space};
+use monolith_theme::token::{BUTTON_MD};
+use monolith_theme::widget::{sized};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
 use monolith_core::types::{
@@ -310,7 +312,7 @@ fn action<'a>(
     let content = row![icon(glyph, 16.0), text(label).size(TEXT_MD).font(UI_MEDIUM)]
         .spacing(SPACE_2)
         .align_y(Alignment::Center);
-    let base = button(content).padding([8, 14]).on_press_maybe(message);
+    let base = sized(content, BUTTON_MD).on_press_maybe(message);
     if primary {
         base.style(style::primary).into()
     } else {

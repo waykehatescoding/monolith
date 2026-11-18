@@ -1,4 +1,5 @@
 use iced::widget::{button, column, container, row, text, Space};
+use monolith_theme::token::{BUTTON_MD};
 use iced::{Element, Length, Theme};
 use monolith_theme::token::{SPACE_2, SPACE_5, TEXT_LG, TEXT_MD};
 use monolith_theme::{style, UI_SEMIBOLD};
@@ -31,8 +32,8 @@ pub fn dialog<'a, M: Clone + 'a>(
             .spacing(SPACE_2),
             row![
                 Space::new().width(Length::Fill),
-                busy_button(cancel_label, cancel_label, false, (!busy).then(|| on_cancel.clone()), style::ghost),
-                busy_button(confirm_label, busy_label, busy, Some(on_confirm), confirm_style),
+                busy_button(cancel_label, cancel_label, false, (!busy).then(|| on_cancel.clone()), style::ghost, BUTTON_MD),
+                busy_button(confirm_label, busy_label, busy, Some(on_confirm), confirm_style, BUTTON_MD),
             ]
             .spacing(SPACE_2)
         ]

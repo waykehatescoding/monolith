@@ -1,6 +1,8 @@
 use iced::widget::{
     button, column, container, pick_list, row, scrollable, text, text_input, tooltip, Space,
 };
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
+use monolith_theme::widget::{sized, sized_icon};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use monolith_core::default_plugins;
 use monolith_core::events::Event;
@@ -398,20 +400,17 @@ fn action<'a>(
     message: Option<Message>,
     primary: bool,
 ) -> Element<'a, Message> {
-    button(
+    sized(
         row![icon(glyph, 16.0), text(label).size(TEXT_MD).font(UI_MEDIUM)]
             .spacing(SPACE_2)
-            .align_y(Alignment::Center),
-    )
-    .padding([SPACE_2, SPACE_3])
+            .align_y(Alignment::Center), BUTTON_MD)
     .style(if primary { style::primary } else { style::secondary })
     .on_press_maybe(message)
     .into()
 }
 
 fn small<'a>(label: &'a str, message: Option<Message>, danger: bool) -> Element<'a, Message> {
-    button(text(label).size(TEXT_SM).font(UI_MEDIUM))
-        .padding([SPACE_1, SPACE_3])
+    sized(text(label).size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
         .style(if danger { style::danger } else { style::ghost })
         .on_press_maybe(message)
         .into()
@@ -419,8 +418,7 @@ fn small<'a>(label: &'a str, message: Option<Message>, danger: bool) -> Element<
 
 fn icon_action<'a>(glyph: Icon, label: &'a str, message: Option<Message>) -> Element<'a, Message> {
     tooltip(
-        button(icon(glyph, 16.0))
-            .padding(SPACE_2)
+        sized_icon(icon(glyph, 14.0), BUTTON_SM)
             .style(style::icon_button)
             .on_press_maybe(message),
         container(text(label).size(TEXT_XS).color(INK))

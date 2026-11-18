@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
+use monolith_theme::widget::{sized, sized_icon};
 use iced::widget::{
     button, column, container, row, scrollable, text, text_input, toggler, tooltip,
 };
@@ -539,8 +541,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
         "Saving",
         state.saving,
         Some(Message::Save),
-        style::primary,
-    ));
+        style::primary, BUTTON_MD));
 
     let usable = settings.has_api_key || !needs_key(settings.provider);
     let mut switch = toggler(settings.enabled).size(20).style(style::switch);
@@ -663,22 +664,20 @@ fn card_view<'a>(card: &'a Card, ctx: &'a Ctx) -> Element<'a, Message> {
 
     let footer: Element<Message> = match &card.progress {
         Progress::Pending => row![
-            button(text("Confirm").size(TEXT_MD).font(UI_MEDIUM))
-                .padding([6, 14])
+            sized(text("Confirm").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                 .style(style::primary)
                 .on_press(Message::Apply(id.clone())),
-            button(text("Dismiss").size(TEXT_MD).font(UI_MEDIUM))
-                .padding([6, 14])
+            sized(text("Dismiss").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                 .style(style::ghost)
                 .on_press(Message::Dismiss(id)),
         ]
         .spacing(SPACE_2)
         .into(),
         Progress::Running if card.undo.is_some() => {
-            busy_button::<Message>("Undo", "Undoing", true, None, style::secondary)
+            busy_button::<Message>("Undo", "Undoing", true, None, style::secondary, BUTTON_MD)
         }
         Progress::Running => {
-            busy_button::<Message>("Confirm", "Applying", true, None, style::primary)
+            busy_button::<Message>("Confirm", "Applying", true, None, style::primary, BUTTON_MD)
         }
         Progress::Done(message) => {
             let mut line = row![
@@ -689,8 +688,7 @@ fn card_view<'a>(card: &'a Card, ctx: &'a Ctx) -> Element<'a, Message> {
             .align_y(Alignment::Center);
             if card.undo.is_some() {
                 line = line.push(
-                    button(text("Undo").size(TEXT_SM).font(UI_MEDIUM))
-                        .padding([4, 10])
+                    sized(text("Undo").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
                         .style(style::secondary)
                         .on_press(Message::Undo(id)),
                 );
@@ -709,12 +707,10 @@ fn card_view<'a>(card: &'a Card, ctx: &'a Ctx) -> Element<'a, Message> {
                     .size(TEXT_SM)
                     .color(CORAL)
                     .width(Length::Fill),
-                button(text("Retry").size(TEXT_SM).font(UI_MEDIUM))
-                    .padding([4, 10])
+                sized(text("Retry").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
                     .style(style::secondary)
                     .on_press(retry),
-                button(text("Dismiss").size(TEXT_SM).font(UI_MEDIUM))
-                    .padding([4, 10])
+                sized(text("Dismiss").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
                     .style(style::ghost)
                     .on_press(Message::Dismiss(id)),
             ]
@@ -796,15 +792,13 @@ pub fn panel<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     .align_y(Alignment::Center);
     if !state.entries.is_empty() {
         head = head.push(
-            button(text("Clear").size(TEXT_SM).font(UI_MEDIUM))
-                .padding([4, 10])
+            sized(text("Clear").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
                 .style(style::ghost)
                 .on_press(Message::Clear),
         );
     }
     head = head.push(hint(
-        button(icon(Icon::Close, 16.0))
-            .padding(SPACE_2)
+        sized_icon(icon(Icon::Close, 14.0), BUTTON_SM)
             .style(style::icon_button)
             .on_press(Message::Close)
             .into(),
@@ -819,8 +813,7 @@ pub fn panel<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             text("Add an API key from any OpenAI-compatible service. The assistant can then suggest fixes for your servers, and you approve them one by one.")
                 .size(TEXT_MD)
                 .style(style::muted),
-            button(text("Open assistant settings").size(TEXT_MD).font(UI_MEDIUM))
-                .padding([8, 16])
+            sized(text("Open assistant settings").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                 .style(style::primary)
                 .on_press(Message::OpenSettings),
         ]
@@ -866,8 +859,7 @@ pub fn panel<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             container(list).height(Length::Fill),
             row![
                 input,
-                button(text("Send").size(TEXT_MD).font(UI_MEDIUM))
-                    .padding([8, 14])
+                sized(text("Send").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                     .style(style::primary)
                     .on_press_maybe(can_send.then_some(Message::Send)),
             ]

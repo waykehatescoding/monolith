@@ -1,4 +1,6 @@
 use iced::widget::operation::{self, AbsoluteOffset};
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
+use monolith_theme::widget::{sized};
 use iced::widget::text::Span;
 use iced::widget::{
     button, column, container, row, rich_text, scrollable, space, span, stack, text, text_input,
@@ -301,12 +303,12 @@ fn action_button(
 ) -> Element<'static, Message> {
     let color = if on_press.is_some() { INK } else { INK_TERTIARY };
     let content = row![
-        icon_colored(glyph, 16.0, color),
+        icon_colored(glyph, 14.0, color),
         text(label).size(TEXT_SM).font(UI_MEDIUM)
     ]
     .spacing(SPACE_2)
     .align_y(Alignment::Center);
-    let base = button(content).padding([SPACE_2, SPACE_3]).style(style::ghost);
+    let base = sized(content, BUTTON_SM).style(style::ghost);
     match on_press {
         Some(message) => base.on_press(message).into(),
         None => base.into(),
@@ -349,15 +351,13 @@ fn log_area(state: &State) -> Element<'_, Message> {
         return surface.into();
     }
     let pill = container(
-        button(
+        sized(
             row![
-                icon_colored(Icon::ChevronDown, 16.0, INK),
+                icon_colored(Icon::ChevronDown, 14.0, INK),
                 text("Jump to latest").size(TEXT_SM).font(UI_MEDIUM)
             ]
             .spacing(SPACE_1)
-            .align_y(Alignment::Center),
-        )
-        .padding([SPACE_2, SPACE_3])
+            .align_y(Alignment::Center), BUTTON_SM)
         .style(style::secondary)
         .on_press(Message::JumpToLatest),
     )
@@ -411,8 +411,7 @@ fn command_bar<'a>(state: &'a State, ctx: &'a Ctx, id: &str) -> Element<'a, Mess
         field = field.on_input(Message::Input).on_submit(Message::Submit);
     }
     let can_send = enabled && !state.sending && !state.input.trim().is_empty();
-    let send = button(text(if state.sending { "Sending" } else { "Send" }).font(UI_MEDIUM))
-        .padding([SPACE_2, SPACE_4])
+    let send = sized(text(if state.sending { "Sending" } else { "Send" }).font(UI_MEDIUM), BUTTON_MD)
         .style(style::primary)
         .on_press_maybe(can_send.then_some(Message::Submit));
     row![field, send]

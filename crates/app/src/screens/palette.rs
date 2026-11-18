@@ -27,7 +27,7 @@ pub enum Message {
     Move(isize),
     Submit,
     Run(usize),
-    Done(SuccessResult),
+    Done(String, SuccessResult),
     Copy(String),
 }
 
@@ -62,7 +62,7 @@ fn score(query: &str, label: &str) -> Option<usize> {
     if let Some(position) = label.find(query) {
         return Some(position);
     }
-    let mut chars = label.char_indices();
+    let mut chars = label.chars().enumerate();
     let mut total = 100;
     let mut last = 0;
     for wanted in query.chars() {
@@ -87,7 +87,7 @@ fn action(icon: Icon, label: String, hint: Option<&str>, command: Command) -> It
 
 fn tab_icon(tab: Tab) -> Icon {
     match tab {
-        Tab::Overview => Icon::Server,
+        Tab::Overview => Icon::Info,
         Tab::Console => Icon::Terminal,
         Tab::Files => Icon::File,
         Tab::Players => Icon::Users,
@@ -127,7 +127,10 @@ fn items(query: &str, ctx: &Ctx) -> Vec<Item> {
                     Command::Restart,
                 ));
             }
-            ServerRuntimeStatus::Starting | ServerRuntimeStatus::Stopping => {}
+            ServerRuntimeStatus::Starting => {
+                all.push(action(Icon::Stop, format!("Stop {name}"), None, Command::Stop));
+            }
+            ServerRuntimeStatus::Stopping => {}
         }
         all.push(action(
             Icon::Copy,
@@ -219,20 +222,34 @@ fn run(command: Command, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
         (Command::Start, Some(server)) => {
-            Task::perform(server_runner::start_server(server.id), Message::Done)
+            ctx.info(format!("Starting {}", server.name));
+            let done = format!("{} is starting", server.name);
+            Task::perform(server_runner::start_server(server.id), move |result| {
+                Message::Done(done.clone(), result)
+            })
         }
         (Command::Stop, Some(server)) => {
-            Task::perform(server_runner::stop_server(server.id), Message::Done)
+            ctx.info(format!("Stopping {}", server.name));
+            let done = format!("{} is stopping", server.name);
+            Task::perform(server_runner::stop_server(server.id), move |result| {
+                Message::Done(done.clone(), result)
+            })
         }
         (Command::Restart, Some(server)) => {
-            Task::perform(server_runner::restart_server(server.id), Message::Done)
+            ctx.info(format!("Restarting {}", server.name));
+            let done = format!("{} is restarting", server.name);
+            Task::perform(server_runner::restart_server(server.id), move |result| {
+                Message::Done(done.clone(), result)
+            })
         }
         (Command::CopyAddress, Some(server)) => Task::perform(
             join_address(server.server_path, server.ngrok_url),
             Message::Copy,
         ),
         (Command::OpenFolder, Some(server)) => {
-            if open::that_detached(&server.server_path).is_err() {
+            if !Path::new(&server.server_path).exists()
+                || open::that_detached(&server.server_path).is_err()
+            {
                 ctx.error("The server folder could not be opened. Check that it still exists.");
             }
             Task::none()
@@ -241,9 +258,22 @@ fn run(command: Command, ctx: &Ctx) -> Task<Message> {
     }
 }
 
-fn snap(selected: usize, count: usize) -> Task<Message> {
-    let y = if count > 1 {
-        selected as f32 / (count - 1) as f32
+fn snap(selected: usize, found: &[Item]) -> Task<Message> {
+    let mut slots = 0;
+    let mut position = 0;
+    let mut group = "";
+    for (index, item) in found.iter().enumerate() {
+        if item.group != group {
+            group = item.group;
+            slots += 2;
+        }
+        slots += 1;
+        if index == selected {
+            position = slots;
+        }
+    }
+    let y = if slots > 1 {
+        (position - 1) as f32 / (slots - 1) as f32
     } else {
         0.0
     };
@@ -257,10 +287,12 @@ fn snap(selected: usize, count: usize) -> Task<Message> {
 }
 
 fn run_at(index: usize, state: &State, ctx: &Ctx) -> Task<Message> {
-    match items(&state.query, ctx).into_iter().nth(index) {
-        Some(item) => run(item.command, ctx),
-        None => Task::none(),
+    let mut found = items(&state.query, ctx);
+    if found.is_empty() {
+        return Task::none();
     }
+    let index = index.min(found.len() - 1);
+    run(found.swap_remove(index).command, ctx)
 }
 
 pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
@@ -268,23 +300,26 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::Query(query) => {
             state.query = query;
             state.selected = 0;
-            snap(0, 1)
+            operation::snap_to(LIST_ID, RelativeOffset::START)
         }
         Message::Move(delta) => {
             if !ctx.palette_open {
                 return Task::none();
             }
-            let count = items(&state.query, ctx).len();
-            if count == 0 {
+            let found = items(&state.query, ctx);
+            if found.is_empty() {
                 return Task::none();
             }
-            state.selected = (state.selected as isize + delta).rem_euclid(count as isize) as usize;
-            snap(state.selected, count)
+            let count = found.len() as isize;
+            state.selected = (state.selected as isize + delta).rem_euclid(count) as usize;
+            snap(state.selected, &found)
         }
         Message::Submit => run_at(state.selected, state, ctx),
         Message::Run(index) => run_at(index, state, ctx),
-        Message::Done(result) => {
-            if !result.success {
+        Message::Done(done, result) => {
+            if result.success {
+                ctx.success(done);
+            } else {
                 ctx.error(
                     result
                         .error
@@ -295,7 +330,11 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
         Message::Copy(address) => {
-            ctx.success("Join address copied");
+            if address.starts_with("localhost") {
+                ctx.info("Copied a local address. Other players cannot reach it until you share a public one.");
+            } else {
+                ctx.success("Join address copied");
+            }
             clipboard::write(address)
         }
     }

@@ -3044,6 +3044,7 @@ name = "monolith"
 version = "0.0.1"
 dependencies = [
  "chrono",
+ "embed-resource",
  "iced",
  "image",
  "monolith-core",

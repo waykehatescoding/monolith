@@ -1,0 +1,14 @@
+[package]
+name = "monolith"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+monolith-core = { path = "../core" }
+iced.workspace = true
+tokio.workspace = true
+rfd.workspace = true
+open.workspace = true
+serde.workspace = true
+serde_json.workspace = true

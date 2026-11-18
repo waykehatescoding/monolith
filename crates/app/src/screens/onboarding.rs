@@ -1,15 +1,15 @@
 use std::path::PathBuf;
 
-use monolith_theme::token::{BUTTON_LG};
-use monolith_theme::widget::{sized};
+use monolith_theme::token::BUTTON_LG;
+use monolith_theme::widget::sized;
 use iced::widget::{column, container, row, text};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
 use monolith_core::java_manager::{discover_installed_javas, InstalledJava};
 use monolith_core::server_transfer::import_server;
 use monolith_core::types::CreateServerResult;
-use monolith_theme::token::{CORAL, GROUND, SPACE_2, SPACE_3, SPACE_5, TEXT_2XL, TEXT_MD, TEXT_SM};
-use monolith_theme::{app_mark, icon_colored, style, Icon, UI_MEDIUM, UI_SEMIBOLD};
+use monolith_theme::token::{CORAL, GROUND, SPACE_2, SPACE_3, SPACE_5, TEXT_2XL, TEXT_MD, TEXT_SM, SPACE_6};
+use monolith_theme::{icon_colored, style, Icon, UI_MEDIUM, UI_SEMIBOLD};
 
 use crate::ctx::{Ctx, Route};
 use crate::ui::busy_button;
@@ -104,10 +104,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
         style::secondary, BUTTON_LG);
 
     let mut content = column![
-        app_mark(40.0),
         column![
             text("Welcome to Monolith").size(TEXT_2XL).font(UI_SEMIBOLD),
-            text("Create a Minecraft server in about a minute. Monolith downloads the server files and the right Java for you.")
+            text("Create a Minecraft server in about a minute. Monolith downloads the server files and the right Java for you. Already have one? Import its zip.")
                 .size(TEXT_MD)
                 .style(style::muted),
         ]
@@ -117,17 +116,18 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
             .align_y(Alignment::Center),
     ]
     .spacing(SPACE_5)
-    .max_width(460);
+    .max_width(480);
 
     if let Some(error) = &state.error {
         content = content.push(text(error).size(TEXT_SM).style(style::colored(CORAL)));
     }
     let hint = java_hint(state).unwrap_or_else(|| "Checking for Java on this PC".into());
     content = content.push(
-        text(hint)
+        container(text(hint)
             .size(TEXT_SM)
             .font(UI_MEDIUM)
-            .style(style::faint),
+            .style(style::faint))
+        .padding(iced::Padding::ZERO.top(SPACE_6 - SPACE_5)),
     );
 
     container(content).center(Length::Fill).into()

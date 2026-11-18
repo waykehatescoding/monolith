@@ -1,9 +1,9 @@
 use iced::widget::operation::{self, AbsoluteOffset};
 use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
-use monolith_theme::widget::{sized};
+use monolith_theme::widget::sized;
 use iced::widget::text::Span;
 use iced::widget::{
-    button, column, container, row, rich_text, scrollable, space, span, stack, text, text_input,
+    column, container, row, rich_text, scrollable, space, span, stack, text, text_input,
 };
 use iced::{clipboard, event, keyboard, Alignment, Color, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
@@ -256,8 +256,8 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
 fn toolbar(state: &State) -> Element<'_, Message> {
     let search = text_input("Search output", &state.search)
         .on_input(Message::Search)
-        .size(TEXT_MD)
-        .padding([SPACE_2, SPACE_3])
+        .size(TEXT_SM)
+        .padding([5.0, SPACE_3])
         .style(style::input)
         .width(Length::FillPortion(2));
     let chips = [
@@ -268,8 +268,7 @@ fn toolbar(state: &State) -> Element<'_, Message> {
     .into_iter()
     .fold(row![].spacing(SPACE_1), |chips, (kind, label)| {
         chips.push(
-            button(text(label).size(TEXT_SM).font(UI_MEDIUM))
-                .padding([SPACE_2, SPACE_3])
+            sized(text(label).size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
                 .style(style::tab(state.kinds.contains(&kind)))
                 .on_press(Message::ToggleKind(kind)),
         )

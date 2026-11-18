@@ -1,11 +1,11 @@
 use std::time::Duration;
 
-use monolith_theme::token::{BUTTON_MD};
+use monolith_theme::token::BUTTON_MD;
 use monolith_theme::widget::{sized, sized_icon};
 use chrono::{DateTime, Local, Utc};
 use iced::widget::canvas::{self, Canvas, Path, Stroke};
 use iced::widget::text::Alignment;
-use iced::widget::{button, column, container, row, scrollable, space, text};
+use iced::widget::{column, container, row, scrollable, space, text};
 use iced::{alignment, mouse, Color, Element, Length, Pixels, Point, Rectangle, Renderer, Size, Subscription, Task, Theme};
 use monolith_core::events::Event;
 use monolith_core::server_stats::get_analytics_data;
@@ -339,8 +339,7 @@ fn report_view<'a>(state: &'a State, report: &'a Report) -> Element<'a, Message>
         space().width(Length::Fill),
         text(if state.refreshing { "Refreshing..." } else { "" }).size(TEXT_SM).style(style::muted),
         row(Range::ALL.map(|option| {
-            button(text(option.label()).size(TEXT_SM))
-                .padding([SPACE_1 + 2.0, SPACE_3])
+            sized(text(option.label()).size(TEXT_MD), BUTTON_MD)
                 .style(style::tab(state.range == option))
                 .on_press(Message::Range(option))
                 .into()
@@ -355,8 +354,8 @@ fn report_view<'a>(state: &'a State, report: &'a Report) -> Element<'a, Message>
 
     let charts = column![
         chart_panel(
-            "TPS",
-            tps_now.map(|v| format!("{v:.1}")).unwrap_or_else(|| "-".into()),
+            "Server speed (TPS)",
+            tps_now.map(|v| format!("{v:.1} of 20")).unwrap_or_else(|| "-".into()),
             Chart::new(tps, 20.0, MOSS, range, cutoff, now, format_tps),
         ),
         chart_panel(
@@ -434,7 +433,7 @@ fn top_players<'a>(players: &'a [PlayerRow]) -> Element<'a, Message> {
             row![
                 text(&player.name).size(TEXT_MD),
                 space().width(Length::Fill),
-                text(format!("{} joins", player.join_count)).size(TEXT_SM).style(style::muted),
+                text(format!("{} {}", player.join_count, if player.join_count == 1 { "join" } else { "joins" })).size(TEXT_SM).style(style::muted),
                 text(format_playtime(player.total_play_time_seconds))
                     .size(TEXT_MD)
                     .width(72)

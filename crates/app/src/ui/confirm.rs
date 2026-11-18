@@ -1,8 +1,9 @@
 use iced::widget::{button, column, container, row, text, Space};
 use iced::{Element, Length, Theme};
 use monolith_theme::token::{SPACE_2, SPACE_5, TEXT_LG, TEXT_MD};
-use monolith_theme::{style, UI_MEDIUM, UI_SEMIBOLD};
+use monolith_theme::{style, UI_SEMIBOLD};
 
+use super::busy::busy_button;
 use super::overlay::modal;
 
 pub fn dialog<'a, M: Clone + 'a>(
@@ -10,6 +11,8 @@ pub fn dialog<'a, M: Clone + 'a>(
     body: &'a str,
     cancel_label: &'a str,
     confirm_label: &'a str,
+    busy_label: &'a str,
+    busy: bool,
     danger: bool,
     on_cancel: M,
     on_confirm: M,
@@ -28,14 +31,8 @@ pub fn dialog<'a, M: Clone + 'a>(
             .spacing(SPACE_2),
             row![
                 Space::new().width(Length::Fill),
-                button(text(cancel_label).size(TEXT_MD).font(UI_MEDIUM))
-                    .padding([6, 16])
-                    .style(style::ghost)
-                    .on_press(on_cancel.clone()),
-                button(text(confirm_label).size(TEXT_MD).font(UI_MEDIUM))
-                    .padding([6, 16])
-                    .style(confirm_style)
-                    .on_press(on_confirm),
+                busy_button(cancel_label, cancel_label, false, (!busy).then(|| on_cancel.clone()), style::ghost),
+                busy_button(confirm_label, busy_label, busy, Some(on_confirm), confirm_style),
             ]
             .spacing(SPACE_2)
         ]

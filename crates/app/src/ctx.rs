@@ -121,11 +121,17 @@ pub struct Confirm {
     pub title: String,
     pub body: String,
     pub confirm_label: String,
+    pub busy_label: String,
     pub danger: bool,
     pub run: ConfirmRun,
 }
 
 impl Confirm {
+    pub fn busy_label(mut self, label: impl Into<String>) -> Self {
+        self.busy_label = label.into();
+        self
+    }
+
     pub fn new<F, Fut>(
         title: impl Into<String>,
         body: impl Into<String>,
@@ -141,10 +147,18 @@ impl Confirm {
             title: title.into(),
             body: body.into(),
             confirm_label: confirm_label.into(),
+            busy_label: "Working".into(),
             danger,
             run: Arc::new(move || Box::pin(run())),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WindowAction {
+    Hide,
+    Show,
+    Quit,
 }
 
 pub enum Action {
@@ -157,6 +171,8 @@ pub enum Action {
     OpenPalette,
     ClosePalette,
     ToggleAssistant,
+    Window(WindowAction),
+    SetCloseToTray(bool),
 }
 
 pub struct Ctx {
@@ -168,6 +184,8 @@ pub struct Ctx {
     pub route: Route,
     pub palette_open: bool,
     pub assistant_open: bool,
+    pub loaded: bool,
+    pub close_to_tray: bool,
     outbox: RefCell<Vec<Action>>,
 }
 
@@ -182,6 +200,8 @@ impl Ctx {
             route,
             palette_open: false,
             assistant_open: false,
+            loaded: false,
+            close_to_tray: false,
             outbox: RefCell::new(Vec::new()),
         }
     }
@@ -290,6 +310,14 @@ impl Ctx {
 
     pub fn toggle_assistant(&self) {
         self.request(Action::ToggleAssistant);
+    }
+
+    pub fn window(&self, action: WindowAction) {
+        self.request(Action::Window(action));
+    }
+
+    pub fn set_close_to_tray(&self, enabled: bool) {
+        self.request(Action::SetCloseToTray(enabled));
     }
 }
 

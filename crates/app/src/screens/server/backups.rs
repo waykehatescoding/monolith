@@ -1,8 +1,9 @@
 use std::path::Path;
 
+use chrono::{DateTime, Local};
 use iced::widget::{
     button, column, container, progress_bar, row, rule, scrollable, text, text_input, toggler,
-    Space,
+    tooltip, Space,
 };
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::backup_manager;
@@ -41,6 +42,7 @@ pub enum Message {
     Create,
     Created(String, Result<(), String>),
     Cancel,
+    CancelResult(bool),
     Restore(String),
     Delete(String),
     OpenFolder,
@@ -71,11 +73,30 @@ fn format_size(bytes: u64) -> String {
     }
 }
 
+fn parse_date(created_at: &str) -> Option<DateTime<Local>> {
+    DateTime::parse_from_rfc3339(created_at)
+        .ok()
+        .map(|date| date.with_timezone(&Local))
+}
+
 fn format_date(created_at: &str) -> String {
-    match created_at.get(..16) {
-        Some(stamp) => format!("{} UTC", stamp.replace('T', " ")),
+    match parse_date(created_at) {
+        Some(date) => date.format("%d %b %Y, %H:%M").to_string(),
         None => created_at.to_string(),
     }
+}
+
+fn format_age(created_at: &str) -> Option<String> {
+    let minutes = Local::now()
+        .signed_duration_since(parse_date(created_at)?)
+        .num_minutes()
+        .max(0);
+    Some(match minutes {
+        0..=1 => "just now".to_string(),
+        2..=59 => format!("{minutes} minutes ago"),
+        60..=1439 => format!("{} hours ago", minutes / 60),
+        _ => format!("{} days ago", minutes / 1440),
+    })
 }
 
 fn load(id: String) -> Task<Message> {
@@ -162,7 +183,16 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 return Task::none();
             };
             state.cancelling = true;
-            Task::future(backup_manager::cancel_backup(id)).discard()
+            Task::perform(backup_manager::cancel_backup(id), |result| {
+                Message::CancelResult(result.success)
+            })
+        }
+        Message::CancelResult(success) => {
+            if !success {
+                state.cancelling = false;
+                ctx.error("The backup could not be cancelled. Wait for it to finish.");
+            }
+            Task::none()
         }
         Message::Restore(filename) => {
             let Some(id) = state.server_id.clone() else {
@@ -195,6 +225,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             let Some(id) = state.server_id.clone() else {
                 return Task::none();
             };
+            if state.creating {
+                return Task::none();
+            }
             ctx.confirm(
                 Confirm::new(
                     "Delete this backup?",
@@ -232,7 +265,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
         Message::Tick => match state.server_id.clone() {
-            Some(id) if !state.creating => load(id),
+            Some(id) => load(id),
             _ => Task::none(),
         },
         Message::ToggleAuto(value) => {
@@ -313,7 +346,7 @@ fn action<'a>(
         .into()
 }
 
-fn entry_row<'a>(backup: &'a BackupEntry, can_restore: bool) -> Element<'a, Message> {
+fn entry_row<'a>(backup: &'a BackupEntry, can_restore: bool, busy: bool) -> Element<'a, Message> {
     let kind = match backup.kind {
         BackupType::Auto => "Automatic",
         BackupType::Manual => "Manual",
@@ -338,10 +371,16 @@ fn entry_row<'a>(backup: &'a BackupEntry, can_restore: bool) -> Element<'a, Mess
             style::secondary,
             can_restore.then(|| Message::Restore(backup.filename.clone())),
         ),
-        button(icon(Icon::Trash, 16.0))
-            .padding(8)
-            .style(style::danger)
-            .on_press(Message::Delete(backup.filename.clone())),
+        tooltip(
+            button(icon(Icon::Trash, 16.0))
+                .padding(8)
+                .style(style::danger)
+                .on_press_maybe((!busy).then(|| Message::Delete(backup.filename.clone()))),
+            container(text("Delete backup").size(TEXT_XS).color(INK))
+                .padding([4, 8])
+                .style(style::tooltip),
+            tooltip::Position::Left,
+        ),
     ]
     .spacing(SPACE_4)
     .align_y(Alignment::Center)
@@ -388,15 +427,22 @@ fn progress_view(state: &State) -> Element<'_, Message> {
 
 fn list_view<'a>(state: &'a State, can_restore: bool) -> Element<'a, Message> {
     if !state.loaded {
-        return Space::new().height(SPACE_5).into();
+        return container(text("Loading backups").size(TEXT_MD).style(style::muted))
+            .padding([SPACE_5, 0.0])
+            .into();
     }
     if state.backups.is_empty() {
         return container(
             column![
                 text("No backups yet").size(TEXT_LG).font(UI_SEMIBOLD),
-                text("A backup is a zip of this server's world and settings. Use Create backup before you change plugins or update the server.")
+                text("A backup is a zip of this server's world and settings. Make one before you change plugins or update the server.")
                     .size(TEXT_MD)
                     .style(style::muted),
+                action(
+                    label("Create backup", Icon::Plus),
+                    style::primary,
+                    (!state.creating).then_some(Message::Create),
+                ),
             ]
             .spacing(SPACE_3)
             .align_x(Alignment::Start)
@@ -411,7 +457,7 @@ fn list_view<'a>(state: &'a State, can_restore: bool) -> Element<'a, Message> {
         if index > 0 {
             rows = rows.push(rule::horizontal(1).style(style::hairline));
         }
-        rows = rows.push(container(entry_row(backup, can_restore)).padding([SPACE_3, SPACE_4]));
+        rows = rows.push(container(entry_row(backup, can_restore, state.creating)).padding([SPACE_3, SPACE_4]));
     }
     container(rows)
         .width(Length::Fill)
@@ -444,7 +490,7 @@ fn schedule_view(state: &State) -> Element<'_, Message> {
     } else {
         text("Backups run while Monolith is open.")
             .size(TEXT_XS)
-            .color(INK_TERTIARY)
+            .color(INK_SECONDARY)
     };
     let save = action(
         text(if state.saving { "Saving" } else { "Save schedule" })
@@ -488,7 +534,16 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let summary = if state.backups.is_empty() {
         "Nothing saved yet".to_string()
     } else {
-        format!("{} saved · {}", state.backups.len(), format_size(total))
+        let latest = state
+            .backups
+            .iter()
+            .max_by(|a, b| a.created_at.cmp(&b.created_at))
+            .and_then(|backup| format_age(&backup.created_at));
+        let base = format!("{} saved · {}", state.backups.len(), format_size(total));
+        match latest {
+            Some(age) => format!("{base} · latest {age}"),
+            None => base,
+        }
     };
 
     let header = row![
@@ -547,7 +602,7 @@ pub fn on_event(state: &mut State, event: &Event, _ctx: &Ctx) -> Task<Message> {
     };
     match event {
         Event::BackupProgress(progress) if progress.server_id == id => {
-            if progress.percent >= 0.0 {
+            if progress.percent >= 0.0 && progress.stage.as_deref() != Some("complete") {
                 state.creating = true;
                 state.percent = progress.percent;
                 state.stage = match progress.stage.as_deref() {
@@ -559,7 +614,12 @@ pub fn on_event(state: &mut State, event: &Event, _ctx: &Ctx) -> Task<Message> {
             }
             Task::none()
         }
-        Event::BackupCompleted(done) if done.server_id == id => load(id),
+        Event::BackupCompleted(done) if done.server_id == id => {
+            state.creating = false;
+            state.cancelling = false;
+            state.stage = None;
+            load(id)
+        }
         _ => Task::none(),
     }
 }
@@ -573,6 +633,8 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
             server_id: Some(id.clone()),
             ..State::default()
         };
+        sync_config(state, ctx);
+    } else if (state.auto_enabled, state.interval.clone()) == state.saved {
         sync_config(state, ctx);
     }
     load(id)

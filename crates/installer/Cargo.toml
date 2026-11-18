@@ -1,0 +1,23 @@
+[package]
+name = "monolith-setup"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "monolith-setup"
+path = "src/main.rs"
+
+[dependencies]
+monolith-theme = { path = "../theme" }
+iced.workspace = true
+tokio.workspace = true
+rfd.workspace = true
+winreg.workspace = true
+mslnk.workspace = true
+dirs.workspace = true
+sysinfo.workspace = true
+
+[build-dependencies]
+embed-resource.workspace = true

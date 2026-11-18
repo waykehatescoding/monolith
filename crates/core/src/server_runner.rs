@@ -265,10 +265,18 @@ fn send_stats(stats: &ServerStats) {
 }
 
 async fn set_offline(server_id: &str, notify: bool) {
-    update_server_status(server_id, ServerRuntimeStatus::Offline, Some("0/20")).await;
+    set_ended(server_id, ServerRuntimeStatus::Offline, notify).await;
+}
+
+async fn set_ended(server_id: &str, status: ServerRuntimeStatus, notify: bool) {
+    update_server_status(server_id, status, Some("0/20")).await;
     if notify {
-        send_status_update(server_id, ServerRuntimeStatus::Offline, Some("0/20"));
+        send_status_update(server_id, status, Some("0/20"));
     }
+}
+
+fn is_crash(stopped_by_user: bool, code: Option<i32>) -> bool {
+    !stopped_by_user && code != Some(0)
 }
 
 fn can_use_in_server_stats(server_id: &str, framework: &str) -> bool {
@@ -680,10 +688,11 @@ async fn handle_close(server_id: String, server_path: String, code: Option<i32>)
         return;
     }
 
-    set_offline(&server_id, true).await;
-
-    if !stopped_by_user && code != Some(0) {
+    if is_crash(stopped_by_user, code) {
+        set_ended(&server_id, ServerRuntimeStatus::Crashed, true).await;
         restart_after_crash(&server_id, &server_path).await;
+    } else {
+        set_offline(&server_id, true).await;
     }
 }
 
@@ -1065,5 +1074,13 @@ mod chat_tests {
         let real = "[12:00:00 INFO]: Server is restarting...";
         assert!(CHAT.is_match(chat) && CHAT.is_match(unsigned));
         assert!(!CHAT.is_match(real) && RESTART_HINTS.iter().any(|p| p.is_match(real)));
+    }
+
+    #[test]
+    fn crash_classification() {
+        assert!(is_crash(false, Some(1)));
+        assert!(is_crash(false, None));
+        assert!(!is_crash(false, Some(0)));
+        assert!(!is_crash(true, Some(1)));
     }
 }

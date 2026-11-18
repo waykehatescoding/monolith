@@ -118,7 +118,7 @@ const SEEDS: [Seed; 5] = [
         online: 0,
         port: 25569,
         motd: "Island life",
-        status: ServerRuntimeStatus::Offline,
+        status: ServerRuntimeStatus::Crashed,
     },
 ];
 
@@ -172,10 +172,6 @@ pub fn uptime(id: &str) -> Duration {
         MODDED => Duration::from_secs(14),
         _ => Duration::ZERO,
     }
-}
-
-pub fn crashed(id: &str) -> bool {
-    active() && id == SKYBLOCK
 }
 
 pub fn latest_versions(entries: &[ModrinthInstallEntry]) -> Option<HashMap<String, String>> {

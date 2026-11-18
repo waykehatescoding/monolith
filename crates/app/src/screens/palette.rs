@@ -115,7 +115,9 @@ fn items(query: &str, ctx: &Ctx) -> Vec<Item> {
     if let Some(server) = ctx.selected_server() {
         let name = &server.name;
         match ctx.status(&server.id) {
-            ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle => {
+            ServerRuntimeStatus::Offline
+            | ServerRuntimeStatus::Idle
+            | ServerRuntimeStatus::Crashed => {
                 all.push(action(Icon::Play, format!("Start {name}"), None, Command::Start));
             }
             ServerRuntimeStatus::Online => {

@@ -46,9 +46,6 @@ pub struct State {
     busy: Option<Busy>,
     error: Option<String>,
     port_fix: Option<u16>,
-    crashed: bool,
-    stop_requested: bool,
-    last_status: Option<ServerRuntimeStatus>,
     started_at: Option<Instant>,
 }
 
@@ -209,14 +206,8 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
         Message::Start => run(state, Busy::Start, server_runner::start_server(server.id)),
-        Message::Stop => {
-            state.stop_requested = true;
-            run(state, Busy::Stop, server_runner::stop_server(server.id))
-        }
-        Message::Restart => {
-            state.stop_requested = true;
-            run(state, Busy::Restart, server_runner::restart_server(server.id))
-        }
+        Message::Stop => run(state, Busy::Stop, server_runner::stop_server(server.id)),
+        Message::Restart => run(state, Busy::Restart, server_runner::restart_server(server.id)),
         Message::Share => {
             let enable = server.use_ngrok != Some(true);
             let port = state.port;
@@ -248,9 +239,6 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 ctx.refresh_servers();
                 return Task::none();
             }
-            if matches!(busy, Busy::Stop | Busy::Restart) {
-                state.stop_requested = false;
-            }
             let error = result
                 .error
                 .unwrap_or_else(|| "Something went wrong. Try again.".into());
@@ -277,6 +265,7 @@ fn state_word(status: ServerRuntimeStatus) -> &'static str {
         ServerRuntimeStatus::Stopping => "Stopping",
         ServerRuntimeStatus::Idle => "Idle",
         ServerRuntimeStatus::Offline => "Offline",
+        ServerRuntimeStatus::Crashed => "Crashed",
     }
 }
 
@@ -332,7 +321,8 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         ServerRuntimeStatus::Starting => {
             busy_button("Start", "Starting", true, None, style::primary, BUTTON_MD)
         }
-        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle if !state.eula_accepted => {
+        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle | ServerRuntimeStatus::Crashed
+            if !state.eula_accepted => {
             busy_button(
                 "Accept EULA",
                 "Accepting",
@@ -340,7 +330,7 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
                 Some(Message::AcceptEula).filter(|_| idle),
                 style::primary, BUTTON_MD)
         }
-        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle => busy_button(
+        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle | ServerRuntimeStatus::Crashed => busy_button(
             "Start",
             "Starting",
             state.busy == Some(Busy::Start),
@@ -543,7 +533,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         page = page.push(notice(CORAL, error.as_str(), action));
     }
 
-    if state.crashed && status == ServerRuntimeStatus::Offline {
+    if status == ServerRuntimeStatus::Crashed {
         page = page.push(notice(
             AMBER,
             if server.auto_restart_enabled() {
@@ -607,24 +597,13 @@ pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
             state.tail.drain(..excess);
         }
         Event::ServerStatus(update) if update.server_id == id => {
-            let previous = state.last_status.replace(update.status);
             match update.status {
                 ServerRuntimeStatus::Starting => {
                     state.error = None;
                     state.port_fix = None;
-                    state.crashed = false;
-                    state.stop_requested = false;
                     state.started_at = Some(Instant::now());
                 }
-                ServerRuntimeStatus::Stopping => state.stop_requested = true,
-                ServerRuntimeStatus::Offline => {
-                    let was_running = matches!(
-                        previous,
-                        Some(ServerRuntimeStatus::Online | ServerRuntimeStatus::Starting)
-                    );
-                    if was_running && !state.stop_requested {
-                        state.crashed = true;
-                    }
+                ServerRuntimeStatus::Offline | ServerRuntimeStatus::Crashed => {
                     state.started_at = None;
                     state.tunnel_url = None;
                 }
@@ -650,7 +629,6 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
             server_id: Some(server.id.clone()),
             eula_accepted: true,
             port: DEFAULT_PORT,
-            last_status: Some(status),
             started_at: matches!(
                 status,
                 ServerRuntimeStatus::Online | ServerRuntimeStatus::Starting
@@ -659,7 +637,6 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
                 let now = Instant::now();
                 now.checked_sub(demo::uptime(&server.id)).unwrap_or(now)
             }),
-            crashed: demo::crashed(&server.id),
             ..State::default()
         };
     }

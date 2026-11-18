@@ -67,7 +67,10 @@ async fn run_change(
         return Ok(Err("Server not found".into()));
     };
     let status = servers[index].status;
-    if status != ServerRuntimeStatus::Offline && status != ServerRuntimeStatus::Idle {
+    if !matches!(
+        status,
+        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle | ServerRuntimeStatus::Crashed
+    ) {
         return Ok(Err("Stop the server before changing its software".into()));
     }
     let server_path = PathBuf::from(&servers[index].server_path);

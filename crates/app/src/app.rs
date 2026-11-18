@@ -432,7 +432,10 @@ impl App {
                 self.ctx
                     .statuses
                     .insert(update.server_id.clone(), update.status);
-                if update.status == ServerRuntimeStatus::Offline {
+                if matches!(
+                    update.status,
+                    ServerRuntimeStatus::Offline | ServerRuntimeStatus::Crashed
+                ) {
                     self.ctx.stats.remove(&update.server_id);
                 }
                 match self

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use iced::Color;
 use monolith_core::types::{AppPreferences, ServerRecord, ServerRuntimeStatus, ServerStats};
-use monolith_theme::token::{AMBER, INK_SECONDARY, MOSS, STONE};
+use monolith_theme::token::{AMBER, CORAL, INK_SECONDARY, MOSS, STONE};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
@@ -243,6 +243,7 @@ impl Ctx {
             ServerRuntimeStatus::Stopping => "Stopping".into(),
             ServerRuntimeStatus::Idle => "Idle".into(),
             ServerRuntimeStatus::Offline => "Offline".into(),
+            ServerRuntimeStatus::Crashed => "Crashed".into(),
         }
     }
 
@@ -327,5 +328,6 @@ pub fn status_color(status: ServerRuntimeStatus) -> Color {
         ServerRuntimeStatus::Starting | ServerRuntimeStatus::Stopping => AMBER,
         ServerRuntimeStatus::Idle => INK_SECONDARY,
         ServerRuntimeStatus::Offline => STONE,
+        ServerRuntimeStatus::Crashed => CORAL,
     }
 }

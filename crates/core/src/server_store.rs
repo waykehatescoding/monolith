@@ -330,7 +330,7 @@ pub async fn delete_server_record(server_id: &str) -> SuccessResult {
 
     if !matches!(
         server.status,
-        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle
+        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle | ServerRuntimeStatus::Crashed
     ) {
         return SuccessResult::err("Stop the server before deleting it");
     }

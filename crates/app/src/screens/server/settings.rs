@@ -607,7 +607,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::ApplyPlatform => {
             let idle = matches!(
                 ctx.status(&id),
-                ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle
+                ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle | ServerRuntimeStatus::Crashed
             );
             let Some(version) = state.version.clone() else {
                 return Task::none();
@@ -1103,7 +1103,7 @@ fn reliability<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Me
 fn platform<'a>(state: &'a State, server: &'a ServerRecord, ctx: &'a Ctx) -> Element<'a, Message> {
     let idle = matches!(
         ctx.status(&server.id),
-        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle
+        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle | ServerRuntimeStatus::Crashed
     );
     let framework = dropdown(
         FRAMEWORKS,
@@ -1206,7 +1206,7 @@ fn platform<'a>(state: &'a State, server: &'a ServerRecord, ctx: &'a Ctx) -> Ele
 fn danger<'a>(state: &'a State, ctx: &'a Ctx, server: &'a ServerRecord) -> Element<'a, Message> {
     let idle = matches!(
         ctx.status(&server.id),
-        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle
+        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle | ServerRuntimeStatus::Crashed
     );
     let export_hint = if idle {
         "Save the whole server as a zip you can share or import later."

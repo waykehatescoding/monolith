@@ -160,9 +160,11 @@ pub enum ServerRuntimeStatus {
     Starting,
     Online,
     Stopping,
-    #[default]
-    Offline,
     Idle,
+    Crashed,
+    #[default]
+    #[serde(other)]
+    Offline,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

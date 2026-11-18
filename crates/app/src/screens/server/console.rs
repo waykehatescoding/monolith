@@ -382,6 +382,7 @@ fn command_bar<'a>(state: &'a State, ctx: &'a Ctx, id: &str) -> Element<'a, Mess
     let enabled = accepts_commands(ctx, id);
     let reason = match ctx.status(id) {
         ServerRuntimeStatus::Stopping => "The server is stopping. Start it again to send commands.",
+        ServerRuntimeStatus::Crashed => "The server crashed. Start it again to send commands.",
         _ => "The server is offline. Start it to send commands.",
     };
     let placeholder = if enabled {

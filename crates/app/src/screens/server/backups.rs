@@ -521,7 +521,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let offline = state
         .server_id
         .as_deref()
-        .is_none_or(|id| ctx.status(id) == ServerRuntimeStatus::Offline);
+        .is_none_or(|id| matches!(ctx.status(id), ServerRuntimeStatus::Offline | ServerRuntimeStatus::Crashed));
     let total: u64 = state.backups.iter().map(|backup| backup.size).sum();
     let summary = if state.backups.is_empty() {
         "Nothing saved yet".to_string()

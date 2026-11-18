@@ -69,13 +69,16 @@ pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
                 (Some(ServerRuntimeStatus::Starting), ServerRuntimeStatus::Online) => {
                     notify("Server online", format!("{name} is ready for players."));
                 }
-                (Some(ServerRuntimeStatus::Starting), ServerRuntimeStatus::Offline) => {
+                (
+                    Some(ServerRuntimeStatus::Starting),
+                    ServerRuntimeStatus::Offline | ServerRuntimeStatus::Crashed,
+                ) => {
                     notify(
                         "Server failed to start",
                         format!("{name} stopped while starting. Open its console to see why."),
                     );
                 }
-                (Some(ServerRuntimeStatus::Online), ServerRuntimeStatus::Offline) => {
+                (Some(ServerRuntimeStatus::Online), ServerRuntimeStatus::Crashed) => {
                     notify(
                         "Server stopped unexpectedly",
                         format!("{name} went offline. Open its console to see why."),
@@ -152,7 +155,9 @@ fn toggle(ctx: &Ctx, server_id: &str) -> Task<Message> {
         ServerRuntimeStatus::Online | ServerRuntimeStatus::Starting => {
             Task::perform(stop_server(id), Message::Toggled)
         }
-        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle => {
+        ServerRuntimeStatus::Offline
+            | ServerRuntimeStatus::Idle
+            | ServerRuntimeStatus::Crashed => {
             Task::perform(start_server(id), Message::Toggled)
         }
         ServerRuntimeStatus::Stopping => Task::none(),
@@ -212,7 +217,9 @@ fn build_menu(servers: &[MenuEntry]) -> Result<Menu, tray_icon::menu::Error> {
                 (format!("Stop {name}"), true)
             }
             ServerRuntimeStatus::Stopping => (format!("Stopping {name}"), false),
-            ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle => {
+            ServerRuntimeStatus::Offline
+            | ServerRuntimeStatus::Idle
+            | ServerRuntimeStatus::Crashed => {
                 (format!("Start {name}"), true)
             }
         };

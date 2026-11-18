@@ -4,10 +4,10 @@ use iced::widget::{
     button, checkbox, column, container, pick_list, progress_bar, row, rule, stack, text,
     text_input, toggler, Space,
 };
-use iced::window::Screenshot;
+use iced::window::{Direction, Screenshot};
 use iced::{window, Alignment, Color, Element, Length, Size, Task, Theme};
 use monolith_theme::token::*;
-use monolith_theme::widget::server_avatar;
+use monolith_theme::widget::{drag_region, resize_grips, server_icon, window_controls};
 use monolith_theme::{
     app_icon, icon, icon_colored, style, theme, Icon, FONT_BYTES, MONO, UI, UI_MEDIUM,
     UI_SEMIBOLD,
@@ -35,6 +35,12 @@ enum Message {
     Java(&'static str),
     Capture,
     Shot(Screenshot),
+    Drag,
+    Resize(Direction),
+    Minimize,
+    ToggleMaximize,
+    Maximized(bool),
+    Close,
 }
 
 struct Gallery {
@@ -44,6 +50,7 @@ struct Gallery {
     check: bool,
     java: Option<&'static str>,
     shot: Option<String>,
+    maximized: bool,
 }
 
 fn main() -> iced::Result {
@@ -65,6 +72,7 @@ fn main() -> iced::Result {
                     check: true,
                     java: Some("Java 21"),
                     shot: shot.clone(),
+                    maximized: false,
                 },
                 task,
             )
@@ -76,6 +84,7 @@ fn main() -> iced::Result {
     .theme(|_: &Gallery| theme())
     .default_font(UI)
     .window_size(Size::new(1440.0, 900.0))
+    .decorations(false)
     .centered();
     for bytes in FONT_BYTES {
         app = app.font(bytes);
@@ -91,6 +100,18 @@ fn update(state: &mut Gallery, message: Message) -> Task<Message> {
         Message::Toggle(value) => state.toggle = value,
         Message::Check(value) => state.check = value,
         Message::Java(value) => state.java = Some(value),
+        Message::Drag => return window::oldest().and_then(window::drag),
+        Message::Resize(direction) => {
+            return window::oldest().and_then(move |id| window::drag_resize(id, direction));
+        }
+        Message::Minimize => return window::oldest().and_then(|id| window::minimize(id, true)),
+        Message::ToggleMaximize => {
+            return window::oldest().and_then(|id| {
+                window::toggle_maximize(id).chain(window::is_maximized(id).map(Message::Maximized))
+            });
+        }
+        Message::Maximized(value) => state.maximized = value,
+        Message::Close => return iced::exit(),
         Message::Capture => {
             return window::oldest().then(|id| match id {
                 Some(id) => window::screenshot(id).map(Message::Shot),
@@ -134,8 +155,13 @@ fn sidebar(state: &Gallery) -> Element<'_, Message> {
     let servers = SERVERS.iter().enumerate().fold(
         column![].spacing(SPACE_1),
         |list, (index, (name, color))| {
-            let ring = (*color != STONE).then_some(*color);
-            let entry = row![server_avatar(name, ring), text(*name).size(TEXT_MD)]
+            let tip = match *color {
+                c if c == MOSS => "Online · 7/20 players",
+                c if c == AMBER => "Starting",
+                c if c == CORAL => "Crashed",
+                _ => "Offline",
+            };
+            let entry = row![server_icon(*color, tip), text(*name).size(TEXT_MD)]
                 .spacing(SPACE_3)
                 .align_y(Alignment::Center);
             list.push(
@@ -164,7 +190,13 @@ fn sidebar(state: &Gallery) -> Element<'_, Message> {
 
     container(
         column![
-            container(brand).padding([SPACE_2, SPACE_3]),
+            drag_region(
+                container(brand)
+                    .padding([SPACE_2, SPACE_3])
+                    .width(Length::Fill),
+                Message::Drag,
+                Message::ToggleMaximize,
+            ),
             Space::new().height(SPACE_5),
             servers,
             Space::new().height(Length::Fill),
@@ -449,15 +481,35 @@ fn main_pane(state: &Gallery) -> Element<'_, Message> {
     .max_width(1000);
 
     container(body)
-        .padding([SPACE_6, 40.0])
+        .padding(iced::Padding { top: SPACE_2, right: 40.0, bottom: SPACE_6, left: 40.0 })
         .width(Length::Fill)
         .height(Length::Fill)
         .style(style::surface)
         .into()
 }
 
+fn title_bar(state: &Gallery) -> Element<'_, Message> {
+    row![
+        drag_region(
+            Space::new().width(Length::Fill).height(Length::Fixed(TITLE_BAR_HEIGHT)),
+            Message::Drag,
+            Message::ToggleMaximize,
+        ),
+        window_controls(
+            state.maximized,
+            Message::Minimize,
+            Message::ToggleMaximize,
+            Message::Close,
+        ),
+    ]
+    .into()
+}
+
 fn view(state: &Gallery) -> Element<'_, Message> {
-    let app = row![sidebar(state), main_pane(state)];
+    let app = row![
+        sidebar(state),
+        container(column![title_bar(state), main_pane(state)]).style(style::surface)
+    ];
     stack![
         app,
         container(dialog())
@@ -465,7 +517,8 @@ fn view(state: &Gallery) -> Element<'_, Message> {
             .width(Length::Fill)
             .height(Length::Fill)
             .align_x(Alignment::End)
-            .align_y(Alignment::End)
+            .align_y(Alignment::End),
+        resize_grips(Message::Resize)
     ]
     .into()
 }

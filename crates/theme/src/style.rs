@@ -362,3 +362,29 @@ pub fn colored(color: Color) -> impl Fn(&Theme) -> text::Style {
 pub fn link(_: &Theme) -> text::Style {
     text::Style { color: Some(MOSS) }
 }
+
+fn square_button(background: Option<Background>, text_color: Color) -> button::Style {
+    button::Style {
+        background,
+        text_color,
+        border: Border::default(),
+        shadow: Shadow::default(),
+        snap: true,
+    }
+}
+
+pub fn window_control(_: &Theme, status: button::Status) -> button::Style {
+    match status {
+        button::Status::Active | button::Status::Disabled => square_button(None, INK_SECONDARY),
+        button::Status::Hovered => square_button(fill(TONE_HOVER), INK),
+        button::Status::Pressed => square_button(fill(TONE_PRESSED), INK),
+    }
+}
+
+pub fn window_close(_: &Theme, status: button::Status) -> button::Style {
+    match status {
+        button::Status::Active | button::Status::Disabled => square_button(None, INK_SECONDARY),
+        button::Status::Hovered => square_button(fill(CORAL), INK),
+        button::Status::Pressed => square_button(fill(CORAL_HOVER), INK),
+    }
+}

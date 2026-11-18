@@ -1,22 +1,93 @@
-use crate::font::UI_SEMIBOLD;
-use crate::token::{INK_SECONDARY, LAYER_3, TEXT_XS};
-use iced::widget::{container, text, Container};
-use iced::{alignment, Background, Border, Color, Length};
+use crate::icon::{icon, icon_colored, Icon};
+use crate::style;
+use crate::token::{INK, SPACE_2, TEXT_XS, TITLE_BAR_HEIGHT};
+use iced::widget::{button, column, container, mouse_area, row, text, tooltip, Button, MouseArea, Row, Space, Tooltip};
+use iced::window::Direction;
+use iced::{mouse, Color, Element, Length, Theme};
 
-pub fn server_avatar<'a, M: 'a>(name: &str, ring: Option<Color>) -> Container<'a, M> {
-    let initial = name.chars().find(|c| c.is_alphanumeric()).map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-    container(text(initial).size(TEXT_XS).font(UI_SEMIBOLD).color(INK_SECONDARY))
-        .width(Length::Fixed(24.0))
-        .height(Length::Fixed(24.0))
-        .align_x(alignment::Horizontal::Center)
-        .align_y(alignment::Vertical::Center)
-        .style(move |_| container::Style {
-            background: Some(Background::Color(LAYER_3)),
-            border: Border {
-                color: ring.unwrap_or(Color::TRANSPARENT),
-                width: if ring.is_some() { 1.5 } else { 0.0 },
-                radius: 7.0.into(),
-            },
-            ..container::Style::default()
-        })
+pub fn server_icon<'a, M: 'a>(color: Color, state: impl Into<String>) -> Tooltip<'a, M, Theme> {
+    tooltip(
+        icon_colored(Icon::Server, 16.0, color),
+        container(text(state.into()).size(TEXT_XS).color(INK))
+            .padding([4, 8])
+            .style(style::tooltip),
+        tooltip::Position::Right,
+    )
+    .gap(SPACE_2 + 4.0)
+}
+
+fn window_button<'a, M: Clone + 'a>(
+    glyph: Icon,
+    message: M,
+    style: fn(&Theme, button::Status) -> button::Style,
+) -> Button<'a, M, Theme> {
+    button(
+        container(icon(glyph, 14.0))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .center(Length::Fill),
+    )
+    .width(Length::Fixed(46.0))
+    .height(Length::Fixed(TITLE_BAR_HEIGHT))
+    .padding(0)
+    .style(style)
+    .on_press(message)
+}
+
+pub fn window_controls<'a, M: Clone + 'a>(maximized: bool, minimize: M, toggle: M, close: M) -> Row<'a, M, Theme> {
+    row![
+        window_button(Icon::Minimize, minimize, style::window_control),
+        window_button(if maximized { Icon::Copy } else { Icon::Square }, toggle, style::window_control),
+        window_button(Icon::Close, close, style::window_close),
+    ]
+}
+
+pub fn drag_region<'a, M: Clone + 'a>(
+    content: impl Into<Element<'a, M, Theme>>,
+    drag: M,
+    toggle: M,
+) -> MouseArea<'a, M, Theme> {
+    mouse_area(content).on_press(drag).on_double_click(toggle)
+}
+
+fn grip<'a, M: Clone + 'a>(
+    width: Length,
+    height: Length,
+    direction: Direction,
+    on_resize: &impl Fn(Direction) -> M,
+) -> Element<'a, M, Theme> {
+    let cursor = match direction {
+        Direction::North | Direction::South => mouse::Interaction::ResizingVertically,
+        Direction::East | Direction::West => mouse::Interaction::ResizingHorizontally,
+        Direction::NorthWest | Direction::SouthEast => mouse::Interaction::ResizingDiagonallyDown,
+        Direction::NorthEast | Direction::SouthWest => mouse::Interaction::ResizingDiagonallyUp,
+    };
+    mouse_area(Space::new().width(width).height(height))
+        .on_press(on_resize(direction))
+        .interaction(cursor)
+        .into()
+}
+
+pub fn resize_grips<'a, M: Clone + 'a>(on_resize: impl Fn(Direction) -> M) -> Element<'a, M, Theme> {
+    let edge = Length::Fixed(5.0);
+    let corner = Length::Fixed(10.0);
+    column![
+        row![
+            grip(corner, edge, Direction::NorthWest, &on_resize),
+            grip(Length::Fill, edge, Direction::North, &on_resize),
+            grip(corner, edge, Direction::NorthEast, &on_resize),
+        ],
+        row![
+            grip(edge, Length::Fill, Direction::West, &on_resize),
+            Space::new().width(Length::Fill).height(Length::Fill),
+            grip(edge, Length::Fill, Direction::East, &on_resize),
+        ]
+        .height(Length::Fill),
+        row![
+            grip(corner, edge, Direction::SouthWest, &on_resize),
+            grip(Length::Fill, edge, Direction::South, &on_resize),
+            grip(corner, edge, Direction::SouthEast, &on_resize),
+        ],
+    ]
+    .into()
 }

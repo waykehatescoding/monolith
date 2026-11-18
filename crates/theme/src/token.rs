@@ -46,3 +46,4 @@ pub const BORDER: f32 = 1.0;
 pub const FOCUS_WIDTH: f32 = 2.0;
 pub const CONTROL_HEIGHT: f32 = 32.0;
 pub const SIDEBAR_WIDTH: f32 = 248.0;
+pub const TITLE_BAR_HEIGHT: f32 = 36.0;

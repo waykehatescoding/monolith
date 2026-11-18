@@ -3,5 +3,5 @@
 <rect width="128" height="128" rx="28" fill="#5fd38d"/>
 <path fill="#eceef0" d="M45 26 L67 18 H71 L83 23 V46 L71 51 V62 H83 V112 H45 Z"/>
 </g>
-<text x="62" y="35" font-family="Hubot Sans" font-weight="600" font-size="31" letter-spacing="-0.4" fill="#eceef0">Monolith</text>
+<text x="62" y="35" font-family="Geist" font-weight="600" font-size="31" letter-spacing="-0.4" fill="#eceef0">Monolith</text>
 </svg>

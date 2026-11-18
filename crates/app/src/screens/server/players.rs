@@ -6,10 +6,10 @@ use monolith_core::events::Event;
 use monolith_core::types::{ServerProperty, ServerRuntimeStatus, SuccessResult};
 use monolith_core::{server_props, server_runner};
 use monolith_theme::token::{
-    INK_TERTIARY, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, TEXT_LG, TEXT_MD, TEXT_SM,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, TEXT_LG, TEXT_MD, TEXT_SM,
     TEXT_XL,
 };
-use monolith_theme::{icon_colored, style, Icon, UI_MEDIUM, UI_SEMIBOLD};
+use monolith_theme::{style, UI_MEDIUM, UI_SEMIBOLD};
 
 use crate::ctx::{Confirm, Ctx};
 
@@ -58,7 +58,8 @@ fn outcome(result: SuccessResult, done: String) -> Result<String, String> {
 }
 
 fn valid_name(name: &str) -> bool {
-    !name.is_empty() && !name.chars().any(char::is_whitespace)
+    (3..=16).contains(&name.chars().count())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn is_online(ctx: &Ctx, id: &str) -> bool {
@@ -155,11 +156,29 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         return Task::none();
     };
     let live = is_online(ctx, &id);
+    let blocked = state.busy
+        && matches!(
+            message,
+            Message::AddWhitelist
+                | Message::RemoveWhitelist(_)
+                | Message::AddBan
+                | Message::Unban(_)
+                | Message::ToggleWhitelist(_)
+                | Message::Command(..)
+        );
+    if blocked {
+        return Task::none();
+    }
     match message {
         Message::Loaded(loaded_id, on, whitelist, banned) => {
             if state.server_id.as_deref() == Some(loaded_id.as_str()) {
                 state.whitelist_on = on;
                 state.whitelist = whitelist;
+                let pending = state.ban_input.trim().to_lowercase();
+                if !pending.is_empty() && banned.iter().any(|n| n.to_lowercase() == pending) {
+                    state.ban_input.clear();
+                    state.ban_reason.clear();
+                }
                 state.banned = banned;
                 state.loaded = true;
             }
@@ -185,10 +204,10 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::AddWhitelist => {
             let name = state.whitelist_input.trim().to_string();
             if !valid_name(&name) {
-                ctx.error("Enter a player name without spaces.");
+                ctx.error("Player names are 3 to 16 letters, numbers or underscores.");
                 return Task::none();
             }
-            if state.whitelist.contains(&name) {
+            if state.whitelist.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
                 ctx.info(format!("{name} is already on the whitelist."));
                 return Task::none();
             }
@@ -200,25 +219,35 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::perform(save_whitelist(id, list, live, done), Message::Done)
         }
         Message::RemoveWhitelist(name) => {
-            let list = state
+            let list: Vec<String> = state
                 .whitelist
                 .iter()
                 .filter(|n| **n != name)
                 .cloned()
                 .collect();
-            state.busy = true;
+            let title = format!("Remove {name} from the whitelist?");
+            let body = if state.whitelist_on {
+                format!("{name} will not be able to join until you add them again.")
+            } else {
+                format!("{name} will no longer be listed.")
+            };
             let done = format!("{name} removed from the whitelist.");
-            Task::perform(save_whitelist(id, list, live, done), Message::Done)
+            ctx.confirm(
+                Confirm::new(title, body, "Remove player", true, move || {
+                    save_whitelist(id.clone(), list.clone(), live, done.clone())
+                })
+                .busy_label("Removing"),
+            );
+            state.refresh_ticks = 20;
+            Task::none()
         }
         Message::AddBan => {
             let name = state.ban_input.trim().to_string();
             if !valid_name(&name) {
-                ctx.error("Enter a player name without spaces.");
+                ctx.error("Player names are 3 to 16 letters, numbers or underscores.");
                 return Task::none();
             }
             let reason = state.ban_reason.trim().to_string();
-            state.ban_input.clear();
-            state.ban_reason.clear();
             update(state, Message::ConfirmBan(name, reason), ctx)
         }
         Message::ConfirmBan(name, reason) => {
@@ -230,14 +259,17 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 })
                 .busy_label("Banning"),
             );
-            state.refresh_ticks = 6;
+            state.refresh_ticks = 20;
             Task::none()
         }
         Message::Unban(name) => {
             state.busy = true;
             Task::perform(unban(id, live, name), Message::Done)
         }
-        Message::Command(line, done) => Task::perform(command(id, line, done), Message::Done),
+        Message::Command(line, done) => {
+            state.busy = true;
+            Task::perform(command(id, line, done), Message::Done)
+        }
         Message::ConfirmKick(name) => {
             let title = format!("Kick {name}?");
             let body = format!("{name} is disconnected now and can rejoin straight away.");
@@ -254,7 +286,10 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::Done(result) => {
             state.busy = false;
             match result {
-                Ok(message) => ctx.success(message),
+                Ok(message) => {
+                    state.refresh_ticks = 6;
+                    ctx.success(message)
+                }
                 Err(message) => ctx.error(message),
             }
             reload(id)
@@ -292,11 +327,12 @@ fn action<'a>(
     label: &'a str,
     message: Message,
     look: fn(&Theme, button::Status) -> button::Style,
+    enabled: bool,
 ) -> Element<'a, Message> {
     button(text(label).size(TEXT_SM).font(UI_MEDIUM))
         .padding([6, 12])
         .style(look)
-        .on_press(message)
+        .on_press_maybe(enabled.then_some(message))
         .into()
 }
 
@@ -312,7 +348,6 @@ fn empty<'a>(title: &'a str, hint: &'a str) -> Element<'a, Message> {
 
 fn name_row<'a>(name: &'a str, actions: Vec<Element<'a, Message>>) -> Element<'a, Message> {
     row![
-        icon_colored(Icon::Users, 16.0, INK_TERTIARY),
         text(name).size(TEXT_MD).width(Length::Fill),
         row(actions).spacing(SPACE_1),
     ]
@@ -322,7 +357,7 @@ fn name_row<'a>(name: &'a str, actions: Vec<Element<'a, Message>>) -> Element<'a
     .into()
 }
 
-fn online_section<'a>(ctx: &'a Ctx, id: &str) -> Element<'a, Message> {
+fn online_section<'a>(ctx: &'a Ctx, id: &str, busy: bool) -> Element<'a, Message> {
     let names: &[String] = ctx
         .stats(id)
         .map(|s| s.online_players.as_slice())
@@ -349,13 +384,14 @@ fn online_section<'a>(ctx: &'a Ctx, id: &str) -> Element<'a, Message> {
                 list.push(name_row(
                     name,
                     vec![
-                        action("Make operator", op, style::ghost),
-                        action("Remove operator", deop, style::ghost),
-                        action("Kick", Message::ConfirmKick(name.clone()), style::ghost),
+                        action("Make operator", op, style::ghost, !busy),
+                        action("Remove operator", deop, style::ghost, !busy),
+                        action("Kick", Message::ConfirmKick(name.clone()), style::ghost, true),
                         action(
                             "Ban",
                             Message::ConfirmBan(name.clone(), String::new()),
                             style::danger,
+                            true,
                         ),
                     ],
                 ))
@@ -393,9 +429,10 @@ fn whitelist_section(state: &State) -> Element<'_, Message> {
 
     let add = row![
         text_input("Player name", &state.whitelist_input)
-            .on_input(Message::WhitelistInput)
-            .on_submit(Message::AddWhitelist)
+            .on_input_maybe((!state.busy).then_some(Message::WhitelistInput))
+            .on_submit_maybe((!state.busy).then_some(Message::AddWhitelist))
             .padding([8, 12])
+            .width(Length::Fill)
             .style(style::input),
         button(text("Add player").size(TEXT_MD).font(UI_MEDIUM))
             .padding([8, 16])
@@ -420,6 +457,7 @@ fn whitelist_section(state: &State) -> Element<'_, Message> {
                         "Remove",
                         Message::RemoveWhitelist(name.clone()),
                         style::ghost,
+                        !state.busy,
                     )],
                 ))
             })
@@ -436,14 +474,16 @@ fn whitelist_section(state: &State) -> Element<'_, Message> {
 fn ban_section(state: &State) -> Element<'_, Message> {
     let add = row![
         text_input("Player name", &state.ban_input)
-            .on_input(Message::BanInput)
-            .on_submit(Message::AddBan)
+            .on_input_maybe((!state.busy).then_some(Message::BanInput))
+            .on_submit_maybe((!state.busy).then_some(Message::AddBan))
             .padding([8, 12])
+            .width(Length::Fill)
             .style(style::input),
         text_input("Reason (optional)", &state.ban_reason)
-            .on_input(Message::BanReason)
-            .on_submit(Message::AddBan)
+            .on_input_maybe((!state.busy).then_some(Message::BanReason))
+            .on_submit_maybe((!state.busy).then_some(Message::AddBan))
             .padding([8, 12])
+            .width(Length::Fill)
             .style(style::input),
         button(text("Ban player").size(TEXT_MD).font(UI_MEDIUM))
             .padding([8, 16])
@@ -464,7 +504,12 @@ fn ban_section(state: &State) -> Element<'_, Message> {
             .fold(column![].spacing(SPACE_1), |list, name| {
                 list.push(name_row(
                     name,
-                    vec![action("Unban", Message::Unban(name.clone()), style::ghost)],
+                    vec![action(
+                        "Unban",
+                        Message::Unban(name.clone()),
+                        style::ghost,
+                        !state.busy,
+                    )],
                 ))
             })
             .into()
@@ -482,12 +527,12 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         return Space::new().into();
     };
     if !state.loaded {
-        return Space::new().into();
+        return text("Loading players").size(TEXT_MD).style(style::muted).into();
     }
     scrollable(
         column![
             text("Players").size(TEXT_XL).font(UI_SEMIBOLD),
-            online_section(ctx, id),
+            online_section(ctx, id, state.busy),
             whitelist_section(state),
             ban_section(state),
             Space::new().height(SPACE_6),

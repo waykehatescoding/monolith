@@ -8,7 +8,9 @@ license.workspace = true
 monolith-core = { path = "../core" }
 monolith-theme = { path = "../theme" }
 iced.workspace = true
+chrono.workspace = true
 tokio.workspace = true
+reqwest.workspace = true
 rfd.workspace = true
 open.workspace = true
 serde.workspace = true

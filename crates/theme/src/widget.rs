@@ -37,7 +37,7 @@ fn window_button<'a, M: Clone + 'a>(
 pub fn window_controls<'a, M: Clone + 'a>(maximized: bool, minimize: M, toggle: M, close: M) -> Row<'a, M, Theme> {
     row![
         window_button(Icon::Minimize, minimize, style::window_control),
-        window_button(if maximized { Icon::Copy } else { Icon::Square }, toggle, style::window_control),
+        window_button(if maximized { Icon::Copy } else { Icon::Stop }, toggle, style::window_control),
         window_button(Icon::Close, close, style::window_close),
     ]
 }

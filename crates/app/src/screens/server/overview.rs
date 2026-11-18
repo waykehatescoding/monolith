@@ -367,7 +367,7 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let mut addresses = column![].spacing(SPACE_1);
     if !state.address.is_empty() {
         addresses = addresses.push(address_row(
-            "Join",
+            "Local",
             format!("{}:{}", state.address, state.port),
         ));
     }
@@ -578,20 +578,9 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         );
     } else if state.eula_accepted && !matches!(status, ServerRuntimeStatus::Starting | ServerRuntimeStatus::Stopping) {
         page = page.push(
-            row![
-                text("This server is offline. Start it to see players, memory and uptime.")
-                    .size(TEXT_MD)
-                    .style(style::muted)
-                    .width(Length::Fill),
-                busy_button(
-                    "Start",
-                    "Starting",
-                    state.busy == Some(Busy::Start),
-                    Some(Message::Start).filter(|_| idle),
-                    style::primary, BUTTON_MD),
-            ]
-            .spacing(SPACE_4)
-            .align_y(Alignment::Center),
+            text("This server is offline. Start it to see players, TPS, memory and uptime.")
+                .size(TEXT_MD)
+                .style(style::muted),
         );
     }
 

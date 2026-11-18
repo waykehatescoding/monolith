@@ -15,11 +15,12 @@ use monolith_theme::token::{
 };
 use monolith_theme::{icon, icon_colored, style, Icon, MONO, UI_MEDIUM, UI_SEMIBOLD};
 
-use crate::ctx::{status_color, Ctx, Route, Tab};
+use crate::ctx::{status_color, Ctx, Route, SettingsPage, Tab};
 use crate::ui::busy_button;
 
 const DEFAULT_PORT: u16 = 25565;
 const TAIL_LINES: usize = 8;
+const NO_TOKEN: &str = "Add your ngrok authtoken in Settings, Sharing, then try again.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Busy {
@@ -66,6 +67,8 @@ pub enum Message {
     Share,
     AcceptEula,
     UsePort(u16),
+    OpenSharing,
+    Dismiss,
     Done(Busy, SuccessResult),
     Copy(String),
     Open(Tab),
@@ -133,11 +136,14 @@ async fn update_sharing(id: &str, enabled: bool) -> SuccessResult {
 
 async fn toggle_share(server: ServerRecord, port: u16, enable: bool) -> SuccessResult {
     if !enable {
-        ngrok_manager::stop_ngrok(server.id.clone()).await;
+        let stopped = ngrok_manager::stop_ngrok(server.id.clone()).await;
+        if !stopped.success {
+            return stopped;
+        }
         return update_sharing(&server.id, false).await;
     }
     if !ngrok_manager::is_ngrok_authtoken_configured().await {
-        return SuccessResult::err("Add your ngrok authtoken in Settings, Sharing, then try again.");
+        return SuccessResult::err(NO_TOKEN);
     }
     let saved = update_sharing(&server.id, true).await;
     if !saved.success {
@@ -209,7 +215,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             run(state, Busy::Restart, server_runner::restart_server(server.id))
         }
         Message::Share => {
-            let enable = tunnel(state, &server).is_none();
+            let enable = server.use_ngrok != Some(true);
             let port = state.port;
             run(state, Busy::Share, toggle_share(server, port, enable))
         }
@@ -217,6 +223,15 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::UsePort(port) => {
             state.port = port;
             run(state, Busy::Port, use_port(server, port))
+        }
+        Message::OpenSharing => {
+            ctx.navigate(Route::Settings(SettingsPage::Sharing));
+            Task::none()
+        }
+        Message::Dismiss => {
+            state.error = None;
+            state.port_fix = None;
+            Task::none()
         }
         Message::Done(busy, result) => {
             state.busy = None;
@@ -229,6 +244,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 }
                 ctx.refresh_servers();
                 return Task::none();
+            }
+            if matches!(busy, Busy::Stop | Busy::Restart) {
+                state.stop_requested = false;
             }
             let error = result
                 .error
@@ -313,6 +331,15 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         ServerRuntimeStatus::Starting => {
             busy_button("Start", "Starting", true, None, style::primary)
         }
+        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle if !state.eula_accepted => {
+            busy_button(
+                "Accept EULA",
+                "Accepting",
+                state.busy == Some(Busy::Eula),
+                Some(Message::AcceptEula).filter(|_| idle),
+                style::primary,
+            )
+        }
         ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle => busy_button(
             "Start",
             "Starting",
@@ -364,7 +391,9 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         None => {}
     }
 
-    column![title, addresses, actions].spacing(SPACE_4).into()
+    column![title, addresses, actions.wrap()]
+        .spacing(SPACE_4)
+        .into()
 }
 
 fn readout<'a>(label: &'a str, value: String) -> Element<'a, Message> {
@@ -485,6 +514,13 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     }
 
     if let Some(error) = &state.error {
+        let dismiss = || -> Element<'a, Message> {
+            button(text("Dismiss").size(TEXT_MD).font(UI_MEDIUM))
+                .padding([8, 16])
+                .style(style::ghost)
+                .on_press(Message::Dismiss)
+                .into()
+        };
         let fix = state.port_fix.map(|port| {
             let busy = state.busy == Some(Busy::Port);
             let label = if busy {
@@ -495,13 +531,24 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             let fix = button(text(label).size(TEXT_MD).font(UI_MEDIUM))
                 .padding([8, 16])
                 .style(style::secondary);
-            match idle {
-                true => fix.on_press(Message::UsePort(port)),
-                false => fix,
-            }
-            .into()
+            let fix: Element<'a, Message> = match idle {
+                true => fix.on_press(Message::UsePort(port)).into(),
+                false => fix.into(),
+            };
+            fix
         });
-        page = page.push(notice(CORAL, error.as_str(), fix));
+        let action = match fix {
+            Some(fix) => Some(fix),
+            None if error == NO_TOKEN => Some(
+                button(text("Open Sharing settings").size(TEXT_MD).font(UI_MEDIUM))
+                    .padding([8, 16])
+                    .style(style::secondary)
+                    .on_press(Message::OpenSharing)
+                    .into(),
+            ),
+            None => Some(dismiss()),
+        };
+        page = page.push(notice(CORAL, error.as_str(), action));
     }
 
     if state.crashed && status == ServerRuntimeStatus::Offline {
@@ -571,7 +618,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             .on_press(Message::Open(tab)),
         )
     });
-    page = page.push(links);
+    page = page.push(links.wrap());
 
     page.into()
 }
@@ -590,6 +637,8 @@ pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
             let previous = state.last_status.replace(update.status);
             match update.status {
                 ServerRuntimeStatus::Starting => {
+                    state.error = None;
+                    state.port_fix = None;
                     state.crashed = false;
                     state.stop_requested = false;
                     state.started_at = Some(Instant::now());

@@ -1,0 +1,16 @@
+name: MonolithAnalytics
+version: '${version}'
+main: dev.monolith.analytics.MonolithAnalyticsPlugin
+api-version: '1.13'
+description: Lightweight analytics and statistics plugin for Monolith server manager
+author: Monolith
+softdepend: []
+commands:
+  analytics:
+    description: MonolithAnalytics admin command
+    usage: /analytics [reload|status]
+    permission: monolithanalytics.admin
+permissions:
+  monolithanalytics.admin:
+    description: Access to MonolithAnalytics admin commands
+    default: op

@@ -777,7 +777,7 @@ fn installed_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message>
                     .size(TEXT_LG)
                     .font(UI_SEMIBOLD),
                 text(format!(
-                    "Add {} from Modrinth to extend this server.",
+                    "Find {} on Modrinth. Restart the server after installing to load them.",
                     target.noun()
                 ))
                 .size(TEXT_MD)
@@ -904,9 +904,8 @@ fn result_row<'a>(state: &'a State, hit: &'a ModrinthSearchHit) -> Element<'a, M
                 .size(TEXT_SM)
                 .font(UI_MEDIUM)
                 .width(Length::Fill)
-                .align_x(Alignment::Center), BUTTON_MD)
+                .align_x(Alignment::Center), BUTTON_SM)
         .width(Length::Fixed(84.0))
-        .padding([SPACE_1 + 2.0, SPACE_3])
         .style(style::secondary)
         .on_press_maybe((!installing).then(|| Message::Install(Box::new(hit.clone()))))
         .into()

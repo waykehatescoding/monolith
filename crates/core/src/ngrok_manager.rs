@@ -541,7 +541,7 @@ fn local_ip() -> String {
             return ip;
         }
     }
-    let mut names: Vec<&String> = networks.iter().map(|(n, _)| n).collect();
+    let mut names: Vec<&String> = networks.keys().collect();
     names.sort();
     for name in names {
         if let Some(ip) = ipv4_of(name) {

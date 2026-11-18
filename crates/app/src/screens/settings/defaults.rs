@@ -455,7 +455,7 @@ fn plugin_row<'a>(state: &'a State, plugin: &'a DefaultPlugin) -> Element<'a, Me
     controls = controls.push(icon_action(
         Icon::Trash,
         "Remove from default plugins",
-        (!state.busy).then(|| Message::Remove(plugin_key)),
+        (!state.busy).then_some(Message::Remove(plugin_key)),
     ));
 
     row![

@@ -559,7 +559,6 @@ fn start_world_save_timer(server_id: &str) {
             if let Some(old) = r.save_task.replace(handle) {
                 old.abort();
             }
-            return;
         }
     }
 }

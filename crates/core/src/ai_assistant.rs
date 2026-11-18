@@ -447,7 +447,7 @@ async fn build_prompt_context(request: &AiChatRequest) -> PromptContext {
         return context;
     };
 
-    let status = serde_json::to_value(&server.status)
+    let status = serde_json::to_value(server.status)
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_default();
@@ -715,7 +715,7 @@ pub async fn apply_ai_assistant_action(action: Value) -> Result<AiAssistantActio
 
             if key == "max-players" {
                 let players = update_player_capacity_string(Some(&server.players), value);
-                update_server_status(&server.id, server.status.clone(), Some(&players)).await;
+                update_server_status(&server.id, server.status, Some(&players)).await;
             }
 
             let undo_action = previous_value.map(|previous| AiAssistantAction {

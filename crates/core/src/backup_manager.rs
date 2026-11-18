@@ -484,7 +484,7 @@ pub async fn delete_backup(server_id: String, filename: String) -> SuccessResult
     }
     match tokio::fs::remove_file(&file_path).await {
         Ok(()) => SuccessResult::ok(),
-        Err(e) => SuccessResult::err(&e.to_string()),
+        Err(e) => SuccessResult::err(e.to_string()),
     }
 }
 
@@ -604,7 +604,7 @@ pub async fn restore_backup(server_id: String, filename: String) -> SuccessResul
     match validated {
         Ok(Ok(())) => {}
         Ok(Err(e)) => return SuccessResult::err(&e),
-        Err(e) => return SuccessResult::err(&e.to_string()),
+        Err(e) => return SuccessResult::err(e.to_string()),
     }
 
     let stamp = Utc::now().format("%Y-%m-%d %H:%M").to_string();
@@ -616,7 +616,7 @@ pub async fn restore_backup(server_id: String, filename: String) -> SuccessResul
     .await;
     if !safety.success {
         let reason = safety.error.unwrap_or_else(|| "Unknown error".to_string());
-        return SuccessResult::err(&format!(
+        return SuccessResult::err(format!(
             "Could not create the pre-restore safety backup: {reason}"
         ));
     }
@@ -633,7 +633,7 @@ pub async fn restore_backup(server_id: String, filename: String) -> SuccessResul
     match work {
         Ok(Ok(())) => SuccessResult::ok(),
         Ok(Err(e)) => SuccessResult::err(&e),
-        Err(e) => SuccessResult::err(&e.to_string()),
+        Err(e) => SuccessResult::err(e.to_string()),
     }
 }
 

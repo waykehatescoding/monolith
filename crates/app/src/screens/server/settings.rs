@@ -338,9 +338,7 @@ impl State {
     }
 }
 
-fn save_settings(id: String, update: ServerSettingsUpdate) -> impl std::future::Future<Output = Result<(), String>> {
-    async move { outcome(update_server_settings(id, update).await, "Could not save") }
-}
+async fn save_settings(id: String, update: ServerSettingsUpdate) -> Result<(), String> { outcome(update_server_settings(id, update).await, "Could not save") }
 
 pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
     let Some(id) = state.server_id.clone() else {

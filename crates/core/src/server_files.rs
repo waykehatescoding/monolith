@@ -16,7 +16,7 @@ async fn server_root(server_id: &str) -> Option<PathBuf> {
 }
 
 fn fail(error: impl ToString) -> SuccessResult {
-    SuccessResult::err(&error.to_string())
+    SuccessResult::err(error.to_string())
 }
 
 pub async fn list_server_files(server_id: String, relative_path: String) -> Vec<FileEntry> {

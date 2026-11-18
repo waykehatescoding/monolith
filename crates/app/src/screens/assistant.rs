@@ -568,26 +568,25 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     .spacing(SPACE_5)
     .align_y(Alignment::Center);
 
-    let error: Element<Message> = match &state.save_error {
-        Some(e) => text(e.as_str()).size(TEXT_SM).color(CORAL).into(),
-        None => column![].into(),
-    };
-
-    scrollable(
+    let mut body = column![
         column![
             title,
             text("Connect any OpenAI-compatible service. Your key stays on this PC and is only sent to the base URL below.")
                 .size(TEXT_MD)
                 .style(style::muted),
-            toggle,
-            error,
-            form,
         ]
-        .spacing(SPACE_5)
-        .max_width(520),
-    )
-    .style(style::scroll)
-    .into()
+        .spacing(SPACE_2),
+        form,
+    ]
+    .spacing(SPACE_5);
+    if let Some(e) = &state.save_error {
+        body = body.push(text(e.as_str()).size(TEXT_SM).color(CORAL));
+    }
+    body = body.push(toggle);
+
+    scrollable(body.max_width(520).padding(Padding::default().bottom(SPACE_5)))
+        .style(style::scroll)
+        .into()
 }
 
 fn diff_summary(current: &FileState, new: &str) -> String {

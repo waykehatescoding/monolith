@@ -563,7 +563,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     scrollable(
         container(body.max_width(520))
             .center_x(Length::Fill)
-            .padding([SPACE_7, SPACE_5]),
+            .padding([SPACE_7 + SPACE_5, SPACE_5]),
     )
     .style(style::scroll)
     .width(Length::Fill)
@@ -627,7 +627,7 @@ fn name_step<'a>(state: &'a State, ctx: &'a Ctx) -> Column<'a, Message> {
     let ready = state.name_ready(ctx);
     let mut input = text_input("Friends Survival", &state.name)
         .on_input(Message::Name)
-        .padding([10, 12])
+        .padding([SPACE_3, SPACE_3])
         .size(TEXT_LG)
         .style(if problem.is_some() {
             style::input_error
@@ -652,7 +652,6 @@ fn name_step<'a>(state: &'a State, ctx: &'a Ctx) -> Column<'a, Message> {
             link("Import it from a zip", Message::Import)
         },
     ]
-    .spacing(SPACE_1)
     .align_y(Alignment::Center)]
     .spacing(SPACE_1);
     if let Some(error) = &state.import_error {
@@ -664,7 +663,7 @@ fn name_step<'a>(state: &'a State, ctx: &'a Ctx) -> Column<'a, Message> {
             "Name your server".into(),
             "This is what you and your friends will see. You can rename it later.",
         ),
-        column![field, import].spacing(SPACE_5).into(),
+        column![field, import].spacing(SPACE_4).into(),
         footer(primary("Continue", ready.then_some(Message::Next)), false),
     )
 }

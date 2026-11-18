@@ -2,7 +2,7 @@ use iced::widget::{button, column, container, progress_bar, row, scrollable, tex
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
 use monolith_core::types::{NgrokAuthtokenValidation, SuccessResult};
-use monolith_core::{ngrok_manager, paths, safety};
+use monolith_core::{ngrok_manager, safety};
 use monolith_theme::style;
 use monolith_theme::token::{
     CORAL, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, TEXT_LG, TEXT_MD, TEXT_SM,
@@ -16,6 +16,7 @@ const TOKEN_URL: &str = "https://dashboard.ngrok.com/get-started/your-authtoken"
 
 #[derive(Debug, Default)]
 pub struct State {
+    loaded: bool,
     installed: bool,
     installing: bool,
     percent: f32,
@@ -23,21 +24,25 @@ pub struct State {
     saved_token: Option<String>,
     token: String,
     saving: bool,
+    toggling: bool,
+    confirm_remove: bool,
     error: Option<String>,
     local_ip: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Loaded(bool, Option<String>, String),
+    Loaded(bool, bool, Option<String>, String),
     Install,
     Installed(SuccessResult),
     Enabled(bool),
-    EnabledSaved(Result<(), String>),
+    EnabledSaved(bool, Result<(), String>),
     Token(String),
     SaveToken,
-    Validated(NgrokAuthtokenValidation),
+    Validated(String, NgrokAuthtokenValidation),
     TokenSaved(SuccessResult),
+    AskRemove,
+    CancelRemove,
     RemoveToken,
     TokenRemoved(SuccessResult),
     OpenTokenPage,
@@ -47,31 +52,30 @@ pub enum Message {
 fn load() -> Task<Message> {
     Task::perform(
         async {
+            let installed = ngrok_manager::get_ngrok_status(String::new()).await.installed;
             let enabled = ngrok_manager::is_ngrok_enabled().await;
             let token = ngrok_manager::get_ngrok_authtoken_censored().await;
             let ip = ngrok_manager::get_local_ip().await;
-            (enabled, token, ip)
+            (installed, enabled, token, ip)
         },
-        |(enabled, token, ip)| Message::Loaded(enabled, token, ip),
+        |(installed, enabled, token, ip)| Message::Loaded(installed, enabled, token, ip),
     )
-}
-
-fn ngrok_installed() -> bool {
-    paths::ngrok_dir()
-        .join(if cfg!(windows) { "ngrok.exe" } else { "ngrok" })
-        .exists()
 }
 
 pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
     match message {
-        Message::Loaded(enabled, token, ip) => {
-            state.installed = ngrok_installed();
+        Message::Loaded(installed, enabled, token, ip) => {
+            state.loaded = true;
+            state.installed = installed;
             state.enabled = enabled;
             state.saved_token = token;
-            state.local_ip = Some(ip);
+            state.local_ip = Some(ip).filter(|ip| !ip.trim().is_empty());
             Task::none()
         }
         Message::Install => {
+            if state.installing || !state.loaded {
+                return Task::none();
+            }
             state.installing = true;
             state.percent = 0.0;
             Task::perform(ngrok_manager::install_ngrok(), Message::Installed)
@@ -90,16 +94,23 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
         Message::Enabled(enabled) => {
-            state.enabled = enabled;
-            Task::perform(ngrok_manager::set_ngrok_enabled(enabled), Message::EnabledSaved)
-        }
-        Message::EnabledSaved(result) => match result {
-            Ok(()) => Task::none(),
-            Err(e) => {
-                ctx.error(format!("Could not save this setting: {e}"));
-                load()
+            if state.toggling {
+                return Task::none();
             }
-        },
+            state.toggling = true;
+            state.enabled = enabled;
+            Task::perform(ngrok_manager::set_ngrok_enabled(enabled), move |result| {
+                Message::EnabledSaved(enabled, result)
+            })
+        }
+        Message::EnabledSaved(enabled, result) => {
+            state.toggling = false;
+            if let Err(e) = result {
+                state.enabled = !enabled;
+                ctx.error(format!("Could not save this setting: {e} Try again."));
+            }
+            Task::none()
+        }
         Message::Token(value) => {
             state.token = value;
             state.error = None;
@@ -113,14 +124,17 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.saving = true;
             state.error = None;
             Task::perform(
-                ngrok_manager::validate_ngrok_authtoken(token),
-                Message::Validated,
+                async move {
+                    let validation = ngrok_manager::validate_ngrok_authtoken(token.clone()).await;
+                    (token, validation)
+                },
+                |(token, validation)| Message::Validated(token, validation),
             )
         }
-        Message::Validated(validation) => {
+        Message::Validated(token, validation) => {
             if validation.valid {
                 Task::perform(
-                    ngrok_manager::configure_ngrok_authtoken(state.token.trim().to_string()),
+                    ngrok_manager::configure_ngrok_authtoken(token),
                     Message::TokenSaved,
                 )
             } else {
@@ -140,10 +154,25 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 Task::none()
             }
         }
+        Message::AskRemove => {
+            state.confirm_remove = true;
+            Task::none()
+        }
+        Message::CancelRemove => {
+            state.confirm_remove = false;
+            Task::none()
+        }
         Message::RemoveToken => {
+            state.confirm_remove = false;
             state.saving = true;
             Task::perform(
-                ngrok_manager::remove_ngrok_authtoken(),
+                async {
+                    let removed = ngrok_manager::remove_ngrok_authtoken().await;
+                    if removed.success {
+                        let _ = ngrok_manager::set_ngrok_enabled(false).await;
+                    }
+                    removed
+                },
                 Message::TokenRemoved,
             )
         }
@@ -151,6 +180,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.saving = false;
             if result.success {
                 state.saved_token = None;
+                state.enabled = false;
                 ctx.success("Authtoken removed.");
             } else {
                 ctx.error(format!(
@@ -207,7 +237,12 @@ fn action<'a>(
 }
 
 fn install_section(state: &State) -> Element<'_, Message> {
-    let status: Element<Message> = if state.installing {
+    let status: Element<Message> = if !state.loaded {
+        text("Checking for ngrok")
+            .size(TEXT_MD)
+            .style(style::muted)
+            .into()
+    } else if state.installing {
         column![
             text(format!("Downloading ngrok, {:.0}%", state.percent)).size(TEXT_MD),
             progress_bar(0.0..=100.0, state.percent)
@@ -240,12 +275,34 @@ fn install_section(state: &State) -> Element<'_, Message> {
         container(action(
             label,
             Icon::Download,
-            (!state.installing).then_some(Message::Install),
+            (state.loaded && !state.installing).then_some(Message::Install),
             !state.installed,
         ))
     ]
     .spacing(SPACE_3)
     .into()
+}
+
+fn remove_controls(state: &State) -> Element<'_, Message> {
+    if state.confirm_remove {
+        row![
+            text("Remove this authtoken?")
+                .size(TEXT_SM)
+                .style(style::muted),
+            action("Cancel", Icon::Close, Some(Message::CancelRemove), false),
+            action("Remove", Icon::Trash, Some(Message::RemoveToken), false)
+        ]
+        .spacing(SPACE_3)
+        .align_y(Alignment::Center)
+        .into()
+    } else {
+        action(
+            "Remove",
+            Icon::Trash,
+            (!state.saving).then_some(Message::AskRemove),
+            false,
+        )
+    }
 }
 
 fn token_section(state: &State) -> Element<'_, Message> {
@@ -254,16 +311,8 @@ fn token_section(state: &State) -> Element<'_, Message> {
     if let Some(saved) = &state.saved_token {
         section = section.push(
             row![
-                text(saved.as_str())
-                    .size(TEXT_MD)
-                    .font(MONO)
-                    .width(Length::Fill),
-                action(
-                    "Remove",
-                    Icon::Trash,
-                    (!state.saving).then_some(Message::RemoveToken),
-                    false
-                )
+                text(saved.as_str()).size(TEXT_MD).width(Length::Fill),
+                remove_controls(state)
             ]
             .spacing(SPACE_4)
             .align_y(Alignment::Center),
@@ -283,7 +332,7 @@ fn token_section(state: &State) -> Element<'_, Message> {
         .size(TEXT_MD)
         .padding([8, 12])
         .width(Length::Fill)
-        .on_input(Message::Token)
+        .on_input_maybe((!state.saving).then_some(Message::Token))
         .on_submit_maybe(can_save.then_some(Message::SaveToken))
         .style(move |theme: &Theme, status| {
             if has_error {
@@ -332,17 +381,19 @@ fn token_section(state: &State) -> Element<'_, Message> {
 }
 
 fn enable_section(state: &State) -> Element<'_, Message> {
-    let ready = state.saved_token.is_some();
+    let ready = state.saved_token.is_some() && state.installed;
     let mut switch = toggler(state.enabled && ready)
         .size(20)
         .style(style::switch);
-    if ready {
+    if ready && !state.toggling {
         switch = switch.on_toggle(Message::Enabled);
     }
     let detail = if ready {
         "Servers get a public address friends can join from anywhere."
-    } else {
+    } else if state.saved_token.is_none() {
         "Add an authtoken first to turn this on."
+    } else {
+        "Install ngrok first to turn this on."
     };
     row![
         column![

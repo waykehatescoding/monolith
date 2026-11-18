@@ -1,24 +1,378 @@
-use iced::widget::{container, text};
-use iced::{Element, Length, Subscription, Task};
-use monolith_core::events::Event;
-use monolith_theme::style;
-use monolith_theme::token::TEXT_LG;
+use std::path::Path;
 
-use crate::ctx::Ctx;
+use iced::widget::operation::{self, RelativeOffset};
+use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
+use iced::{clipboard, event, keyboard, Alignment, Color, Element, Length, Subscription, Task};
+use monolith_core::events::Event;
+use monolith_core::types::{ServerRuntimeStatus, SuccessResult};
+use monolith_core::{ngrok_manager, server_props, server_runner};
+use monolith_theme::token::*;
+use monolith_theme::{icon, icon_colored, style, Icon, UI_MEDIUM};
+
+use crate::ctx::{status_color, Ctx, Route, SettingsPage, Tab};
+
+const INPUT_ID: &str = "palette-input";
+const LIST_ID: &str = "palette-list";
+const DEFAULT_PORT: u16 = 25565;
 
 #[derive(Debug, Default)]
-pub struct State;
-
-#[derive(Debug, Clone)]
-pub enum Message {}
-
-pub fn update(_state: &mut State, message: Message, _ctx: &Ctx) -> Task<Message> {
-    match message {}
+pub struct State {
+    query: String,
+    selected: usize,
 }
 
-pub fn view<'a>(_state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
-    container(text("Command palette").size(TEXT_LG).style(style::muted))
-        .center(Length::Fill)
+#[derive(Debug, Clone)]
+pub enum Message {
+    Query(String),
+    Move(isize),
+    Submit,
+    Run(usize),
+    Done(SuccessResult),
+    Copy(String),
+}
+
+#[derive(Clone)]
+enum Command {
+    Server(String),
+    Start,
+    Stop,
+    Restart,
+    NewServer,
+    Tab(Tab),
+    Settings(SettingsPage),
+    OpenFolder,
+    CopyAddress,
+}
+
+struct Item {
+    group: &'static str,
+    icon: Icon,
+    tint: Option<Color>,
+    label: String,
+    detail: Option<String>,
+    hint: Option<String>,
+    command: Command,
+}
+
+fn score(query: &str, label: &str) -> Option<usize> {
+    if query.is_empty() {
+        return Some(0);
+    }
+    let label = label.to_lowercase();
+    if let Some(position) = label.find(query) {
+        return Some(position);
+    }
+    let mut chars = label.char_indices();
+    let mut total = 100;
+    let mut last = 0;
+    for wanted in query.chars() {
+        let (index, _) = chars.find(|(_, c)| *c == wanted)?;
+        total += index - last;
+        last = index;
+    }
+    Some(total)
+}
+
+fn action(icon: Icon, label: String, hint: Option<&str>, command: Command) -> Item {
+    Item {
+        group: "Actions",
+        icon,
+        tint: None,
+        label,
+        detail: None,
+        hint: hint.map(str::to_string),
+        command,
+    }
+}
+
+fn tab_icon(tab: Tab) -> Icon {
+    match tab {
+        Tab::Overview => Icon::Server,
+        Tab::Console => Icon::Terminal,
+        Tab::Files => Icon::File,
+        Tab::Players => Icon::Users,
+        Tab::Content => Icon::Package,
+        Tab::Backups => Icon::Archive,
+        Tab::Analytics => Icon::Chart,
+        Tab::Settings => Icon::Settings,
+    }
+}
+
+fn items(query: &str, ctx: &Ctx) -> Vec<Item> {
+    let mut all = Vec::new();
+    for (index, server) in ctx.servers.iter().enumerate() {
+        all.push(Item {
+            group: "Servers",
+            icon: Icon::Server,
+            tint: Some(status_color(ctx.status(&server.id))),
+            label: server.name.clone(),
+            detail: Some(ctx.status_text(&server.id)),
+            hint: (index < 9).then(|| format!("Ctrl+{}", index + 1)),
+            command: Command::Server(server.id.clone()),
+        });
+    }
+
+    if let Some(server) = ctx.selected_server() {
+        let name = &server.name;
+        match ctx.status(&server.id) {
+            ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle => {
+                all.push(action(Icon::Play, format!("Start {name}"), None, Command::Start));
+            }
+            ServerRuntimeStatus::Online => {
+                all.push(action(Icon::Stop, format!("Stop {name}"), None, Command::Stop));
+                all.push(action(
+                    Icon::Restart,
+                    format!("Restart {name}"),
+                    None,
+                    Command::Restart,
+                ));
+            }
+            ServerRuntimeStatus::Starting | ServerRuntimeStatus::Stopping => {}
+        }
+        all.push(action(
+            Icon::Copy,
+            format!("Copy join address for {name}"),
+            None,
+            Command::CopyAddress,
+        ));
+        all.push(action(
+            Icon::Folder,
+            format!("Open folder of {name}"),
+            None,
+            Command::OpenFolder,
+        ));
+        for tab in Tab::ALL {
+            let label = match tab {
+                Tab::Settings => "Open server settings".to_string(),
+                tab => format!("Open {}", tab.label().to_lowercase()),
+            };
+            all.push(action(tab_icon(tab), label, None, Command::Tab(tab)));
+        }
+    }
+    all.push(action(
+        Icon::Plus,
+        "New server".into(),
+        Some("Ctrl+N"),
+        Command::NewServer,
+    ));
+
+    for page in SettingsPage::ALL {
+        all.push(Item {
+            group: "Settings",
+            icon: Icon::Settings,
+            tint: None,
+            label: page.label().to_string(),
+            detail: None,
+            hint: (page == SettingsPage::General).then(|| "Ctrl+,".to_string()),
+            command: Command::Settings(page),
+        });
+    }
+
+    let query = query.trim().to_lowercase();
+    let mut ranked: Vec<(usize, usize, usize, Item)> = all
+        .into_iter()
+        .enumerate()
+        .filter_map(|(order, item)| {
+            let group = match item.group {
+                "Servers" => 0,
+                "Actions" => 1,
+                _ => 2,
+            };
+            score(&query, &item.label).map(|score| (group, score, order, item))
+        })
+        .collect();
+    ranked.sort_by_key(|(group, score, order, _)| (*group, *score, *order));
+    ranked.into_iter().map(|(_, _, _, item)| item).collect()
+}
+
+async fn join_address(server_path: String, ngrok_url: Option<String>) -> String {
+    if let Some(url) = ngrok_url.filter(|url| !url.is_empty()) {
+        return url.trim_start_matches("tcp://").to_string();
+    }
+    let properties = server_props::read_properties(Path::new(&server_path)).await;
+    let port = properties
+        .iter()
+        .find(|property| property.key == "server-port")
+        .and_then(|property| property.value.trim().parse().ok())
+        .unwrap_or(DEFAULT_PORT);
+    format!("{}:{}", ngrok_manager::get_local_ip().await, port)
+}
+
+fn run(command: Command, ctx: &Ctx) -> Task<Message> {
+    ctx.close_palette();
+    let server = ctx.selected_server().cloned();
+    match (command, server) {
+        (Command::Server(id), _) => {
+            ctx.select_server(id);
+            Task::none()
+        }
+        (Command::NewServer, _) => {
+            ctx.navigate(Route::Create);
+            Task::none()
+        }
+        (Command::Settings(page), _) => {
+            ctx.navigate(Route::Settings(page));
+            Task::none()
+        }
+        (Command::Tab(tab), _) => {
+            ctx.navigate(Route::Server(tab));
+            Task::none()
+        }
+        (Command::Start, Some(server)) => {
+            Task::perform(server_runner::start_server(server.id), Message::Done)
+        }
+        (Command::Stop, Some(server)) => {
+            Task::perform(server_runner::stop_server(server.id), Message::Done)
+        }
+        (Command::Restart, Some(server)) => {
+            Task::perform(server_runner::restart_server(server.id), Message::Done)
+        }
+        (Command::CopyAddress, Some(server)) => Task::perform(
+            join_address(server.server_path, server.ngrok_url),
+            Message::Copy,
+        ),
+        (Command::OpenFolder, Some(server)) => {
+            if open::that_detached(&server.server_path).is_err() {
+                ctx.error("The server folder could not be opened. Check that it still exists.");
+            }
+            Task::none()
+        }
+        _ => Task::none(),
+    }
+}
+
+fn snap(selected: usize, count: usize) -> Task<Message> {
+    let y = if count > 1 {
+        selected as f32 / (count - 1) as f32
+    } else {
+        0.0
+    };
+    operation::snap_to(
+        LIST_ID,
+        RelativeOffset {
+            x: None,
+            y: Some(y),
+        },
+    )
+}
+
+fn run_at(index: usize, state: &State, ctx: &Ctx) -> Task<Message> {
+    match items(&state.query, ctx).into_iter().nth(index) {
+        Some(item) => run(item.command, ctx),
+        None => Task::none(),
+    }
+}
+
+pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
+    match message {
+        Message::Query(query) => {
+            state.query = query;
+            state.selected = 0;
+            snap(0, 1)
+        }
+        Message::Move(delta) => {
+            if !ctx.palette_open {
+                return Task::none();
+            }
+            let count = items(&state.query, ctx).len();
+            if count == 0 {
+                return Task::none();
+            }
+            state.selected = (state.selected as isize + delta).rem_euclid(count as isize) as usize;
+            snap(state.selected, count)
+        }
+        Message::Submit => run_at(state.selected, state, ctx),
+        Message::Run(index) => run_at(index, state, ctx),
+        Message::Done(result) => {
+            if !result.success {
+                ctx.error(
+                    result
+                        .error
+                        .unwrap_or_else(|| "The server did not respond. Try again.".into()),
+                );
+            }
+            ctx.refresh_servers();
+            Task::none()
+        }
+        Message::Copy(address) => {
+            ctx.success("Join address copied");
+            clipboard::write(address)
+        }
+    }
+}
+
+fn row_view<'a>(item: Item, index: usize, selected: bool) -> Element<'a, Message> {
+    let mut label = row![text(item.label).size(TEXT_MD)]
+        .spacing(SPACE_3)
+        .align_y(Alignment::Center);
+    if let Some(detail) = item.detail {
+        label = label.push(text(detail).size(TEXT_SM).style(style::muted));
+    }
+    let glyph: Element<'a, Message> = match item.tint {
+        Some(color) => icon_colored(item.icon, 16.0, color).into(),
+        None => icon(item.icon, 16.0).into(),
+    };
+    let mut content = row![glyph, label.width(Length::Fill)]
+        .spacing(SPACE_3)
+        .align_y(Alignment::Center);
+    if let Some(hint) = item.hint {
+        content = content.push(text(hint).size(TEXT_XS).style(style::faint));
+    }
+    button(content)
+        .width(Length::Fill)
+        .padding([SPACE_2, SPACE_3])
+        .style(style::sidebar_item(selected))
+        .on_press(Message::Run(index))
+        .into()
+}
+
+pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
+    let input = text_input("Search servers, actions and settings", &state.query)
+        .id(INPUT_ID)
+        .on_input(Message::Query)
+        .on_submit(Message::Submit)
+        .size(TEXT_LG)
+        .padding([SPACE_3, SPACE_4])
+        .style(style::input);
+
+    let found = items(&state.query, ctx);
+    let body: Element<'a, Message> = if found.is_empty() {
+        container(
+            text(format!(
+                "Nothing matches \"{}\". Try a server name or a word like start, files or backup.",
+                state.query.trim()
+            ))
+            .size(TEXT_SM)
+            .style(style::muted),
+        )
+        .padding([SPACE_5, SPACE_4])
+        .into()
+    } else {
+        let mut list = column![].spacing(SPACE_1);
+        let mut group = "";
+        for (index, item) in found.into_iter().enumerate() {
+            if item.group != group {
+                group = item.group;
+                if index > 0 {
+                    list = list.push(Space::new().height(SPACE_2));
+                }
+                list = list.push(
+                    container(text(group).size(TEXT_XS).font(UI_MEDIUM).style(style::muted))
+                        .padding([SPACE_1, SPACE_3]),
+                );
+            }
+            list = list.push(row_view(item, index, index == state.selected));
+        }
+        scrollable(container(list).padding(SPACE_2))
+            .id(LIST_ID)
+            .style(style::scroll)
+            .into()
+    };
+
+    container(column![input, body])
+        .width(560)
+        .max_height(440)
+        .style(style::overlay)
         .into()
 }
 
@@ -26,10 +380,26 @@ pub fn on_event(_state: &mut State, _event: &Event, _ctx: &Ctx) -> Task<Message>
     Task::none()
 }
 
-pub fn on_show(_state: &mut State, _ctx: &Ctx) -> Task<Message> {
-    Task::none()
+pub fn on_show(state: &mut State, _ctx: &Ctx) -> Task<Message> {
+    *state = State::default();
+    operation::focus(INPUT_ID)
 }
 
 pub fn subscription(_state: &State) -> Subscription<Message> {
-    Subscription::none()
+    event::listen_with(|event, status, _| {
+        if status == event::Status::Captured {
+            return None;
+        }
+        match event {
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::ArrowUp),
+                ..
+            }) => Some(Message::Move(-1)),
+            iced::Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(keyboard::key::Named::ArrowDown),
+                ..
+            }) => Some(Message::Move(1)),
+            _ => None,
+        }
+    })
 }

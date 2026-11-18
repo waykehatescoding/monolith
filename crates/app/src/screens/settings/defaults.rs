@@ -708,31 +708,31 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     };
 
     let is_empty = plugins.is_empty() && state.extra_groups.is_empty() && !state.adding;
-    let mut page = column![row![
-        column![
-            text("Default plugins").size(TEXT_XL).font(UI_SEMIBOLD),
-            text("Installed automatically into new servers. Group them to keep setups tidy.")
-                .size(TEXT_MD)
-                .style(style::muted),
-        ]
-        .spacing(SPACE_1)
-        .width(Length::Fill),
-        action(
+    let mut header = row![column![
+        text("Default plugins").size(TEXT_XL).font(UI_SEMIBOLD),
+        text("Installed automatically into new servers. Group them to keep setups tidy.")
+            .size(TEXT_MD)
+            .style(style::muted),
+    ]
+    .spacing(SPACE_1)
+    .width(Length::Fill)]
+    .spacing(SPACE_2)
+    .align_y(Alignment::Center);
+    if !is_empty {
+        header = header.push(action(
             if state.adding { "Done adding" } else { "Add plugins" },
             if state.adding { Icon::Check } else { Icon::Plus },
             Some(Message::ToggleAdd),
-            !state.adding && !is_empty,
-        ),
-        action(
-            "New group",
-            Icon::Folder,
-            Some(Message::StartEdit(Edit::New)),
-            false
-        ),
-    ]
-    .spacing(SPACE_2)
-    .align_y(Alignment::Center)]
-    .spacing(SPACE_4);
+            !state.adding,
+        ));
+    }
+    header = header.push(action(
+        "New group",
+        Icon::Folder,
+        Some(Message::StartEdit(Edit::New)),
+        false,
+    ));
+    let mut page = column![header].spacing(SPACE_4);
 
     if state.edit.is_some() {
         page = page.push(edit_row(state));

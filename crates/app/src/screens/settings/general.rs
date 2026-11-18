@@ -10,7 +10,7 @@ use monolith_core::{app_preferences, paths, update_checker};
 use monolith_theme::{icon, Icon, UI_MEDIUM, UI_SEMIBOLD};
 use monolith_theme::style;
 use monolith_theme::token::{
-    CORAL, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, TEXT_LG, TEXT_MD, TEXT_SM,
+    CORAL, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, SPACE_7, TEXT_LG, TEXT_MD, TEXT_SM,
     TEXT_XL,
 };
 use serde::{Deserialize, Serialize};
@@ -279,6 +279,10 @@ fn subheading(label: &str) -> Element<'_, Message> {
     text(label).size(TEXT_LG).font(UI_SEMIBOLD).into()
 }
 
+fn group_label(label: &str) -> Element<'_, Message> {
+    text(label).size(TEXT_SM).font(UI_SEMIBOLD).style(style::muted).into()
+}
+
 fn setting<'a>(
     title: &'a str,
     detail: &'a str,
@@ -334,7 +338,7 @@ fn general<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     column![
         heading("General"),
         column![
-            subheading("Window"),
+            group_label("Window"),
             setting(
                 "Ask before closing",
                 "Confirms before quitting, since closing Monolith stops every running server.",
@@ -349,14 +353,14 @@ fn general<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             ),
             setting(
                 "Start Monolith with Windows",
-                "Opens Monolith when you sign in, so servers set to start with the app come up on their own.",
+                "Opens Monolith when you sign in, so servers set to auto-start come up on their own.",
                 state.autostart.unwrap_or(false),
                 startup_toggle,
             ),
         ]
-        .spacing(SPACE_4),
+        .spacing(SPACE_5),
         column![
-            subheading("Notifications"),
+            group_label("Notifications"),
             setting(
                 "A server crashes",
                 "Get a Windows notification when a server stops without being asked to.",
@@ -370,9 +374,10 @@ fn general<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
                 Some(Message::NotifyOnline),
             ),
         ]
-        .spacing(SPACE_4),
+        .spacing(SPACE_5),
     ]
-    .spacing(SPACE_6)
+    .spacing(SPACE_7)
+    .max_width(600)
     .into()
 }
 

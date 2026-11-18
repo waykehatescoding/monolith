@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use iced::widget::operation::{self, RelativeOffset};
-use iced::widget::{button, column, container, row, scrollable, text, text_input, Space};
+use iced::widget::{button, column, container, row, rule, scrollable, text, text_input, Space};
 use iced::{clipboard, event, keyboard, Alignment, Color, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
 use monolith_core::types::{ServerRuntimeStatus, SuccessResult};
@@ -371,7 +371,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         .on_input(Message::Query)
         .on_submit(Message::Submit)
         .size(TEXT_LG)
-        .padding([SPACE_3, SPACE_4])
+        .padding([SPACE_4, SPACE_5])
         .style(style::input);
 
     let found = items(&state.query, ctx);
@@ -384,7 +384,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             .size(TEXT_SM)
             .style(style::muted),
         )
-        .padding([SPACE_5, SPACE_4])
+        .padding([SPACE_5, SPACE_5])
         .into()
     } else {
         let mut list = column![].spacing(SPACE_1);
@@ -402,15 +402,29 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             }
             list = list.push(row_view(item, index, index == state.selected));
         }
-        scrollable(container(list).padding(SPACE_2))
+        scrollable(container(list).padding([SPACE_2, SPACE_3]))
             .id(LIST_ID)
+            .height(Length::Fill)
             .style(style::scroll)
             .into()
     };
 
-    container(column![input, body])
+    let footer = container(
+        text("Up and down to move, Enter to run, Esc to close")
+            .size(TEXT_XS)
+            .style(style::faint),
+    )
+    .padding([SPACE_2, SPACE_5]);
+
+    container(column![
+        input,
+        rule::horizontal(1).style(style::hairline),
+        body,
+        rule::horizontal(1).style(style::hairline),
+        footer
+    ])
         .width(560)
-        .max_height(440)
+        .height(440)
         .style(style::overlay)
         .into()
 }

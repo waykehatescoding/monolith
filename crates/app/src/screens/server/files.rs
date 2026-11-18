@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use monolith_theme::token::{BUTTON_MD};
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::widget::{sized, sized_icon};
 use std::time::Duration;
 
@@ -658,7 +658,7 @@ fn icon_action<'a>(
     look: fn(&iced::Theme, button::Status) -> button::Style,
 ) -> Element<'a, Message> {
     hint(
-        sized_icon(icon_colored(glyph, 16.0, INK_SECONDARY), BUTTON_MD)
+        sized_icon(icon_colored(glyph, 14.0, INK_SECONDARY), BUTTON_SM)
             .style(look)
             .on_press(message),
         label,
@@ -726,7 +726,7 @@ fn browser_view<'a>(state: &'a State) -> Element<'a, Message> {
     .spacing(SPACE_2)
     .align_y(Alignment::Center);
 
-    let mut page = column![toolbar].spacing(SPACE_3);
+    let mut page = column![toolbar].spacing(SPACE_4);
     if let Some(prompt) = &state.prompt {
         page = page.push(prompt_view(prompt, state.busy));
     }
@@ -886,7 +886,7 @@ fn entry_row<'a>(entry: &'a FileEntry) -> Element<'a, Message> {
         .align_y(Alignment::Center),
     )
     .width(Length::Fill)
-    .padding([8, 12])
+    .padding([6, 8])
     .style(style::ghost)
     .on_press(opens);
 

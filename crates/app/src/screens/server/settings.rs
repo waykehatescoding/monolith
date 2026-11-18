@@ -17,12 +17,12 @@ use monolith_core::types::{
     SuccessResult, SystemInfo,
 };
 use monolith_theme::token::{
-    CORAL, GROUND, HAIRLINE, INK, INK_TERTIARY, MOSS, RADIUS_CONTROL, SPACE_1, SPACE_2, SPACE_3,
-    SPACE_4, SPACE_6, SPACE_7, TEXT_MD, TEXT_SM, TEXT_XL,
+    CORAL, INK, INK_TERTIARY, LAYER_2, MOSS, RADIUS_CONTROL, SPACE_1, SPACE_2, SPACE_3, SPACE_4,
+    SPACE_6, SPACE_7, TEXT_MD, TEXT_SM, TEXT_XL,
 };
 use monolith_theme::{style, MONO, UI_SEMIBOLD};
 
-use crate::ctx::{Ctx, Route};
+use crate::ctx::{Confirm, Ctx};
 use crate::ui::busy_button;
 
 const FRAMEWORKS: [&str; 4] = ["Paper", "Purpur", "Fabric", "Vanilla"];
@@ -38,12 +38,16 @@ pub struct State {
     java_path: String,
     javas: Vec<JavaChoice>,
     system: SystemInfo,
+    java_problem: Option<&'static str>,
     saving_general: bool,
+    loaded: bool,
     props: Vec<ServerProperty>,
     saved_props: Vec<ServerProperty>,
     raw: text_editor::Content,
     raw_open: bool,
+    raw_error: Option<String>,
     saving_props: bool,
+    saving_reliability: bool,
     new_time: String,
     time_error: Option<String>,
     framework: String,
@@ -53,9 +57,8 @@ pub struct State {
     versions_loading: bool,
     versions_error: Option<String>,
     changing: Option<(f64, String)>,
+    platform_armed: bool,
     exporting: bool,
-    confirm_name: String,
-    deleting: bool,
 }
 
 impl Default for State {
@@ -71,12 +74,16 @@ impl Default for State {
                 total_memory_mb: 8192,
                 max_ram_mb: 6553,
             },
+            java_problem: None,
             saving_general: false,
+            loaded: false,
             props: Vec::new(),
             saved_props: Vec::new(),
             raw: text_editor::Content::new(),
             raw_open: false,
+            raw_error: None,
             saving_props: false,
+            saving_reliability: false,
             new_time: String::new(),
             time_error: None,
             framework: String::new(),
@@ -86,9 +93,8 @@ impl Default for State {
             versions_loading: false,
             versions_error: None,
             changing: None,
+            platform_armed: false,
             exporting: false,
-            confirm_name: String::new(),
-            deleting: false,
         }
     }
 }
@@ -107,7 +113,7 @@ impl std::fmt::Display for JavaChoice {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Loaded(Vec<ServerProperty>, Vec<JavaChoice>, SystemInfo),
+    Loaded(String, Vec<ServerProperty>, Vec<JavaChoice>),
     Name(String),
     Ram(u32),
     JavaCustom(bool),
@@ -131,14 +137,14 @@ pub enum Message {
     Framework(&'static str),
     Version(String),
     Snapshots(bool),
-    Versions(String, Result<Vec<MinecraftVersion>, String>),
+    RetryVersions,
+    Versions(String, String, Result<Vec<MinecraftVersion>, String>),
     ApplyPlatform,
+    CancelPlatform,
     PlatformChanged(Result<String, String>),
     Export,
     Exported(Result<Option<String>, String>),
-    ConfirmName(String),
     Delete,
-    Deleted(Result<(), String>),
 }
 
 fn outcome(result: SuccessResult, fallback: &str) -> Result<(), String> {
@@ -176,26 +182,47 @@ fn raw_text(props: &[ServerProperty]) -> String {
         .join("\n")
 }
 
-fn parse_raw(text: &str, previous: &[ServerProperty]) -> Vec<ServerProperty> {
-    text.lines()
-        .filter_map(|line| {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                return None;
-            }
-            let (key, value) = line.split_once('=')?;
-            let key = key.trim().to_string();
-            let comment = previous
-                .iter()
-                .find(|p| p.key == key)
-                .and_then(|p| p.comment.clone());
-            Some(ServerProperty {
-                key,
-                value: value.trim().to_string(),
-                comment,
-            })
-        })
-        .collect()
+fn parse_raw(text: &str, previous: &[ServerProperty]) -> Result<Vec<ServerProperty>, String> {
+    let mut props: Vec<ServerProperty> = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(format!("Line {} needs a key and a value, like pvp=true.", index + 1));
+        };
+        let key = key.trim().to_string();
+        if key.is_empty() || key.contains(char::is_whitespace) {
+            return Err(format!("Line {} has an invalid key.", index + 1));
+        }
+        if props.iter().any(|p| p.key == key) {
+            return Err(format!("Line {} repeats the key {key}.", index + 1));
+        }
+        let comment = previous
+            .iter()
+            .find(|p| p.key == key)
+            .and_then(|p| p.comment.clone());
+        props.push(ServerProperty {
+            key,
+            value: value.trim().to_string(),
+            comment,
+        });
+    }
+    Ok(props)
+}
+
+fn safe_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| if r#"<>:"/\|?*"#.contains(c) || c.is_control() { '_' } else { c })
+        .collect();
+    let cleaned = cleaned.trim().trim_end_matches('.');
+    if cleaned.is_empty() {
+        "server".into()
+    } else {
+        cleaned.into()
+    }
 }
 
 fn digits(value: String) -> String {
@@ -205,15 +232,15 @@ fn digits(value: String) -> String {
 impl State {
     fn reset(&mut self, server: &ServerRecord) {
         let javas = std::mem::take(&mut self.javas);
-        let system = self.system.clone();
         *self = State::default();
         self.javas = javas;
-        self.system = system;
+        self.system = get_system_info();
         self.server_id = Some(server.id.clone());
         self.name = server.name.clone();
         self.ram_mb = server.ram_mb.max(512);
         self.java_path = server.java_path.clone().unwrap_or_default();
         self.java_custom = !self.java_path.is_empty();
+        self.check_java();
         self.framework = server.framework.clone();
         self.version = Some(server.version.clone());
     }
@@ -228,7 +255,7 @@ impl State {
 
     fn general_dirty(&self, server: &ServerRecord) -> bool {
         self.name.trim() != server.name
-            || self.ram_mb != server.ram_mb
+            || self.ram_mb != server.ram_mb.max(512)
             || self.effective_java() != server.java_path.as_deref().unwrap_or("")
     }
 
@@ -254,29 +281,60 @@ impl State {
         None
     }
 
-    fn sync_raw(&mut self) {
-        self.raw = text_editor::Content::with_text(&raw_text(&self.props));
+    fn check_java(&mut self) {
+        let path = self.java_path.trim();
+        self.java_problem = if !self.java_custom {
+            None
+        } else if path.is_empty() {
+            Some("Enter the path to java.exe, or turn custom Java off.")
+        } else if !std::path::Path::new(path).is_file() {
+            Some("That file does not exist. Browse to your java.exe.")
+        } else {
+            None
+        };
+    }
+
+    fn commit_raw(&mut self) -> bool {
+        match parse_raw(&self.raw.text(), &self.props) {
+            Ok(props) => {
+                self.props = props;
+                self.raw_error = None;
+                true
+            }
+            Err(error) => {
+                self.raw_error = Some(error);
+                false
+            }
+        }
     }
 
     fn fetch_versions(&mut self, framework: &str) -> Task<Message> {
         self.versions_loading = true;
         self.versions_error = None;
         let framework = framework.to_string();
+        let id = self.server_id.clone().unwrap_or_default();
         Task::perform(
             {
                 let framework = framework.clone();
                 async move { get_minecraft_versions(framework).await }
             },
-            move |result| Message::Versions(framework.clone(), result),
+            move |result| Message::Versions(id.clone(), framework.clone(), result),
         )
     }
 
     fn version_ids(&self) -> Vec<String> {
-        self.versions
+        let mut ids: Vec<String> = self
+            .versions
             .iter()
             .filter(|v| self.snapshots || v.stable)
             .map(|v| v.id.clone())
-            .collect()
+            .collect();
+        if let Some(current) = &self.version {
+            if !ids.contains(current) {
+                ids.insert(0, current.clone());
+            }
+        }
+        ids
     }
 }
 
@@ -289,14 +347,17 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         return Task::none();
     };
     match message {
-        Message::Loaded(props, javas, system) => {
-            state.system = system;
+        Message::Loaded(loaded_id, props, javas) => {
+            if loaded_id != id {
+                return Task::none();
+            }
             state.javas = javas;
-            if state.props == state.saved_props {
+            if !state.loaded || state.props == state.saved_props {
                 state.saved_props = props.clone();
                 state.props = props;
-                state.sync_raw();
+                state.raw_error = None;
             }
+            state.loaded = true;
             Task::none()
         }
         Message::Name(name) => {
@@ -309,10 +370,12 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::JavaCustom(on) => {
             state.java_custom = on;
+            state.check_java();
             Task::none()
         }
         Message::JavaPath(path) => {
             state.java_path = path;
+            state.check_java();
             Task::none()
         }
         Message::BrowseJava => Task::perform(
@@ -328,6 +391,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::JavaBrowsed(path) => {
             if let Some(path) = path {
                 state.java_path = path;
+                state.check_java();
             }
             Task::none()
         }
@@ -335,6 +399,10 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             let name = state.name.trim().to_string();
             if name.is_empty() {
                 ctx.error("Give the server a name before saving.");
+                return Task::none();
+            }
+            if let Some(problem) = state.java_problem {
+                ctx.error(problem);
                 return Task::none();
             }
             state.saving_general = true;
@@ -364,27 +432,31 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 digits(value)
             };
             set_prop(&mut state.props, key, value);
-            state.sync_raw();
             Task::none()
         }
         Message::PropToggle(key, on) => {
             set_prop(&mut state.props, key, on.to_string());
-            state.sync_raw();
             Task::none()
         }
         Message::ToggleRaw => {
-            state.raw_open = !state.raw_open;
-            Task::none()
-        }
-        Message::RawAction(action) => {
-            let edit = action.is_edit();
-            state.raw.perform(action);
-            if edit {
-                state.props = parse_raw(&state.raw.text(), &state.props);
+            if state.raw_open {
+                if state.commit_raw() {
+                    state.raw_open = false;
+                }
+            } else {
+                state.raw = text_editor::Content::with_text(&raw_text(&state.props));
+                state.raw_open = true;
             }
             Task::none()
         }
+        Message::RawAction(action) => {
+            state.raw.perform(action);
+            Task::none()
+        }
         Message::SaveProps => {
+            if !state.loaded || (state.raw_open && !state.commit_raw()) {
+                return Task::none();
+            }
             if let Some(error) = state.props_error() {
                 ctx.error(error);
                 return Task::none();
@@ -406,35 +478,36 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             match result {
                 Ok(()) => {
                     state.saved_props = state.props.clone();
+                    state.raw_open = false;
                     ctx.success("Gameplay settings saved. Restart the server to apply them.");
                 }
                 Err(error) => ctx.error(format!("Could not save gameplay settings: {error}")),
             }
             Task::none()
         }
-        Message::AutoRestart(on) => Task::perform(
-            save_settings(
-                id,
-                ServerSettingsUpdate {
-                    auto_restart: Some(on),
-                    ..Default::default()
-                },
-            ),
-            Message::ReliabilitySaved,
+        Message::AutoRestart(on) => save_reliability(
+            state,
+            id,
+            ServerSettingsUpdate {
+                auto_restart: Some(on),
+                ..Default::default()
+            },
         ),
-        Message::StartOnLaunch(on) => Task::perform(
-            save_settings(
-                id,
-                ServerSettingsUpdate {
-                    start_on_launch: Some(on),
-                    ..Default::default()
-                },
-            ),
-            Message::ReliabilitySaved,
+        Message::StartOnLaunch(on) => save_reliability(
+            state,
+            id,
+            ServerSettingsUpdate {
+                start_on_launch: Some(on),
+                ..Default::default()
+            },
         ),
         Message::ReliabilitySaved(result) => {
+            state.saving_reliability = false;
             match result {
-                Ok(()) => ctx.refresh_servers(),
+                Ok(()) => {
+                    ctx.success("Saved.");
+                    ctx.refresh_servers();
+                }
                 Err(error) => ctx.error(format!("Could not save: {error}")),
             }
             Task::none()
@@ -445,6 +518,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
         Message::AddTime => {
+            if state.saving_reliability {
+                return Task::none();
+            }
             let Some(server) = ctx.server(&id) else {
                 return Task::none();
             };
@@ -453,7 +529,14 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             match parse_times(&times) {
                 Ok(times) => {
                     state.new_time.clear();
-                    Task::perform(save_times(id, times), Message::ReliabilitySaved)
+                    save_reliability(
+                        state,
+                        id,
+                        ServerSettingsUpdate {
+                            restart_times: Some(times),
+                            ..Default::default()
+                        },
+                    )
                 }
                 Err(_) => {
                     state.time_error = Some("Use 24-hour time like 04:30".into());
@@ -462,6 +545,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
         }
         Message::RemoveTime(index) => {
+            if state.saving_reliability {
+                return Task::none();
+            }
             let Some(server) = ctx.server(&id) else {
                 return Task::none();
             };
@@ -469,24 +555,37 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             if index < times.len() {
                 times.remove(index);
             }
-            Task::perform(save_times(id, times), Message::ReliabilitySaved)
+            save_reliability(
+                state,
+                id,
+                ServerSettingsUpdate {
+                    restart_times: Some(times),
+                    ..Default::default()
+                },
+            )
         }
         Message::Framework(framework) => {
             state.framework = framework.to_string();
             state.version = None;
             state.versions.clear();
+            state.platform_armed = false;
             state.fetch_versions(framework)
+        }
+        Message::RetryVersions => {
+            let framework = state.framework.clone();
+            state.fetch_versions(&framework)
         }
         Message::Version(version) => {
             state.version = Some(version);
+            state.platform_armed = false;
             Task::none()
         }
         Message::Snapshots(on) => {
             state.snapshots = on;
             Task::none()
         }
-        Message::Versions(framework, result) => {
-            if framework != state.framework {
+        Message::Versions(versions_id, framework, result) => {
+            if versions_id != id || framework != state.framework {
                 return Task::none();
             }
             state.versions_loading = false;
@@ -501,10 +600,26 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             Task::none()
         }
+        Message::CancelPlatform => {
+            state.platform_armed = false;
+            Task::none()
+        }
         Message::ApplyPlatform => {
+            let idle = matches!(
+                ctx.status(&id),
+                ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle
+            );
             let Some(version) = state.version.clone() else {
                 return Task::none();
             };
+            if !idle || state.changing.is_some() {
+                return Task::none();
+            }
+            if !state.platform_armed {
+                state.platform_armed = true;
+                return Task::none();
+            }
+            state.platform_armed = false;
             let framework = state.framework.clone();
             state.changing = Some((0.0, "Starting".into()));
             Task::perform(
@@ -535,7 +650,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.exporting = true;
             let file = ctx
                 .server(&id)
-                .map(|s| format!("{}.zip", s.name))
+                .map(|s| format!("{}.zip", safe_file_name(&s.name)))
                 .unwrap_or_else(|| "server.zip".into());
             Task::perform(
                 async move {
@@ -566,41 +681,32 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             Task::none()
         }
-        Message::ConfirmName(name) => {
-            state.confirm_name = name;
-            Task::none()
-        }
         Message::Delete => {
-            state.deleting = true;
-            Task::perform(
-                async move { outcome(delete_server(id).await, "Delete failed") },
-                Message::Deleted,
-            )
-        }
-        Message::Deleted(result) => {
-            state.deleting = false;
-            match result {
-                Ok(()) => {
-                    ctx.success("Server deleted.");
-                    ctx.refresh_servers();
-                    ctx.navigate(Route::Empty);
-                }
-                Err(error) => ctx.error(format!("Could not delete the server: {error}")),
-            }
+            let name = ctx.server(&id).map(|s| s.name.clone()).unwrap_or_default();
+            ctx.confirm(
+                Confirm::new(
+                    format!("Delete {name}?"),
+                    "This removes the server, its worlds and all its files from this PC. Export it first if you may want it back.",
+                    "Delete server",
+                    true,
+                    move || {
+                        let id = id.clone();
+                        async move {
+                            outcome(delete_server(id).await, "Delete failed")
+                                .map(|()| "Server deleted.".to_string())
+                        }
+                    },
+                )
+                .busy_label("Deleting"),
+            );
             Task::none()
         }
     }
 }
 
-async fn save_times(id: String, times: Vec<String>) -> Result<(), String> {
-    save_settings(
-        id,
-        ServerSettingsUpdate {
-            restart_times: Some(times),
-            ..Default::default()
-        },
-    )
-    .await
+fn save_reliability(state: &mut State, id: String, update: ServerSettingsUpdate) -> Task<Message> {
+    state.saving_reliability = true;
+    Task::perform(save_settings(id, update), Message::ReliabilitySaved)
 }
 
 fn setting<'a>(
@@ -638,6 +744,18 @@ fn switch<'a>(on: bool, on_toggle: impl Fn(bool) -> Message + 'a) -> Element<'a,
         .size(18)
         .style(style::switch)
         .on_toggle(on_toggle)
+        .into()
+}
+
+fn switch_maybe<'a>(
+    on: bool,
+    enabled: bool,
+    on_toggle: impl Fn(bool) -> Message + 'a,
+) -> Element<'a, Message> {
+    toggler(on)
+        .size(18)
+        .style(style::switch)
+        .on_toggle_maybe(enabled.then_some(on_toggle))
         .into()
 }
 
@@ -713,7 +831,13 @@ fn general<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Messag
     if state.java_custom {
         java = java.push(
             row![
-                field("Path to java.exe", &state.java_path, false, Message::JavaPath).width(Length::Fill),
+                field(
+                    "Path to java.exe",
+                    &state.java_path,
+                    state.java_problem.is_some(),
+                    Message::JavaPath
+                )
+                .width(Length::Fill),
                 button(text("Browse").size(TEXT_MD))
                     .padding([8, 12])
                     .style(style::secondary)
@@ -721,7 +845,16 @@ fn general<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Messag
             ]
             .spacing(SPACE_2),
         );
-        if !state.javas.is_empty() {
+        if let Some(problem) = state.java_problem {
+            java = java.push(text(problem).size(TEXT_SM).color(CORAL));
+        }
+        if state.javas.is_empty() {
+            java = java.push(
+                text("No Java found on this PC. Browse to pick one.")
+                    .size(TEXT_SM)
+                    .style(style::muted),
+            );
+        } else {
             java = java.push(
                 dropdown(state.javas.clone(), None, |choice: JavaChoice| {
                     Message::JavaPath(choice.path)
@@ -742,7 +875,7 @@ fn general<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Messag
             setting(
                 "Name",
                 "Shown in the sidebar and in exports.",
-                field("", &state.name, name_empty, Message::Name),
+                field("Server name", &state.name, name_empty, Message::Name),
             ),
             setting("Memory", "More RAM helps with many players or plugins.", ram),
             setting("Custom Java", java_hint, java),
@@ -750,7 +883,8 @@ fn general<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Messag
                 "Save changes",
                 "Saving",
                 state.saving_general,
-                (state.general_dirty(server) && !name_empty).then_some(Message::SaveGeneral),
+                (state.general_dirty(server) && !name_empty && state.java_problem.is_none())
+                    .then_some(Message::SaveGeneral),
                 name_empty.then_some("Give the server a name"),
             ),
         ],
@@ -758,57 +892,53 @@ fn general<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Messag
 }
 
 fn raw_editor(state: &State) -> Element<'_, Message> {
-    let mut raw = column![button(
-        text(if state.raw_open {
-            "Hide all properties"
-        } else {
-            "Show all properties"
-        })
-        .size(TEXT_MD)
-    )
-    .padding([8, 12])
-    .style(style::ghost)
-    .on_press(Message::ToggleRaw)]
+    let mut raw = column![
+        text("One key=value per line, exactly as in server.properties. Lines starting with # are ignored.")
+            .size(TEXT_SM)
+            .style(style::muted),
+        text_editor(&state.raw)
+            .on_action(Message::RawAction)
+            .font(MONO)
+            .size(TEXT_SM)
+            .padding(SPACE_3)
+            .height(320)
+            .style(|_: &Theme, status| text_editor::Style {
+                background: LAYER_2.into(),
+                border: iced::Border {
+                    color: MOSS.scale_alpha(0.7),
+                    width: if matches!(status, text_editor::Status::Focused { .. }) {
+                        2.0
+                    } else {
+                        0.0
+                    },
+                    radius: RADIUS_CONTROL.into(),
+                },
+                placeholder: INK_TERTIARY,
+                value: INK,
+                selection: MOSS.scale_alpha(0.28),
+            }),
+    ]
     .spacing(SPACE_2);
-    if state.raw_open {
-        raw = raw
-            .push(
-                text("One key=value per line, exactly as in server.properties.")
-                    .size(TEXT_SM)
-                    .style(style::muted),
-            )
-            .push(
-                text_editor(&state.raw)
-                    .on_action(Message::RawAction)
-                    .font(MONO)
-                    .size(TEXT_SM)
-                    .padding(SPACE_3)
-                    .height(280)
-                    .style(|_: &Theme, status| text_editor::Style {
-                        background: GROUND.into(),
-                        border: iced::Border {
-                            color: if matches!(status, text_editor::Status::Focused { .. }) {
-                                MOSS.scale_alpha(0.7)
-                            } else {
-                                HAIRLINE
-                            },
-                            width: 1.0,
-                            radius: RADIUS_CONTROL.into(),
-                        },
-                        placeholder: INK_TERTIARY,
-                        value: INK,
-                        selection: MOSS.scale_alpha(0.28),
-                    }),
-            );
+    if let Some(error) = &state.raw_error {
+        raw = raw.push(text(error.as_str()).size(TEXT_SM).color(CORAL));
     }
     raw.into()
 }
 
 fn gameplay(state: &State) -> Element<'_, Message> {
+    if !state.loaded {
+        return section(
+            "Gameplay",
+            vec![text("Reading server.properties")
+                .size(TEXT_MD)
+                .style(style::muted)
+                .into()],
+        );
+    }
     let flag = |key: &'static str, default: &str| prop(&state.props, key, default) == "true";
     let number = |key: &'static str, default: &'static str, min: u32, max: u32| {
         field(
-            "",
+            default,
             prop(&state.props, key, default),
             !state.number_ok(key, default, min, max),
             move |v| Message::Prop(key, v),
@@ -824,6 +954,28 @@ fn gameplay(state: &State) -> Element<'_, Message> {
         )
     };
     let error = state.props_error();
+    let toggle_raw = button(
+        text(if state.raw_open {
+            "Back to simple settings"
+        } else {
+            "Edit as text"
+        })
+        .size(TEXT_MD),
+    )
+    .padding([8, 12])
+    .style(style::ghost)
+    .on_press(Message::ToggleRaw);
+    let dirty = state.raw_open || state.props != state.saved_props;
+    let save = save_row(
+        "Save gameplay",
+        "Saving",
+        state.saving_props,
+        (dirty && (state.raw_open || error.is_none())).then_some(Message::SaveProps),
+        if state.raw_open { None } else { error },
+    );
+    if state.raw_open {
+        return section("Gameplay", vec![raw_editor(state), toggle_raw.into(), save]);
+    }
 
     section(
         "Gameplay",
@@ -831,7 +983,7 @@ fn gameplay(state: &State) -> Element<'_, Message> {
             setting(
                 "Message of the day",
                 "Shown under the server name in the multiplayer list.",
-                field("", prop(&state.props, "motd", "A Minecraft Server"), false, |v| {
+                field("A Minecraft Server", prop(&state.props, "motd", "A Minecraft Server"), false, |v| {
                     Message::Prop("motd", v)
                 }),
             ),
@@ -884,19 +1036,14 @@ fn gameplay(state: &State) -> Element<'_, Message> {
                 "Friends connect through this port. The default is 25565.",
                 number("server-port", "25565", 1, 65535),
             ),
-            raw_editor(state),
-            save_row(
-                "Save gameplay",
-                "Saving",
-                state.saving_props,
-                (state.props != state.saved_props && error.is_none()).then_some(Message::SaveProps),
-                error,
-            ),
+            toggle_raw.into(),
+            save,
         ],
     )
 }
 
 fn reliability<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Message> {
+    let saving = state.saving_reliability;
     let mut times = column![].spacing(SPACE_2);
     for (index, time) in server.restart_times.iter().enumerate() {
         times = times.push(
@@ -905,7 +1052,7 @@ fn reliability<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Me
                 button(text("Remove").size(TEXT_SM))
                     .padding([4, 10])
                     .style(style::ghost)
-                    .on_press(Message::RemoveTime(index))
+                    .on_press_maybe((!saving).then_some(Message::RemoveTime(index)))
             ]
             .align_y(Alignment::Center),
         );
@@ -921,10 +1068,13 @@ fn reliability<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Me
         field("04:30", &state.new_time, state.time_error.is_some(), Message::NewTime)
             .on_submit(Message::AddTime)
             .width(Length::Fill),
-        button(text("Add time").size(TEXT_MD))
-            .padding([8, 12])
-            .style(style::secondary)
-            .on_press_maybe((!state.new_time.trim().is_empty()).then_some(Message::AddTime))
+        busy_button(
+            "Add time",
+            "Saving",
+            saving,
+            (!state.new_time.trim().is_empty()).then_some(Message::AddTime),
+            style::secondary
+        )
     ]
     .spacing(SPACE_2)]
     .spacing(SPACE_2);
@@ -938,16 +1088,16 @@ fn reliability<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Me
             setting(
                 "Restart after a crash",
                 "Bring the server back up automatically if it stops unexpectedly.",
-                switch(server.auto_restart_enabled(), Message::AutoRestart),
+                switch_maybe(server.auto_restart_enabled(), !saving, Message::AutoRestart),
             ),
             setting(
                 "Start with Monolith",
                 "Start this server whenever Monolith opens.",
-                switch(server.start_on_launch, Message::StartOnLaunch),
+                switch_maybe(server.start_on_launch, !saving, Message::StartOnLaunch),
             ),
             setting(
                 "Daily restarts",
-                "Players get a warning 5 minutes, 1 minute and 10 seconds before.",
+                "Players get a warning 5 minutes, 1 minute and 10 seconds before. Times are 24-hour.",
                 column![times, adder].spacing(SPACE_3),
             ),
         ],
@@ -989,11 +1139,18 @@ fn platform<'a>(state: &'a State, server: &'a ServerRecord, ctx: &'a Ctx) -> Ele
     ];
     if let Some(error) = &state.versions_error {
         rows.push(
-            text(format!(
-                "Could not load versions: {error}. Check your connection, then pick the software again to retry."
-            ))
-            .size(TEXT_SM)
-            .color(CORAL)
+            row![
+                text(format!("Could not load versions: {error}. Check your connection and retry."))
+                    .size(TEXT_SM)
+                    .color(CORAL)
+                    .width(Length::Fill),
+                button(text("Retry").size(TEXT_MD))
+                    .padding([8, 12])
+                    .style(style::secondary)
+                    .on_press(Message::RetryVersions)
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center)
             .into(),
         );
     }
@@ -1015,23 +1172,60 @@ fn platform<'a>(state: &'a State, server: &'a ServerRecord, ctx: &'a Ctx) -> Ele
             .into(),
         );
     }
-    rows.push(save_row(
-        "Change software",
-        "Changing",
-        state.changing.is_some(),
-        ready.then_some(Message::ApplyPlatform),
-        None,
-    ));
+    if state.platform_armed {
+        rows.push(
+            text("Changing software can break worlds and plugins, and going to an older version can corrupt a world. Export or back up the server first, then confirm.")
+                .size(TEXT_SM)
+                .color(CORAL)
+                .into(),
+        );
+        rows.push(
+            row![
+                Space::new().width(Length::Fill),
+                button(text("Cancel").size(TEXT_MD))
+                    .padding([8, 12])
+                    .style(style::ghost)
+                    .on_press(Message::CancelPlatform),
+                busy_button(
+                    "Confirm change",
+                    "Changing",
+                    false,
+                    ready.then_some(Message::ApplyPlatform),
+                    style::danger
+                )
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    } else {
+        rows.push(save_row(
+            "Change software",
+            "Changing",
+            state.changing.is_some(),
+            ready.then_some(Message::ApplyPlatform),
+            None,
+        ));
+    }
     section("Platform", rows)
 }
 
-fn danger<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Message> {
+fn danger<'a>(state: &'a State, ctx: &'a Ctx, server: &'a ServerRecord) -> Element<'a, Message> {
+    let idle = matches!(
+        ctx.status(&server.id),
+        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle
+    );
+    let export_hint = if idle {
+        "Save the whole server as a zip you can share or import later."
+    } else {
+        "The server is running, so the export may miss recent changes. Stop it first for a clean copy."
+    };
     section(
-        "Danger zone",
+        "Export and delete",
         vec![
             setting(
-                "Export",
-                "Save the whole server as a zip you can share or import later.",
+                "Export a copy",
+                export_hint,
                 busy_button(
                     "Export server",
                     "Exporting",
@@ -1041,23 +1235,19 @@ fn danger<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Message
                 ),
             ),
             setting(
-                "Delete server",
-                format!(
-                    "Removes the server and all its files from this PC. Type {} to confirm.",
-                    server.name
+                "Remove from this PC",
+                if idle {
+                    "Deletes the server and all its files. This cannot be undone."
+                } else {
+                    "Stop the server before deleting it."
+                },
+                busy_button(
+                    "Delete server",
+                    "Deleting",
+                    false,
+                    idle.then_some(Message::Delete),
+                    style::danger,
                 ),
-                column![
-                    field(&server.name, &state.confirm_name, false, Message::ConfirmName),
-                    busy_button(
-                        "Delete server",
-                        "Deleting",
-                        state.deleting,
-                        (state.confirm_name == server.name).then_some(Message::Delete),
-                        style::danger
-                    )
-                ]
-                .spacing(SPACE_2)
-                .align_x(Alignment::End),
             ),
         ],
     )
@@ -1080,7 +1270,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         divider(),
         platform(state, server, ctx),
         divider(),
-        danger(state, server),
+        danger(state, ctx, server),
     ]
     .spacing(SPACE_7)
     .padding(iced::Padding {
@@ -1098,7 +1288,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
 pub fn on_event(state: &mut State, event: &Event, _ctx: &Ctx) -> Task<Message> {
     if let Event::FrameworkChangeProgress(progress) = event {
         if state.changing.is_some() {
-            state.changing = Some((progress.percent, progress.message.clone()));
+            state.changing = Some((progress.percent.clamp(0.0, 100.0), progress.message.clone()));
         }
     }
     Task::none()
@@ -1117,7 +1307,7 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
     let id = server.id.clone();
     tasks.push(Task::perform(
         async move {
-            let props = get_server_properties(id).await;
+            let props = get_server_properties(id.clone()).await;
             let javas = discover_installed_javas()
                 .await
                 .into_iter()
@@ -1126,9 +1316,9 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
                     version: java.version,
                 })
                 .collect();
-            (props, javas, get_system_info())
+            (id, props, javas)
         },
-        |(props, javas, system)| Message::Loaded(props, javas, system),
+        |(id, props, javas)| Message::Loaded(id, props, javas),
     ));
     Task::batch(tasks)
 }

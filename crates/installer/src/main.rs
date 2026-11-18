@@ -366,7 +366,7 @@ impl Setup {
             .height(Length::Fill)
             .style(|theme| container::Style {
                 border: Border {
-                    color: LINE,
+                    color: HAIRLINE,
                     width: BORDER,
                     radius: 0.0.into(),
                 },
@@ -384,7 +384,7 @@ impl Setup {
         } else {
             text("Development build: no payload")
                 .size(TEXT_LG)
-                .style(style::colored(SAND))
+                .style(style::colored(AMBER))
         };
         page(
             column![
@@ -424,7 +424,7 @@ impl Setup {
             location = location.push(
                 text("Enter a full folder path, such as C:\\Users\\you\\Monolith.")
                     .size(TEXT_SM)
-                    .style(style::colored(REDSTONE_HOVER)),
+                    .style(style::colored(CORAL_HOVER)),
             );
         }
         page(
@@ -441,7 +441,7 @@ impl Setup {
                     .size(TEXT_SM)
                     .style(style::muted),
             ]
-            .spacing(CHUNK),
+            .spacing(SPACE_4),
             actions(
                 Some(Message::Back),
                 action("Install", valid.then_some(Message::Begin)),
@@ -643,7 +643,7 @@ fn title_bar<'a>() -> Element<'a, Message> {
     ])
     .height(40)
     .width(Length::Fill)
-    .style(style::stratum)
+    .style(style::surface)
     .into()
 }
 

@@ -211,3 +211,18 @@ pub fn icon_colored<'a>(name: Icon, size: f32, color: Color) -> Svg<'a, Theme> {
         .height(Length::Fixed(size))
         .style(move |_: &Theme, _| svg::Style { color: Some(color) })
 }
+
+const APP_ICON: &[u8] = include_bytes!("../../../assets/brand/icon.svg");
+const APP_MARK: &[u8] = include_bytes!("../../../assets/brand/mark.svg");
+
+pub fn app_icon<'a>(size: f32) -> Svg<'a, Theme> {
+    Svg::new(svg::Handle::from_memory(APP_ICON))
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+}
+
+pub fn app_mark<'a>(size: f32) -> Svg<'a, Theme> {
+    Svg::new(svg::Handle::from_memory(APP_MARK))
+        .width(Length::Fixed(size))
+        .height(Length::Fixed(size))
+}

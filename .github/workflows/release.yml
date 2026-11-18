@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Read version
+        id: version
+        shell: bash
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "v${version}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match workspace version ${version}"
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Build app
+        run: cargo build --release -p monolith
+
+      - name: Build installer
+        shell: bash
+        env:
+          MONOLITH_PAYLOAD_EXE: ${{ github.workspace }}/target/release/monolith.exe
+          MONOLITH_PAYLOAD_PLUGIN: ${{ github.workspace }}/assets/plugins/MonolithAnalytics.jar
+        run: |
+          cargo build --release -p monolith-setup
+          mkdir -p dist
+          cp target/release/monolith-setup.exe "dist/Monolith-Setup-${{ steps.version.outputs.version }}.exe"
+
+      - name: Release notes
+        shell: bash
+        run: |
+          awk -v v="${{ steps.version.outputs.version }}" '$0 ~ "^## " v "$" {f=1; next} /^## /{f=0} f' CHANGELOG.md > notes.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          body_path: notes.md
+          files: dist/Monolith-Setup-${{ steps.version.outputs.version }}.exe

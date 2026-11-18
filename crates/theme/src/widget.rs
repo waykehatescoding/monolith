@@ -1,7 +1,7 @@
-use crate::icon::{icon, icon_colored, Icon};
+use crate::icon::{icon_colored, Icon};
 use crate::style;
 use crate::token::{INK, SPACE_2, TEXT_XS, TITLE_BAR_HEIGHT};
-use iced::widget::{button, column, container, mouse_area, row, text, tooltip, Button, MouseArea, Row, Space, Tooltip};
+use iced::widget::{button, column, container, mouse_area, row, svg, text, tooltip, Button, MouseArea, Row, Space, Tooltip};
 use iced::window::Direction;
 use iced::{mouse, Color, Element, Length, Theme};
 
@@ -16,29 +16,33 @@ pub fn server_icon<'a, M: 'a>(color: Color, state: impl Into<String>) -> Tooltip
     .gap(SPACE_2 + 4.0)
 }
 
+const MINIMIZE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 5.5H10" stroke="#fff"/></svg>"##;
+const MAXIMIZE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="#fff"/></svg>"##;
+const RESTORE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M2.5 2.5V0.5H9.5V7.5H7.5M0.5 2.5H7.5V9.5H0.5Z" fill="none" stroke="#fff"/></svg>"##;
+const CLOSE: &[u8] = br##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0.5 0.5L9.5 9.5M9.5 0.5L0.5 9.5" stroke="#fff"/></svg>"##;
+
 fn window_button<'a, M: Clone + 'a>(
-    glyph: Icon,
+    glyph: &'static [u8],
     message: M,
     style: fn(&Theme, button::Status) -> button::Style,
 ) -> Button<'a, M, Theme> {
-    button(
-        container(icon(glyph, 14.0))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center(Length::Fill),
-    )
-    .width(Length::Fixed(46.0))
-    .height(Length::Fixed(TITLE_BAR_HEIGHT))
-    .padding(0)
-    .style(style)
-    .on_press(message)
+    let glyph = svg(svg::Handle::from_memory(glyph))
+        .width(Length::Fixed(10.0))
+        .height(Length::Fixed(10.0))
+        .style(|_: &Theme, _| svg::Style { color: Some(INK) });
+    button(container(glyph).center(Length::Fill))
+        .width(Length::Fixed(46.0))
+        .height(Length::Fixed(TITLE_BAR_HEIGHT))
+        .padding(0)
+        .style(style)
+        .on_press(message)
 }
 
 pub fn window_controls<'a, M: Clone + 'a>(maximized: bool, minimize: M, toggle: M, close: M) -> Row<'a, M, Theme> {
     row![
-        window_button(Icon::Minimize, minimize, style::window_control),
-        window_button(if maximized { Icon::Copy } else { Icon::Stop }, toggle, style::window_control),
-        window_button(Icon::Close, close, style::window_close),
+        window_button(MINIMIZE, minimize, style::window_control),
+        window_button(if maximized { RESTORE } else { MAXIMIZE }, toggle, style::window_control),
+        window_button(CLOSE, close, style::window_close),
     ]
 }
 

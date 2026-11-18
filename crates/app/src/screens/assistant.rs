@@ -1,6 +1,8 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
 
-use iced::widget::{button, column, container, row, scrollable, text, text_input, toggler};
+use iced::widget::{
+    button, column, container, row, scrollable, text, text_input, toggler, tooltip,
+};
 use iced::{Alignment, Element, Length, Padding, Subscription, Task};
 use monolith_core::ai_assistant::{self, AiChatRequest};
 use monolith_core::ai_settings;
@@ -45,6 +47,24 @@ fn preset(provider: AiAssistantProvider) -> (&'static str, &'static str) {
     }
 }
 
+fn valid_base_url(url: &str) -> Result<(), &'static str> {
+    let url = url.trim();
+    if let Some(rest) = url.strip_prefix("https://") {
+        return if rest.split(['/', ':']).next().is_some_and(|h| !h.is_empty()) {
+            Ok(())
+        } else {
+            Err("The base URL needs a host name, for example https://api.openai.com/v1.")
+        };
+    }
+    let Some(rest) = url.strip_prefix("http://") else {
+        return Err("The base URL must start with https://.");
+    };
+    match rest.split(['/', ':']).next().unwrap_or_default() {
+        "localhost" | "127.0.0.1" | "[::1]" => Ok(()),
+        _ => Err("Plain http:// is only allowed for localhost. Use https:// so your key is encrypted."),
+    }
+}
+
 fn needs_key(provider: AiAssistantProvider) -> bool {
     provider != AiAssistantProvider::Custom
 }
@@ -59,9 +79,17 @@ enum Progress {
 }
 
 #[derive(Debug, Clone)]
+pub enum FileState {
+    Loading,
+    Missing,
+    Unreadable(String),
+    Text(String),
+}
+
+#[derive(Debug, Clone)]
 struct Card {
     action: AiAssistantAction,
-    current: Option<String>,
+    current: FileState,
     progress: Progress,
     undo: Option<AiAssistantAction>,
 }
@@ -81,6 +109,8 @@ pub struct State {
     base_url: String,
     api_key: String,
     saving: bool,
+    enabling: bool,
+    generation: u32,
     save_error: Option<String>,
     entries: Vec<Entry>,
     input: String,
@@ -101,8 +131,8 @@ pub enum Message {
     Close,
     Input(String),
     Send,
-    Replied(AiAssistantChatResult),
-    FileLoaded(String, Option<String>),
+    Replied(u32, AiAssistantChatResult),
+    FileLoaded(String, FileState),
     Apply(String),
     Applied(String, Result<AiAssistantActionResult, String>),
     Dismiss(String),
@@ -187,17 +217,29 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             Task::none()
         }
-        Message::Enabled(enabled) => Task::perform(
-            ai_settings::update_ai_assistant_settings(
-                json!({ "enabled": enabled, "onboardingCompleted": true }),
-            ),
-            Message::Saved,
-        ),
+        Message::Enabled(enabled) => {
+            if state.enabling {
+                return Task::none();
+            }
+            state.enabling = true;
+            state.save_error = None;
+            Task::perform(
+                ai_settings::update_ai_assistant_settings(
+                    json!({ "enabled": enabled, "onboardingCompleted": true }),
+                ),
+                Message::Saved,
+            )
+        }
         Message::Provider(provider) => {
+            let (old_model, old_url) = preset(state.provider);
             let (model, base_url) = preset(provider);
+            if state.model.trim().is_empty() || state.model == old_model {
+                state.model = model.into();
+            }
+            if state.base_url.trim().is_empty() || state.base_url == old_url {
+                state.base_url = base_url.into();
+            }
             state.provider = provider;
-            state.model = model.into();
-            state.base_url = base_url.into();
             state.save_error = None;
             Task::none()
         }
@@ -218,6 +260,10 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 state.save_error = Some("Fill in the model and the base URL before saving.".into());
                 return Task::none();
             }
+            if let Err(reason) = valid_base_url(&state.base_url) {
+                state.save_error = Some(reason.into());
+                return Task::none();
+            }
             state.saving = true;
             state.save_error = None;
             let mut update = json!({
@@ -236,6 +282,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::Saved(result) => {
             state.saving = false;
+            state.enabling = false;
             match result {
                 Ok(settings) => {
                     adopt(state, settings);
@@ -270,12 +317,19 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             match chat_request(state, ctx) {
                 Ok(request) => {
                     state.sending = true;
-                    Task::perform(ai_assistant::send_ai_assistant_message(request), |result| {
-                        Message::Replied(result.unwrap_or_else(|e| AiAssistantChatResult {
-                            error: Some(e),
-                            ..Default::default()
-                        }))
-                    })
+                    let generation = state.generation;
+                    Task::perform(
+                        ai_assistant::send_ai_assistant_message(request),
+                        move |result| {
+                            Message::Replied(
+                                generation,
+                                result.unwrap_or_else(|e| AiAssistantChatResult {
+                                    error: Some(e),
+                                    ..Default::default()
+                                }),
+                            )
+                        },
+                    )
                 }
                 Err(e) => {
                     state.entries.push(Entry::Failure(e.to_string()));
@@ -283,7 +337,10 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 }
             }
         }
-        Message::Replied(result) => {
+        Message::Replied(generation, result) => {
+            if generation != state.generation {
+                return Task::none();
+            }
             state.sending = false;
             if !result.success {
                 state.entries.push(Entry::Failure(
@@ -299,7 +356,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 .into_iter()
                 .map(|action| Card {
                     action,
-                    current: None,
+                    current: FileState::Loading,
                     progress: Progress::Pending,
                     undo: None,
                 })
@@ -321,13 +378,26 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             });
             Task::batch(loads.into_iter().map(|(id, server_id, path)| {
                 Task::perform(server_files::read_server_file(server_id, path), move |r| {
-                    Message::FileLoaded(id.clone(), r.content)
+                    let current = match (r.content, r.error) {
+                        (Some(text), _) => FileState::Text(text),
+                        (None, Some(e))
+                            if e.contains("cannot find")
+                                || e.contains("No such file")
+                                || e.contains("os error 2") =>
+                        {
+                            FileState::Missing
+                        }
+                        (None, e) => {
+                            FileState::Unreadable(e.unwrap_or_else(|| "unknown error".into()))
+                        }
+                    };
+                    Message::FileLoaded(id.clone(), current)
                 })
             }))
         }
-        Message::FileLoaded(id, content) => {
+        Message::FileLoaded(id, current) => {
             if let Some(card) = find_card(state, &id) {
-                card.current = content;
+                card.current = current;
             }
             Task::none()
         }
@@ -335,7 +405,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             let Some(card) = find_card(state, &id) else {
                 return Task::none();
             };
-            if card.progress != Progress::Pending {
+            if !matches!(card.progress, Progress::Pending | Progress::Failed(_)) {
                 return Task::none();
             }
             card.progress = Progress::Running;
@@ -347,11 +417,11 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                     Ok(r) => {
                         card.progress = Progress::Done(r.message.unwrap_or_else(|| "Done".into()));
                         card.undo = r.undo_action;
+                        ctx.refresh_servers();
                     }
                     Err(e) => card.progress = Progress::Failed(e),
                 }
             }
-            ctx.refresh_servers();
             Task::none()
         }
         Message::Dismiss(id) => {
@@ -364,24 +434,32 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             let Some(card) = find_card(state, &id) else {
                 return Task::none();
             };
-            let Some(undo) = card.undo.take() else {
+            let Some(undo) = card.undo.clone() else {
                 return Task::none();
             };
+            if !matches!(card.progress, Progress::Done(_) | Progress::Failed(_)) {
+                return Task::none();
+            }
             card.progress = Progress::Running;
             run_action(&undo).map(move |r| Message::Undone(id.clone(), r))
         }
         Message::Undone(id, result) => {
             if let Some(card) = find_card(state, &id) {
                 card.progress = match outcome(result) {
-                    Ok(_) => Progress::Done("Change undone".into()),
+                    Ok(_) => {
+                        card.undo = None;
+                        ctx.refresh_servers();
+                        Progress::Done("Change undone".into())
+                    }
                     Err(e) => Progress::Failed(format!("Could not undo: {e}")),
                 };
             }
-            ctx.refresh_servers();
             Task::none()
         }
         Message::Clear => {
             state.entries.clear();
+            state.sending = false;
+            state.generation += 1;
             Task::none()
         }
     }
@@ -396,7 +474,12 @@ fn field<'a>(label: &'a str, input: Element<'a, Message>) -> Element<'a, Message
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     let title = text("Assistant").size(TEXT_XL).font(UI_SEMIBOLD);
     let Some(settings) = &state.settings else {
-        return title.into();
+        return column![
+            title,
+            text("Loading assistant settings").size(TEXT_MD).style(style::muted),
+        ]
+        .spacing(SPACE_3)
+        .into();
     };
 
     let providers = row(PROVIDERS.iter().map(|&provider| {
@@ -411,10 +494,14 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     let saved_key = settings.has_api_key && state.provider == settings.provider;
     let key_hint = match (&settings.censored_api_key, saved_key) {
         (Some(key), true) => format!("Saved key {key}. Type a new one to replace it."),
+        _ if needs_key(state.provider) && settings.has_api_key => format!(
+            "Paste your {} API key. The saved key is for {}.",
+            provider_label(state.provider),
+            provider_label(settings.provider)
+        ),
         _ if needs_key(state.provider) => "Paste your API key".to_string(),
         _ => "Optional for local servers".to_string(),
     };
-    let key_missing = needs_key(state.provider) && state.api_key.trim().is_empty() && !saved_key;
 
     let mut form = column![
         field("Provider", providers.into()),
@@ -441,19 +528,12 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
                 .on_input(Message::ApiKey)
                 .secure(true)
                 .padding([8, 12])
-                .style(if key_missing {
-                    style::input_error
-                } else {
-                    style::input
-                })
+                .style(style::input)
                 .into()
         ),
     ]
     .spacing(SPACE_4);
 
-    if let Some(error) = &state.save_error {
-        form = form.push(text(error.as_str()).size(TEXT_SM).color(CORAL));
-    }
     form = form.push(busy_button(
         "Save",
         "Saving",
@@ -464,13 +544,15 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
 
     let usable = settings.has_api_key || !needs_key(settings.provider);
     let mut switch = toggler(settings.enabled).size(20).style(style::switch);
-    if usable {
+    if usable && !state.enabling {
         switch = switch.on_toggle(Message::Enabled);
     }
     let toggle = row![
         column![
             text("Enable the assistant").size(TEXT_MD).font(UI_MEDIUM),
-            text(if usable {
+            text(if state.enabling {
+                "Saving"
+            } else if usable {
                 "Adds a chat panel next to your servers. Nothing changes until you confirm it."
             } else {
                 "Save an API key first, then switch the assistant on."
@@ -485,6 +567,11 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     .spacing(SPACE_5)
     .align_y(Alignment::Center);
 
+    let error: Element<Message> = match &state.save_error {
+        Some(e) => text(e.as_str()).size(TEXT_SM).color(CORAL).into(),
+        None => column![].into(),
+    };
+
     scrollable(
         column![
             title,
@@ -492,6 +579,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
                 .size(TEXT_MD)
                 .style(style::muted),
             toggle,
+            error,
             form,
         ]
         .spacing(SPACE_5)
@@ -501,14 +589,31 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     .into()
 }
 
-fn diff_summary(current: Option<&str>, new: &str) -> String {
-    let Some(old) = current else {
-        return format!("New file, {} lines", new.lines().count());
+fn diff_summary(current: &FileState, new: &str) -> String {
+    let old = match current {
+        FileState::Loading => return "Checking the current file".into(),
+        FileState::Missing => return format!("New file, {} lines", new.lines().count()),
+        FileState::Unreadable(e) => {
+            return format!("Could not read the current file ({e}). Confirming overwrites it.")
+        }
+        FileState::Text(old) => old,
     };
-    let before: HashSet<&str> = old.lines().collect();
-    let after: HashSet<&str> = new.lines().collect();
-    let added = new.lines().filter(|l| !before.contains(l)).count();
-    let removed = old.lines().filter(|l| !after.contains(l)).count();
+    let mut counts: HashMap<&str, i64> = HashMap::new();
+    for line in old.lines() {
+        *counts.entry(line).or_default() -= 1;
+    }
+    for line in new.lines() {
+        *counts.entry(line).or_default() += 1;
+    }
+    let added: i64 = counts.values().filter(|n| **n > 0).sum();
+    let removed: i64 = -counts.values().filter(|n| **n < 0).sum::<i64>();
+    if added == 0 && removed == 0 {
+        return if old == new {
+            "No changes".into()
+        } else {
+            "Same lines in a different order".into()
+        };
+    }
     format!(
         "{added} lines added, {removed} removed, {} lines in total",
         new.lines().count()
@@ -526,38 +631,35 @@ fn describe(card: &Card) -> (String, Element<'_, Message>) {
         ),
         AiAssistantActionKind::SendServerCommand { command } => (
             "Run a console command".into(),
-            text(format!("/{}", command.trim_start_matches('/')))
-                .size(TEXT_SM)
-                .font(MONO)
-                .into(),
+            text(command.as_str()).size(TEXT_SM).font(MONO).into(),
         ),
         AiAssistantActionKind::WriteServerFile {
             relative_path,
             content,
         } => (
-            format!("Write {relative_path}"),
+            format!("Overwrite {relative_path} in the server folder"),
             container(column![
-                text(diff_summary(card.current.as_deref(), content))
+                text(diff_summary(&card.current, content))
                     .size(TEXT_SM)
                     .style(style::muted),
                 scrollable(text(content.as_str()).size(TEXT_SM).font(MONO))
                     .style(style::scroll)
-                    .direction(scrollable::Direction::Both {
-                        vertical: scrollable::Scrollbar::default(),
-                        horizontal: scrollable::Scrollbar::default(),
-                    })
                     .height(Length::Shrink),
             ]
             .spacing(SPACE_2))
-            .max_height(200)
+            .max_height(240)
             .into(),
         ),
     }
 }
 
-fn card_view(card: &Card) -> Element<'_, Message> {
+fn card_view<'a>(card: &'a Card, ctx: &'a Ctx) -> Element<'a, Message> {
     let id = card.action.id.clone();
     let (title, detail) = describe(card);
+    let target = ctx.server(&card.action.server_id).map_or_else(
+        || "Unknown server".to_string(),
+        |s| format!("On {}", s.name),
+    );
 
     let footer: Element<Message> = match &card.progress {
         Progress::Pending => row![
@@ -572,6 +674,9 @@ fn card_view(card: &Card) -> Element<'_, Message> {
         ]
         .spacing(SPACE_2)
         .into(),
+        Progress::Running if card.undo.is_some() => {
+            busy_button::<Message>("Undo", "Undoing", true, None, style::secondary)
+        }
         Progress::Running => {
             busy_button::<Message>("Confirm", "Applying", true, None, style::primary)
         }
@@ -592,12 +697,31 @@ fn card_view(card: &Card) -> Element<'_, Message> {
             }
             line.into()
         }
-        Progress::Failed(error) => row![
-            icon_colored(Icon::Error, 16.0, CORAL),
-            text(error.as_str()).size(TEXT_SM).color(CORAL),
-        ]
-        .spacing(SPACE_2)
-        .into(),
+        Progress::Failed(error) => {
+            let retry = if card.undo.is_some() {
+                Message::Undo(id.clone())
+            } else {
+                Message::Apply(id.clone())
+            };
+            row![
+                icon_colored(Icon::Error, 16.0, CORAL),
+                text(error.as_str())
+                    .size(TEXT_SM)
+                    .color(CORAL)
+                    .width(Length::Fill),
+                button(text("Retry").size(TEXT_SM).font(UI_MEDIUM))
+                    .padding([4, 10])
+                    .style(style::secondary)
+                    .on_press(retry),
+                button(text("Dismiss").size(TEXT_SM).font(UI_MEDIUM))
+                    .padding([4, 10])
+                    .style(style::ghost)
+                    .on_press(Message::Dismiss(id)),
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center)
+            .into()
+        }
         Progress::Dismissed => text("Dismissed").size(TEXT_SM).style(style::faint).into(),
     };
 
@@ -606,7 +730,9 @@ fn card_view(card: &Card) -> Element<'_, Message> {
             text(card.action.label.as_str())
                 .size(TEXT_MD)
                 .font(UI_MEDIUM),
-            text(title).size(TEXT_XS).style(style::muted),
+            text(format!("{target}. {title}"))
+                .size(TEXT_XS)
+                .style(style::muted),
             detail,
             footer,
         ]
@@ -618,7 +744,7 @@ fn card_view(card: &Card) -> Element<'_, Message> {
     .into()
 }
 
-fn bubble(entry: &Entry) -> Element<'_, Message> {
+fn bubble<'a>(entry: &'a Entry, ctx: &'a Ctx) -> Element<'a, Message> {
     match entry {
         Entry::User(content) => container(
             container(text(content.as_str()).size(TEXT_MD))
@@ -634,7 +760,7 @@ fn bubble(entry: &Entry) -> Element<'_, Message> {
                 body = body.push(text(reply.as_str()).size(TEXT_MD));
             }
             for card in cards {
-                body = body.push(card_view(card));
+                body = body.push(card_view(card, ctx));
             }
             body.into()
         }
@@ -648,6 +774,17 @@ fn bubble(entry: &Entry) -> Element<'_, Message> {
         .spacing(SPACE_2)
         .into(),
     }
+}
+
+fn hint<'a>(content: Element<'a, Message>, label: &'a str) -> Element<'a, Message> {
+    tooltip(
+        content,
+        container(text(label).size(TEXT_XS))
+            .padding([4, 8])
+            .style(style::tooltip),
+        tooltip::Position::Bottom,
+    )
+    .into()
 }
 
 pub fn panel<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
@@ -665,19 +802,21 @@ pub fn panel<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
                 .on_press(Message::Clear),
         );
     }
-    head = head.push(
+    head = head.push(hint(
         button(icon(Icon::Close, 16.0))
             .padding(SPACE_2)
             .style(style::icon_button)
-            .on_press(Message::Close),
-    );
+            .on_press(Message::Close)
+            .into(),
+        "Close",
+    ));
 
     let body: Element<Message> = if state.settings.is_none() {
         text("Loading").size(TEXT_MD).style(style::muted).into()
     } else if !configured(state) {
         column![
             text("Set up the assistant").size(TEXT_LG).font(UI_SEMIBOLD),
-            text("Add an API key from any OpenAI-compatible service. The assistant can then read your server's logs and settings and suggest fixes that you approve one by one.")
+            text("Add an API key from any OpenAI-compatible service. The assistant can then suggest fixes for your servers, and you approve them one by one.")
                 .size(TEXT_MD)
                 .style(style::muted),
             button(text("Open assistant settings").size(TEXT_MD).font(UI_MEDIUM))
@@ -704,7 +843,7 @@ pub fn panel<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             .spacing(SPACE_2)
             .into()
         } else {
-            let mut entries = column(state.entries.iter().map(bubble)).spacing(SPACE_4);
+            let mut entries = column(state.entries.iter().map(|entry| bubble(entry, ctx))).spacing(SPACE_4);
             if state.sending {
                 entries = entries.push(text("Thinking").size(TEXT_MD).style(style::muted));
             }
@@ -727,8 +866,8 @@ pub fn panel<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             container(list).height(Length::Fill),
             row![
                 input,
-                button(icon(Icon::ChevronRight, 16.0))
-                    .padding(SPACE_2)
+                button(text("Send").size(TEXT_MD).font(UI_MEDIUM))
+                    .padding([8, 14])
                     .style(style::primary)
                     .on_press_maybe(can_send.then_some(Message::Send)),
             ]

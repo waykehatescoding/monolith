@@ -7,7 +7,7 @@ use iced::widget::{
 use iced::window::Screenshot;
 use iced::{window, Alignment, Color, Element, Length, Size, Task, Theme};
 use monolith_theme::token::*;
-use monolith_theme::widget::status_dot;
+use monolith_theme::widget::server_avatar;
 use monolith_theme::{
     app_icon, icon, icon_colored, style, theme, Icon, FONT_BYTES, MONO, UI, UI_MEDIUM,
     UI_SEMIBOLD,
@@ -134,7 +134,8 @@ fn sidebar(state: &Gallery) -> Element<'_, Message> {
     let servers = SERVERS.iter().enumerate().fold(
         column![].spacing(SPACE_1),
         |list, (index, (name, color))| {
-            let entry = row![status_dot(*color), text(*name).size(TEXT_MD)]
+            let ring = (*color != STONE).then_some(*color);
+            let entry = row![server_avatar(name, ring), text(*name).size(TEXT_MD)]
                 .spacing(SPACE_3)
                 .align_y(Alignment::Center);
             list.push(
@@ -380,12 +381,12 @@ fn main_pane(state: &Gallery) -> Element<'_, Message> {
         column![
             text(name).size(TEXT_2XL).font(UI_SEMIBOLD),
             row![
-                status_dot(color),
-                text(format!("Paper 1.21.4 · {status}"))
+                text("Paper 1.21.4 · ").size(TEXT_MD).style(style::muted),
+                text(status)
                     .size(TEXT_MD)
-                    .style(style::muted)
+                    .font(UI_MEDIUM)
+                    .color(if color == STONE { INK_SECONDARY } else { color }),
             ]
-            .spacing(SPACE_2)
             .align_y(Alignment::Center),
         ]
         .spacing(SPACE_2),

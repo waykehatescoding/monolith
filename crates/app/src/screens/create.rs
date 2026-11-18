@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use iced::widget::{
     button, checkbox, column, container, pick_list, progress_bar, row, scrollable, slider, text,
-    text_input, toggler, Column, Space,
+    text_input, toggler, Column, Row, Space,
 };
 use iced::{clipboard, Alignment, Element, Length, Subscription, Task};
 use monolith_core::default_plugins::list_default_plugins;
@@ -96,6 +96,7 @@ pub struct State {
     recommended: u32,
     max_ram: u32,
     plugins: Vec<DefaultPlugin>,
+    plugins_loaded: bool,
     disabled: HashSet<String>,
     analytics: bool,
     progress: Option<ServerCreationProgress>,
@@ -105,6 +106,8 @@ pub struct State {
     imported: bool,
     address: String,
     starting: bool,
+    start_error: Option<String>,
+    picking: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -175,8 +178,8 @@ fn format_mb(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / 1_048_576.0)
 }
 
-fn join_address(state: &State) -> String {
-    format!("{}:{}", state.address, DEFAULT_PORT)
+fn join_address(state: &State) -> Option<String> {
+    (!state.address.is_empty()).then(|| format!("{}:{}", state.address, DEFAULT_PORT))
 }
 
 impl State {
@@ -206,16 +209,7 @@ impl State {
     }
 
     fn name_problem(&self, ctx: &Ctx) -> Option<&'static str> {
-        let name = self.name.trim();
-        if name.chars().count() > 48 {
-            return Some("Use 48 characters or fewer.");
-        }
-        let taken = ctx
-            .servers
-            .iter()
-            .any(|server| server.name.trim().eq_ignore_ascii_case(name));
-        (taken && !name.is_empty())
-            .then_some("You already have a server with this name. Pick a different one.")
+        name_issue(&self.name, ctx)
     }
 
     fn name_ready(&self, ctx: &Ctx) -> bool {
@@ -259,6 +253,22 @@ impl State {
         self.step = Step::Done;
         ctx.refresh_servers();
     }
+}
+
+fn name_issue(name: &str, ctx: &Ctx) -> Option<&'static str> {
+    let name = name.trim();
+    if name.chars().count() > 48 {
+        return Some("Use 48 characters or fewer.");
+    }
+    if name.chars().any(|c| r#"<>:"/\|?*"#.contains(c)) {
+        return Some(r#"Names cannot contain < > : " / \ | ? *"#);
+    }
+    let taken = ctx
+        .servers
+        .iter()
+        .any(|server| server.name.trim().eq_ignore_ascii_case(name));
+    (taken && !name.is_empty())
+        .then_some("You already have a server with this name. Pick a different one.")
 }
 
 fn load_versions(platform: Platform) -> Task<Message> {
@@ -339,7 +349,10 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
         Message::PluginsLoaded(plugins) => {
+            let keys: HashSet<&str> = plugins.iter().map(plugin_key).collect();
+            state.disabled.retain(|key| keys.contains(key.as_str()));
             state.plugins = plugins;
+            state.plugins_loaded = true;
             Task::none()
         }
         Message::Group(group, on) => {
@@ -371,6 +384,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             let Some(version) = state.version.clone() else {
                 return Task::none();
             };
+            if state.ram == 0 {
+                return Task::none();
+            }
             let compatible = state.platform.plugins();
             let params = CreateServerParams {
                 name: state.name.trim().to_string(),
@@ -402,14 +418,18 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
         Message::CopyAddress => {
+            let Some(address) = join_address(state) else {
+                return Task::none();
+            };
             ctx.success("Address copied");
-            clipboard::write(join_address(state))
+            clipboard::write(address)
         }
         Message::Start => {
             let Some(server) = &state.created else {
                 return Task::none();
             };
             state.starting = true;
+            state.start_error = None;
             Task::perform(start_server(server.id.clone()), |result| {
                 Message::Started(if result.success {
                     Ok(())
@@ -429,7 +449,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                         ctx.select_server(server.id.clone());
                     }
                 }
-                Err(error) => ctx.error(error),
+                Err(error) => state.start_error = Some(error),
             }
             Task::none()
         }
@@ -444,6 +464,10 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             on_show(state, ctx)
         }
         Message::Import => {
+            if state.picking {
+                return Task::none();
+            }
+            state.picking = true;
             state.import_error = None;
             Task::perform(
                 async {
@@ -457,12 +481,20 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 Message::ImportPicked,
             )
         }
-        Message::ImportPicked(None) => Task::none(),
+        Message::ImportPicked(None) => {
+            state.picking = false;
+            Task::none()
+        }
         Message::ImportPicked(Some(path)) => {
+            state.picking = false;
             let name = path
                 .file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default();
+            if let Some(problem) = name_issue(&name, ctx).or(name.trim().is_empty().then_some("The zip has no usable name.")) {
+                state.import_error = Some(format!("Could not import \"{name}\". {problem} Rename the zip file and try again."));
+                return Task::none();
+            }
             state.step = Step::Importing;
             Task::perform(
                 import_server(path.to_string_lossy().into_owned(), name),
@@ -615,7 +647,11 @@ fn name_step<'a>(state: &'a State, ctx: &'a Ctx) -> Column<'a, Message> {
         text("Already have a server?")
             .size(TEXT_SM)
             .style(style::muted),
-        link("Import it from a zip", Message::Import),
+        if state.picking {
+            text("Choosing a file").size(TEXT_SM).style(style::muted).into()
+        } else {
+            link("Import it from a zip", Message::Import)
+        },
     ]
     .spacing(SPACE_1)
     .align_y(Alignment::Center)]
@@ -742,6 +778,13 @@ fn memory_step(state: &State) -> Column<'_, Message> {
         .align_y(Alignment::Center)
         .into()
     };
+    if state.max_ram == 0 {
+        return step_layout(
+            heading("Set the memory".into(), "Checking how much memory your computer has."),
+            text("Loading").size(TEXT_SM).style(style::muted).into(),
+            footer(primary("Continue", None), true),
+        );
+    }
     let content = column![
         text(format_gb(state.ram)).size(TEXT_2XL).font(UI_SEMIBOLD),
         slider(MIN_RAM..=max, state.ram, Message::Ram)
@@ -802,7 +845,9 @@ fn plugins_step(state: &State) -> Column<'_, Message> {
     }
 
     let mut content = column![].spacing(SPACE_5);
-    if groups.is_empty() {
+    if !state.plugins_loaded {
+        content = content.push(text("Loading your default plugins").size(TEXT_SM).style(style::muted));
+    } else if groups.is_empty() {
         content = content.push(
             column![
                 text("You have no default plugins yet.").size(TEXT_MD),
@@ -980,7 +1025,6 @@ fn importing_step<'a>() -> Column<'a, Message> {
             "Importing your server".into(),
             "Unpacking the files. Large worlds can take a minute."
         ),
-        progress_bar(0.0..=1.0, 0.0).girth(6).style(style::progress),
     ]
     .spacing(SPACE_6)
 }
@@ -996,8 +1040,9 @@ fn done_step(state: &State) -> Column<'_, Message> {
     } else {
         format!("{name} is ready")
     };
-    let address = row![
-        text(join_address(state))
+    let joined = join_address(state);
+    let address: Row<Message> = row![
+        text(joined.clone().unwrap_or_else(|| String::from("Finding your address")))
             .font(MONO)
             .size(TEXT_LG)
             .width(Length::Fill),
@@ -1011,12 +1056,12 @@ fn done_step(state: &State) -> Column<'_, Message> {
         )
         .padding([6, 12])
         .style(style::secondary)
-        .on_press(Message::CopyAddress)
+        .on_press_maybe(joined.map(|_| Message::CopyAddress))
     ]
     .spacing(SPACE_3)
     .align_y(Alignment::Center);
 
-    let content = column![
+    let mut content = column![
         column![
             text("Friends on your network join with this address.")
                 .size(TEXT_SM)
@@ -1028,8 +1073,10 @@ fn done_step(state: &State) -> Column<'_, Message> {
             .size(TEXT_SM)
             .style(style::muted),
     ]
-    .spacing(SPACE_4)
-    .into();
+    .spacing(SPACE_4);
+    if let Some(error) = &state.start_error {
+        content = content.push(text(error).size(TEXT_SM).style(style::colored(CORAL)));
+    }
 
     let actions = row![
         button(text("Create another").size(TEXT_MD).font(UI_MEDIUM))
@@ -1054,7 +1101,7 @@ fn done_step(state: &State) -> Column<'_, Message> {
 
     step_layout(
         heading(title, "Start it now, or open it to look around first."),
-        content,
+        content.into(),
         actions.into(),
     )
 }

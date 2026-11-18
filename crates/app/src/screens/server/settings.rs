@@ -20,7 +20,7 @@ use monolith_core::types::{
 };
 use monolith_theme::token::{
     CORAL, INK, INK_TERTIARY, LAYER_2, MOSS, RADIUS_CONTROL, SPACE_1, SPACE_2, SPACE_3, SPACE_4,
-    SPACE_6, SPACE_7, TEXT_MD, TEXT_SM, TEXT_XL,
+    SPACE_5, SPACE_6, SPACE_7, TEXT_MD, TEXT_SM, TEXT_XL,
 };
 use monolith_theme::{style, MONO, UI_SEMIBOLD};
 
@@ -733,9 +733,9 @@ fn setting<'a>(
 fn section<'a>(title: &'a str, rows: Vec<Element<'a, Message>>) -> Element<'a, Message> {
     column![
         text(title).size(TEXT_XL).font(UI_SEMIBOLD),
-        column(rows).spacing(SPACE_4)
+        column(rows).spacing(SPACE_5)
     ]
-    .spacing(SPACE_4)
+    .spacing(SPACE_5)
     .into()
 }
 
@@ -809,6 +809,7 @@ fn save_row<'a>(
     footer
         .push(Space::new().width(Length::Fill))
         .push(busy_button(label, busy_label, busy, message, style::primary, BUTTON_MD))
+        .padding(iced::Padding { top: SPACE_2, ..iced::Padding::ZERO })
         .into()
 }
 
@@ -928,7 +929,7 @@ fn gameplay(state: &State) -> Element<'_, Message> {
     if !state.loaded {
         return section(
             "Gameplay",
-            vec![text("Reading server.properties")
+            vec![text("Reading server.properties...")
                 .size(TEXT_MD)
                 .style(style::muted)
                 .into()],

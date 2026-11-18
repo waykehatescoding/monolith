@@ -92,7 +92,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
         .spacing(SPACE_2)
         .align_y(Alignment::Center),
     )
-    .padding([12, 24])
+    .padding([8, 16])
     .style(style::primary)
     .on_press_maybe((!state.importing).then_some(Message::Create));
 

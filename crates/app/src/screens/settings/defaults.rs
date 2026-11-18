@@ -1,4 +1,6 @@
-use iced::widget::{button, column, container, pick_list, row, scrollable, text, text_input, Space};
+use iced::widget::{
+    button, column, container, pick_list, row, scrollable, text, text_input, tooltip, Space,
+};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use monolith_core::default_plugins;
 use monolith_core::events::Event;
@@ -6,7 +8,8 @@ use monolith_core::modrinth;
 use monolith_core::types::{DefaultPlugin, DefaultPluginSource, ModrinthSearchHit};
 use monolith_theme::style;
 use monolith_theme::token::{
-    CORAL, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, TEXT_LG, TEXT_MD, TEXT_SM, TEXT_XL,
+    CORAL, INK, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, TEXT_LG, TEXT_MD, TEXT_SM, TEXT_XL,
+    TEXT_XS,
 };
 use monolith_theme::{icon, Icon, UI_MEDIUM, UI_SEMIBOLD};
 use serde_json::json;
@@ -36,6 +39,7 @@ pub struct State {
     search_error: Option<String>,
     edit: Option<Edit>,
     edit_input: String,
+    edit_error: Option<String>,
     deleting: Option<String>,
     busy: bool,
 }
@@ -223,6 +227,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             state.searching = true;
             state.search_error = None;
+            state.hits.clear();
             Task::perform(
                 async move {
                     modrinth::search_modrinth(
@@ -279,6 +284,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             mutate(state, remove_plugin(plugin))
         }
         Message::StartEdit(edit) => {
+            state.edit_error = None;
             state.edit_input = match &edit {
                 Edit::New => String::new(),
                 Edit::Rename(group) => group.clone(),
@@ -288,10 +294,12 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::EditInput(value) => {
             state.edit_input = value;
+            state.edit_error = None;
             Task::none()
         }
         Message::CancelEdit => {
             state.edit = None;
+            state.edit_error = None;
             Task::none()
         }
         Message::SubmitEdit => {
@@ -300,16 +308,26 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 return Task::none();
             };
             if new_name.is_empty() || new_name.eq_ignore_ascii_case(GENERAL) {
-                ctx.error("Pick a group name that is not empty or General.");
+                state.edit_error = Some("Pick a group name that is not empty or General.".into());
                 return Task::none();
             }
-            if edit != Edit::Rename(new_name.clone())
-                && state.groups().iter().any(|g| g.eq_ignore_ascii_case(&new_name))
+            let renaming = match &edit {
+                Edit::Rename(old) => Some(old.as_str()),
+                Edit::New => None,
+            };
+            if state
+                .groups()
+                .iter()
+                .any(|g| g.eq_ignore_ascii_case(&new_name) && Some(g.as_str()) != renaming)
             {
-                ctx.error("A group with that name already exists.");
+                state.edit_error = Some("A group with that name already exists.".into());
+                return Task::none();
+            }
+            if renaming.is_some() && state.busy {
                 return Task::none();
             }
             state.edit = None;
+            state.edit_error = None;
             match edit {
                 Edit::New => {
                     state.extra_groups.push(new_name);
@@ -318,6 +336,12 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 Edit::Rename(old) => {
                     let keys = state.keys_in(&old);
                     state.extra_groups.retain(|g| *g != old);
+                    if state.target.as_deref() == Some(old.as_str()) {
+                        state.target = Some(new_name.clone());
+                    }
+                    if state.collapsed.remove(&old) {
+                        state.collapsed.insert(new_name.clone());
+                    }
                     if keys.is_empty() {
                         state.extra_groups.push(new_name);
                         return Task::none();
@@ -344,8 +368,15 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
         Message::DeleteGroup(group, remove) => {
+            if state.busy {
+                return Task::none();
+            }
             state.deleting = None;
             state.extra_groups.retain(|g| *g != group);
+            state.collapsed.remove(&group);
+            if state.target.as_deref() == Some(group.as_str()) {
+                state.target = None;
+            }
             let keys = state.keys_in(&group);
             mutate(state, delete_group(keys, remove))
         }
@@ -386,12 +417,18 @@ fn small<'a>(label: &'a str, message: Option<Message>, danger: bool) -> Element<
         .into()
 }
 
-fn icon_action<'a>(glyph: Icon, message: Option<Message>) -> Element<'a, Message> {
-    button(icon(glyph, 16.0))
-        .padding(SPACE_2)
-        .style(style::icon_button)
-        .on_press_maybe(message)
-        .into()
+fn icon_action<'a>(glyph: Icon, label: &'a str, message: Option<Message>) -> Element<'a, Message> {
+    tooltip(
+        button(icon(glyph, 16.0))
+            .padding(SPACE_2)
+            .style(style::icon_button)
+            .on_press_maybe(message),
+        container(text(label).size(TEXT_XS).color(INK))
+            .padding([4, 8])
+            .style(style::tooltip),
+        tooltip::Position::Left,
+    )
+    .into()
 }
 
 fn plugin_row<'a>(state: &'a State, plugin: &'a DefaultPlugin) -> Element<'a, Message> {
@@ -417,6 +454,7 @@ fn plugin_row<'a>(state: &'a State, plugin: &'a DefaultPlugin) -> Element<'a, Me
     }
     controls = controls.push(icon_action(
         Icon::Trash,
+        "Remove from default plugins",
         (!state.busy).then(|| Message::Remove(plugin_key)),
     ));
 
@@ -441,20 +479,29 @@ fn edit_row<'a>(state: &'a State) -> Element<'a, Message> {
         Some(Edit::Rename(_)) => "Rename",
         _ => "Create group",
     };
-    row![
-        text_input("Group name", &state.edit_input)
-            .on_input(Message::EditInput)
-            .on_submit(Message::SubmitEdit)
-            .size(TEXT_MD)
-            .padding(SPACE_2)
-            .style(style::input)
-            .width(280),
+    let field = text_input("Group name", &state.edit_input)
+        .on_input(Message::EditInput)
+        .on_submit(Message::SubmitEdit)
+        .size(TEXT_MD)
+        .padding(SPACE_2)
+        .width(280);
+    let field = if state.edit_error.is_some() {
+        field.style(style::input_error)
+    } else {
+        field.style(style::input)
+    };
+    let mut block = column![row![
+        field,
         small(label, Some(Message::SubmitEdit), false),
         small("Cancel", Some(Message::CancelEdit), false),
     ]
     .spacing(SPACE_2)
-    .align_y(Alignment::Center)
-    .into()
+    .align_y(Alignment::Center)]
+    .spacing(SPACE_1);
+    if let Some(error) = &state.edit_error {
+        block = block.push(text(error).size(TEXT_SM).style(style::colored(CORAL)));
+    }
+    block.into()
 }
 
 fn group_section<'a>(state: &'a State, group: &str) -> Element<'a, Message> {
@@ -493,10 +540,12 @@ fn group_section<'a>(state: &'a State, group: &str) -> Element<'a, Message> {
         header = header
             .push(icon_action(
                 Icon::Edit,
+                "Rename group",
                 Some(Message::StartEdit(Edit::Rename(group.to_string()))),
             ))
             .push(icon_action(
                 Icon::Trash,
+                "Delete group",
                 Some(Message::AskDelete(group.to_string())),
             ));
     }
@@ -542,7 +591,7 @@ fn group_section<'a>(state: &'a State, group: &str) -> Element<'a, Message> {
     if open {
         if members.is_empty() {
             section = section.push(
-                text("No plugins here yet. Use Add plugins to put some in this group, or move one over from another group.")
+                text("No plugins here yet. Use Add plugins to put some in this group, or move one over from another group. An empty group is forgotten when you leave this page.")
                     .size(TEXT_SM)
                     .style(style::muted),
             );
@@ -564,8 +613,7 @@ fn hit_row<'a>(state: &'a State, index: usize, hit: &'a ModrinthSearchHit) -> El
             text(&hit.title).size(TEXT_MD).font(UI_MEDIUM),
             text(&hit.description)
                 .size(TEXT_SM)
-                .style(style::muted)
-                .wrapping(text::Wrapping::None),
+                .style(style::muted),
         ]
         .spacing(2)
         .width(Length::Fill),
@@ -661,7 +709,9 @@ fn empty<'a>() -> Element<'a, Message> {
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(plugins) = &state.plugins else {
-        return Space::new().into();
+        return container(text("Loading default plugins").size(TEXT_MD).style(style::muted))
+            .padding([0.0, SPACE_4])
+            .into();
     };
 
     let mut page = column![row![

@@ -2642,7 +2642,9 @@ name = "monolith"
 version = "1.0.0"
 dependencies = [
  "iced",
+ "image",
  "monolith-core",
+ "monolith-theme",
  "open",
  "rfd",
  "serde",

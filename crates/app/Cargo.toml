@@ -6,9 +6,11 @@ license.workspace = true
 
 [dependencies]
 monolith-core = { path = "../core" }
+monolith-theme = { path = "../theme" }
 iced.workspace = true
 tokio.workspace = true
 rfd.workspace = true
 open.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+image.workspace = true

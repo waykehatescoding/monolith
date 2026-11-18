@@ -14,6 +14,9 @@ pub fn user_data_dir() -> PathBuf {
     if let Some(dir) = USER_DATA_OVERRIDE.read().ok().and_then(|o| o.clone()) {
         return dir;
     }
+    if let Some(dir) = std::env::var_os("MONOLITH_DATA_DIR").filter(|dir| !dir.is_empty()) {
+        return PathBuf::from(dir);
+    }
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(APP_NAME)

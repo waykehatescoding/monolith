@@ -402,7 +402,7 @@ fn list_view<'a>(state: &'a State, can_restore: bool) -> Element<'a, Message> {
             .align_x(Alignment::Start)
             .max_width(460),
         )
-        .padding([SPACE_5, 0])
+        .padding([SPACE_5, 0.0])
         .into();
     }
 

@@ -432,24 +432,15 @@ fn list_view<'a>(state: &'a State, can_restore: bool) -> Element<'a, Message> {
             .into();
     }
     if state.backups.is_empty() {
-        return container(
-            column![
-                text("No backups yet").size(TEXT_LG).font(UI_SEMIBOLD),
-                text("A backup is a zip of this server's world and settings. Make one before you change plugins or update the server.")
-                    .size(TEXT_MD)
-                    .style(style::muted),
-                action(
-                    label("Create backup", Icon::Plus),
-                    style::primary,
-                    (!state.creating).then_some(Message::Create),
-                ),
-            ]
-            .spacing(SPACE_3)
-            .align_x(Alignment::Center)
-            .max_width(460),
-        )
-        .padding([SPACE_5, 0.0])
-        .center_x(Length::Fill)
+        return column![
+            text("No backups yet").size(TEXT_LG).font(UI_SEMIBOLD),
+            text("A backup is a zip of this server's world and settings. Make one before you change plugins or update the server.")
+                .size(TEXT_MD)
+                .style(style::muted),
+        ]
+        .spacing(SPACE_1)
+        .max_width(480)
+        .padding([SPACE_4, 0.0])
         .into();
     }
 
@@ -474,7 +465,7 @@ fn schedule_view(state: &State) -> Element<'_, Message> {
     let input = text_input("24", &state.interval)
         .size(TEXT_MD)
         .padding([8, 12])
-        .width(80)
+        .width(72)
         .on_input(Message::Interval)
         .on_submit_maybe(can_save.then_some(Message::SaveSchedule))
         .style(move |theme: &Theme, status| {
@@ -486,12 +477,12 @@ fn schedule_view(state: &State) -> Element<'_, Message> {
         });
     let hint = if hours.is_none() {
         text(format!("Enter a whole number from 1 to {MAX_INTERVAL_HOURS}."))
-            .size(TEXT_XS)
+            .size(TEXT_SM)
             .color(CORAL)
     } else {
         text("Backups run while Monolith is open.")
-            .size(TEXT_XS)
-            .color(INK_SECONDARY)
+            .size(TEXT_SM)
+            .style(style::muted)
     };
     let save = action(
         text(if state.saving { "Saving" } else { "Save schedule" })
@@ -563,22 +554,14 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     .spacing(SPACE_2)
     .align_y(Alignment::Center);
 
-    if !state.backups.is_empty() {
-        header = header.push(
-        action(
-            label(
-                if state.creating {
-                    "Backing up"
-                } else {
-                    "Create backup"
-                },
-                Icon::Plus
-            ),
-            style::primary,
-            (!state.creating).then_some(Message::Create),
-        )
-        );
-    }
+    header = header.push(action(
+        label(
+            if state.creating { "Backing up" } else { "Create backup" },
+            Icon::Plus,
+        ),
+        style::primary,
+        (!state.creating).then_some(Message::Create),
+    ));
 
     let mut body = column![header].spacing(SPACE_4);
     if state.creating {
@@ -593,7 +576,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     }
     body = body
         .push(list_view(state, offline))
-        .push(Space::new().height(SPACE_3))
+        .push(Space::new().height(SPACE_4))
         .push(schedule_view(state));
 
     scrollable(body.padding([0, 0]).width(Length::Fill))

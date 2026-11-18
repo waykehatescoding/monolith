@@ -366,13 +366,20 @@ fn log_area(state: &State) -> Element<'_, Message> {
     stack![surface, pill].into()
 }
 
+fn clock(timestamp: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(timestamp).map_or_else(
+        |_| timestamp.to_string(),
+        |time| time.with_timezone(&chrono::Local).format("%H:%M:%S").to_string(),
+    )
+}
+
 fn line_view<'a>(line: ConsoleLine) -> Element<'a, Message> {
     let base = match line.kind {
         ConsoleLineType::Stdout => LOG_INFO,
         ConsoleLineType::Stderr => CORAL,
         ConsoleLineType::System => MOSS,
     };
-    let stamp = text(line.timestamp)
+    let stamp = text(clock(&line.timestamp))
         .size(TEXT_XS)
         .font(MONO)
         .style(style::faint);

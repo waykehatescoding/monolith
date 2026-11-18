@@ -50,7 +50,8 @@ impl Range {
 
     fn time_format(self) -> &'static str {
         match self {
-            Range::Hour | Range::Day => "%H:%M",
+            Range::Hour => "%H:%M",
+            Range::Day => "%a %H:%M",
             Range::Week => "%d %b %H:%M",
         }
     }

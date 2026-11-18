@@ -25,6 +25,7 @@ use monolith_theme::token::*;
 use monolith_theme::{icon, icon_colored, Icon, UI_MEDIUM, UI_SEMIBOLD};
 
 use crate::ctx::Ctx;
+use crate::demo;
 
 const PAGE_SIZE: u32 = 20;
 const DRAWER_WIDTH: f32 = 360.0;
@@ -285,6 +286,9 @@ fn load_installed(target: &Target) -> Task<Message> {
 
 fn check_latest(target: &Target, entries: &[ModrinthInstallEntry]) -> Task<Message> {
     let id = target.server_id.clone();
+    if let Some(latest) = demo::latest_versions(entries) {
+        return Task::done(Message::Latest(id, latest));
+    }
     let loader = target.loader.to_string();
     let game_version = target.game_version.clone();
     let projects: Vec<_> = entries

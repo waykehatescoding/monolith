@@ -17,6 +17,7 @@ use crate::screens::server::{
 };
 use crate::screens::settings::{defaults, general, sharing};
 use crate::screens::{self, assistant, create, onboarding, palette};
+use crate::demo;
 use crate::ui::confirm;
 use crate::ui::overlay::modal;
 use crate::ui::shortcuts::{self, Shortcut};
@@ -53,7 +54,9 @@ pub enum Message {
     Maximized(bool),
     Resized(window::Id),
     Resync,
+    Frame,
     Capture,
+    CaptureRetry,
     Shot(Screenshot),
 }
 
@@ -70,7 +73,12 @@ pub struct App {
     maximized: bool,
     booted: bool,
     screenshot: Option<std::path::PathBuf>,
+    frames: u32,
+    capture_attempts: u32,
 }
+
+const CAPTURE_ATTEMPTS: u32 = 40;
+const CAPTURE_RETRY: Duration = Duration::from_millis(300);
 
 impl App {
     pub fn boot(launch: Launch) -> (App, Task<Message>) {
@@ -87,6 +95,8 @@ impl App {
             maximized: false,
             booted: false,
             screenshot: launch.screenshot.clone(),
+            frames: 0,
+            capture_attempts: 0,
         };
         app.ctx.palette_open = launch.palette;
         let mut tasks = vec![
@@ -95,13 +105,20 @@ impl App {
                 app_preferences::get_app_preferences(),
                 Message::PreferencesLoaded,
             ),
-            Task::future(lifecycle::startup()).discard(),
-            Task::future(lifecycle::run_auto_backups()).discard(),
-            Task::future(lifecycle::run_scheduled_restarts()).discard(),
         ];
+        if demo::active() {
+            tasks.push(Task::future(demo::simulate()).discard());
+        } else {
+            tasks.extend([
+                Task::future(lifecycle::startup()).discard(),
+                Task::future(lifecycle::run_auto_backups()).discard(),
+                Task::future(lifecycle::run_scheduled_restarts()).discard(),
+            ]);
+        }
         if launch.screenshot.is_some() {
+            let settle = if demo::active() { 2500 } else { 1200 };
             tasks.push(Task::perform(
-                tokio::time::sleep(Duration::from_millis(1200)),
+                tokio::time::sleep(Duration::from_millis(settle)),
                 |_| Message::Capture,
             ));
         }
@@ -123,7 +140,13 @@ impl App {
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
+        let frames = if self.screenshot.is_some() {
+            window::frames().map(|_| Message::Frame)
+        } else {
+            Subscription::none()
+        };
         Subscription::batch([
+            frames,
             Subscription::run(core_events),
             window::close_requests().map(|_| Message::CloseRequested),
             window::resize_events().map(|(id, _)| Message::Resized(id)),
@@ -215,26 +238,58 @@ impl App {
                 self.ctx.refresh_servers();
                 Task::none()
             }
-            Message::Capture => window::oldest().then(|id| match id {
-                Some(id) => window::screenshot(id).map(Message::Shot),
-                None => Task::none(),
-            }),
-            Message::Shot(screenshot) => {
-                if let Some(path) = &self.screenshot {
-                    let saved = image::save_buffer(
-                        path,
-                        &screenshot.rgba,
-                        screenshot.size.width,
-                        screenshot.size.height,
-                        image::ColorType::Rgba8,
-                    );
-                    if let Err(error) = saved {
-                        eprintln!("could not save screenshot: {error}");
-                    }
-                }
-                iced::exit()
+            Message::Frame => {
+                self.frames = self.frames.saturating_add(1);
+                Task::none()
             }
+            Message::Capture => {
+                if !self.ctx.loaded || self.frames == 0 {
+                    return self.retry_capture();
+                }
+                window::oldest().then(|id| match id {
+                    Some(id) => window::screenshot(id).map(Message::Shot),
+                    None => Task::done(Message::CaptureRetry),
+                })
+            }
+            Message::CaptureRetry => self.retry_capture(),
+            Message::Shot(screenshot) => self.save_screenshot(&screenshot),
         }
+    }
+
+    fn retry_capture(&mut self) -> Task<Message> {
+        self.capture_attempts += 1;
+        if self.capture_attempts > CAPTURE_ATTEMPTS {
+            eprintln!("could not capture a screenshot: the window never produced a frame");
+            std::process::exit(1);
+        }
+        Task::perform(tokio::time::sleep(CAPTURE_RETRY), |_| Message::Capture)
+    }
+
+    fn save_screenshot(&mut self, screenshot: &Screenshot) -> Task<Message> {
+        let Some(path) = self.screenshot.clone() else {
+            return Task::none();
+        };
+        if screenshot.size.width == 0 || screenshot.size.height == 0 {
+            return self.retry_capture();
+        }
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let saved = image::save_buffer(
+            &path,
+            &screenshot.rgba,
+            screenshot.size.width,
+            screenshot.size.height,
+            image::ColorType::Rgba8,
+        );
+        let written = saved.is_ok() && std::fs::metadata(&path).is_ok_and(|meta| meta.len() > 0);
+        if written {
+            return iced::exit();
+        }
+        if let Err(error) = saved {
+            eprintln!("could not save screenshot: {error}");
+        }
+        self.retry_capture()
     }
 
     fn apply(&mut self, action: Action) -> Task<Message> {
@@ -315,8 +370,8 @@ impl App {
             || matches!(
                 (previous, route),
                 (
-                    Route::Settings(SettingsPage::General | SettingsPage::Updates),
-                    Route::Settings(SettingsPage::General | SettingsPage::Updates)
+                    Route::Settings(SettingsPage::General | SettingsPage::Updates | SettingsPage::About),
+                    Route::Settings(SettingsPage::General | SettingsPage::Updates | SettingsPage::About)
                 )
             );
         if same_page {
@@ -464,7 +519,7 @@ impl App {
                 Task::batch([header, body])
             }
             Route::Create => create::on_show(&mut screens.create, ctx).map(S::Create),
-            Route::Settings(SettingsPage::General | SettingsPage::Updates) => {
+            Route::Settings(SettingsPage::General | SettingsPage::Updates | SettingsPage::About) => {
                 general::on_show(&mut screens.general, ctx).map(S::General)
             }
             Route::Settings(SettingsPage::Defaults) => {
@@ -752,7 +807,7 @@ impl App {
             })
             .width(180);
         let body = match page {
-            SettingsPage::General | SettingsPage::Updates => {
+            SettingsPage::General | SettingsPage::Updates | SettingsPage::About => {
                 mapped(general::view(&screens.general, ctx), S::General)
             }
             SettingsPage::Defaults => mapped(defaults::view(&screens.defaults, ctx), S::Defaults),

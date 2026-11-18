@@ -18,6 +18,7 @@ use monolith_theme::token::{
 use monolith_theme::{icon, icon_colored, style, Icon, MONO, UI_MEDIUM, UI_SEMIBOLD};
 
 use crate::ctx::{status_color, Ctx, Route, SettingsPage, Tab};
+use crate::demo;
 use crate::ui::busy_button;
 
 const DEFAULT_PORT: u16 = 25565;
@@ -654,7 +655,11 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
                 status,
                 ServerRuntimeStatus::Online | ServerRuntimeStatus::Starting
             )
-            .then(Instant::now),
+            .then(|| {
+                let now = Instant::now();
+                now.checked_sub(demo::uptime(&server.id)).unwrap_or(now)
+            }),
+            crashed: demo::crashed(&server.id),
             ..State::default()
         };
     }

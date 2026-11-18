@@ -53,24 +53,27 @@ pub enum SettingsPage {
     Sharing,
     Assistant,
     Updates,
+    About,
 }
 
 impl SettingsPage {
-    pub const ALL: [SettingsPage; 5] = [
+    pub const ALL: [SettingsPage; 6] = [
         SettingsPage::General,
         SettingsPage::Defaults,
         SettingsPage::Sharing,
         SettingsPage::Assistant,
         SettingsPage::Updates,
+        SettingsPage::About,
     ];
 
     pub fn label(self) -> &'static str {
         match self {
             SettingsPage::General => "General",
-            SettingsPage::Defaults => "Server defaults",
+            SettingsPage::Defaults => "Default plugins",
             SettingsPage::Sharing => "Sharing",
             SettingsPage::Assistant => "Assistant",
             SettingsPage::Updates => "Updates",
+            SettingsPage::About => "About",
         }
     }
 }
@@ -100,6 +103,7 @@ impl Route {
             "settings-sharing" => Route::Settings(SettingsPage::Sharing),
             "settings-assistant" => Route::Settings(SettingsPage::Assistant),
             "settings-updates" => Route::Settings(SettingsPage::Updates),
+            "settings-about" => Route::Settings(SettingsPage::About),
             "empty" => Route::Empty,
             _ => return None,
         })

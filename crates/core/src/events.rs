@@ -29,7 +29,7 @@ pub fn subscribe() -> broadcast::Receiver<Event> {
     BUS.subscribe()
 }
 
-pub(crate) fn emit(event: Event) {
+pub fn emit(event: Event) {
     let _ = BUS.send(event);
 }
 

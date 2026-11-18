@@ -10,7 +10,7 @@ use monolith_core::{app_preferences, paths, update_checker};
 use monolith_theme::{icon, Icon, UI_MEDIUM, UI_SEMIBOLD};
 use monolith_theme::style;
 use monolith_theme::token::{
-    CORAL, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, SPACE_7, TEXT_LG, TEXT_MD, TEXT_SM,
+    CORAL, SPACE_1, SPACE_2, SPACE_3, SPACE_5, SPACE_7, TEXT_LG, TEXT_MD, TEXT_SM,
     TEXT_XL,
 };
 use serde::{Deserialize, Serialize};
@@ -492,7 +492,7 @@ fn updates<'a>(state: &'a State) -> Element<'a, Message> {
         }
     }
 
-    column![page, about()].spacing(SPACE_6).into()
+    page.into()
 }
 
 fn about<'a>() -> Element<'a, Message> {
@@ -506,7 +506,7 @@ fn about<'a>() -> Element<'a, Message> {
             link("Report a problem", ISSUES_URL),
         ]
         .spacing(SPACE_5),
-        text("Hubot Sans and JetBrains Mono are used under the SIL Open Font Licence 1.1. Lucide icons are used under the ISC licence.")
+        text("Geist and Geist Mono are used under the SIL Open Font Licence 1.1. Lucide icons are used under the ISC licence.")
             .size(TEXT_SM)
             .style(style::muted),
         container(action(
@@ -523,6 +523,7 @@ fn about<'a>() -> Element<'a, Message> {
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let body = match ctx.route {
         Route::Settings(SettingsPage::Updates) => updates(state),
+        Route::Settings(SettingsPage::About) => about(),
         _ => general(state, ctx),
     };
     scrollable(container(body).padding([0, 16]))

@@ -235,6 +235,10 @@ fn send_console_line(server_id: &str, text: &str, kind: ConsoleLineType) {
         text: text.to_string(),
         kind,
     };
+    push_console_line(server_id, line);
+}
+
+pub fn push_console_line(server_id: &str, line: ConsoleLine) {
     if let Ok(mut logs) = LOGS.lock() {
         let entry = logs.entry(server_id.to_string()).or_default();
         entry.push(line.clone());

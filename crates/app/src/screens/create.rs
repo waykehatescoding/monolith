@@ -846,10 +846,10 @@ fn plugins_step(state: &State) -> Column<'_, Message> {
         content = content.push(
             column![
                 text("You have no default plugins yet.").size(TEXT_MD),
-                text("Add the plugins you want on every new server in Server defaults. They will show up here.")
+                text("Add the plugins you want on every new server in Default plugins. They will show up here.")
                     .size(TEXT_SM)
                     .style(style::muted),
-                sized(text("Open server defaults").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
+                sized(text("Open default plugins").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                     .style(style::secondary)
                     .on_press(Message::OpenDefaults),
             ]

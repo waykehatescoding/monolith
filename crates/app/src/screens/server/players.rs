@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
-use monolith_theme::widget::{sized};
+use monolith_theme::widget::sized;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, toggler, Space};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
@@ -9,7 +9,6 @@ use monolith_core::types::{ServerProperty, ServerRuntimeStatus, SuccessResult};
 use monolith_core::{server_props, server_runner};
 use monolith_theme::token::{
     SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, TEXT_LG, TEXT_MD, TEXT_SM,
-    TEXT_XL,
 };
 use monolith_theme::{style, UI_MEDIUM, UI_SEMIBOLD};
 
@@ -400,6 +399,7 @@ fn online_section<'a>(ctx: &'a Ctx, id: &str, busy: bool) -> Element<'a, Message
             .into()
     };
     let hint = match names.len() {
+        _ if !is_online(ctx, id) => "Offline".to_string(),
         1 => "1 player online".to_string(),
         count => format!("{count} players online"),
     };
@@ -432,7 +432,7 @@ fn whitelist_section(state: &State) -> Element<'_, Message> {
         text_input("Player name", &state.whitelist_input)
             .on_input_maybe((!state.busy).then_some(Message::WhitelistInput))
             .on_submit_maybe((!state.busy).then_some(Message::AddWhitelist))
-            .padding([8, 12])
+            .padding([6, 12])
             .width(Length::Fill)
             .style(style::input),
         sized(text("Add player").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
@@ -466,7 +466,7 @@ fn whitelist_section(state: &State) -> Element<'_, Message> {
 
     section(
         "Whitelist",
-        "Choose exactly who is allowed on this server.",
+        "Players you approve to join.",
         column![switch, add, list].spacing(SPACE_4).into(),
     )
 }
@@ -476,13 +476,13 @@ fn ban_section(state: &State) -> Element<'_, Message> {
         text_input("Player name", &state.ban_input)
             .on_input_maybe((!state.busy).then_some(Message::BanInput))
             .on_submit_maybe((!state.busy).then_some(Message::AddBan))
-            .padding([8, 12])
+            .padding([6, 12])
             .width(Length::Fill)
             .style(style::input),
         text_input("Reason (optional)", &state.ban_reason)
             .on_input_maybe((!state.busy).then_some(Message::BanReason))
             .on_submit_maybe((!state.busy).then_some(Message::AddBan))
-            .padding([8, 12])
+            .padding([6, 12])
             .width(Length::Fill)
             .style(style::input),
         sized(text("Ban player").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
@@ -530,13 +530,13 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     }
     scrollable(
         column![
-            text("Players").size(TEXT_XL).font(UI_SEMIBOLD),
             online_section(ctx, id, state.busy),
             whitelist_section(state),
             ban_section(state),
             Space::new().height(SPACE_6),
         ]
-        .spacing(SPACE_5),
+        .spacing(SPACE_5)
+        .padding(iced::Padding::ZERO.right(SPACE_4)),
     )
     .style(style::scroll)
     .width(Length::Fill)

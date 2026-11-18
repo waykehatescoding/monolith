@@ -687,21 +687,16 @@ fn add_panel<'a>(state: &'a State) -> Element<'a, Message> {
 }
 
 fn empty<'a>() -> Element<'a, Message> {
-    container(
-        column![
-            icon(Icon::Package, 28.0),
-            text("No default plugins yet").size(TEXT_LG).font(UI_SEMIBOLD),
-            text("Plugins you add here can be installed into every new server you create, so each one starts with your usual setup.")
-                .size(TEXT_MD)
-                .style(style::muted),
-            action("Add plugins", Icon::Plus, Some(Message::ToggleAdd), true),
-        ]
-        .spacing(SPACE_3)
-        .align_x(Alignment::Start),
-    )
-    .padding(SPACE_5)
-    .width(Length::Fill)
-    .style(style::well)
+    column![
+        text("No default plugins yet").size(TEXT_LG).font(UI_SEMIBOLD),
+        text("Add the plugins you install on every server, such as permissions or world protection. New servers can start with them already in place.")
+            .size(TEXT_MD)
+            .style(style::muted),
+        Space::new().height(SPACE_1),
+        action("Add plugins", Icon::Plus, Some(Message::ToggleAdd), true),
+    ]
+    .spacing(SPACE_2)
+    .max_width(520)
     .into()
 }
 
@@ -712,10 +707,11 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
             .into();
     };
 
+    let is_empty = plugins.is_empty() && state.extra_groups.is_empty() && !state.adding;
     let mut page = column![row![
         column![
             text("Default plugins").size(TEXT_XL).font(UI_SEMIBOLD),
-            text("Plugins in these groups can be installed automatically when you create a server.")
+            text("Installed automatically into new servers. Group them to keep setups tidy.")
                 .size(TEXT_MD)
                 .style(style::muted),
         ]
@@ -725,7 +721,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
             if state.adding { "Done adding" } else { "Add plugins" },
             if state.adding { Icon::Check } else { Icon::Plus },
             Some(Message::ToggleAdd),
-            !state.adding,
+            !state.adding && !is_empty,
         ),
         action(
             "New group",
@@ -745,7 +741,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
         page = page.push(add_panel(state));
     }
 
-    if plugins.is_empty() && state.extra_groups.is_empty() && !state.adding {
+    if is_empty {
         page = page.push(empty());
     } else {
         for group in state.groups() {

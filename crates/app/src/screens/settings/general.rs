@@ -12,13 +12,14 @@ use monolith_theme::token::{
     TEXT_XL,
 };
 use serde::{Deserialize, Serialize};
-use tokio::process::Command;
+use winreg::enums::HKEY_CURRENT_USER;
+use winreg::RegKey;
 
-use crate::ctx::{Ctx, Route, SettingsPage};
+use crate::ctx::{Confirm, Ctx, Route, SettingsPage};
 
 const REPO_URL: &str = "https://github.com/waykehatescoding/monolith";
 const ISSUES_URL: &str = "https://github.com/waykehatescoding/monolith/issues";
-const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE: &str = "Monolith";
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -59,46 +60,37 @@ async fn save_local(local: Local) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     let json = serde_json::to_string_pretty(&local).map_err(|e| e.to_string())?;
-    tokio::fs::write(path, json)
+    let tmp = path.with_extension("json.tmp");
+    tokio::fs::write(&tmp, json)
+        .await
+        .map_err(|e| e.to_string())?;
+    tokio::fs::rename(&tmp, &path)
         .await
         .map_err(|e| e.to_string())
 }
 
-fn reg() -> Command {
-    let mut command = Command::new("reg");
-    #[cfg(windows)]
-    command.creation_flags(0x0800_0000);
-    command
+fn run_key() -> std::io::Result<RegKey> {
+    RegKey::predef(HKEY_CURRENT_USER).create_subkey(RUN_KEY).map(|(key, _)| key)
 }
 
 async fn read_autostart() -> bool {
-    reg()
-        .args(["query", RUN_KEY, "/v", RUN_VALUE])
-        .output()
-        .await
-        .map(|out| out.status.success())
-        .unwrap_or(false)
+    run_key()
+        .and_then(|key| key.get_value::<String, _>(RUN_VALUE))
+        .is_ok()
 }
 
 async fn write_autostart(enabled: bool) -> Result<bool, String> {
-    let output = if enabled {
+    let key = run_key().map_err(|e| e.to_string())?;
+    if enabled {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let value = format!("\"{}\"", exe.display());
-        reg()
-            .args(["add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &value, "/f"])
-            .output()
-            .await
-    } else {
-        reg()
-            .args(["delete", RUN_KEY, "/v", RUN_VALUE, "/f"])
-            .output()
-            .await
-    };
-    match output {
-        Ok(out) if out.status.success() => Ok(enabled),
-        Ok(_) => Err("Windows refused the change to your startup list.".to_string()),
-        Err(e) => Err(e.to_string()),
+        key.set_value(RUN_VALUE, &format!("\"{}\"", exe.display()))
+            .map_err(|e| e.to_string())?;
+    } else if let Err(e) = key.delete_value(RUN_VALUE) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            return Err(e.to_string());
+        }
     }
+    Ok(enabled)
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -230,13 +222,35 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
         Message::Install => {
+            if ctx.running_count() > 0 {
+                ctx.confirm(
+                    Confirm::new(
+                        "Install the update?",
+                        "Your running servers will be stopped and Monolith will close while the update installs.",
+                        "Install and restart",
+                        true,
+                        || async {
+                            let result = update_checker::install_update().await;
+                            if result.success {
+                                Ok("Starting the installer".to_string())
+                            } else {
+                                Err(result.error.unwrap_or_else(|| "The installer could not start.".to_string()))
+                            }
+                        },
+                    )
+                    .busy_label("Installing"),
+                );
+                return Task::none();
+            }
             state.phase = Phase::Installing;
             Task::perform(update_checker::install_update(), Message::Installed)
         }
         Message::Installed(result) => {
             if !result.success {
                 state.phase = Phase::Ready;
-                state.error = result.error;
+                state.error = Some(result.error.unwrap_or_else(|| {
+                    "The installer could not start. Try again, or download the update again.".to_string()
+                }));
             }
             Task::none()
         }
@@ -371,7 +385,7 @@ fn updates<'a>(state: &'a State) -> Element<'a, Message> {
             .into(),
         (Phase::Downloading, _) => column![
             text(format!("Downloading update, {:.0}%", state.percent)).size(TEXT_MD),
-            progress_bar(0.0..=100.0, state.percent)
+            progress_bar(0.0..=100.0, state.percent.clamp(0.0, 100.0))
                 .girth(6)
                 .style(style::progress)
         ]
@@ -445,7 +459,7 @@ fn updates<'a>(state: &'a State) -> Element<'a, Message> {
 
     if let Some(error) = &state.error {
         page = page.push(
-            text(format!("{error} Check your internet connection and try again."))
+            text(error.as_str())
                 .size(TEXT_SM)
                 .style(style::colored(CORAL)),
         );
@@ -476,7 +490,7 @@ fn updates<'a>(state: &'a State) -> Element<'a, Message> {
 
 fn about<'a>() -> Element<'a, Message> {
     column![
-        heading("About Monolith"),
+        subheading("About Monolith"),
         text(format!("Version {VERSION}, released under the GPL-3.0 licence."))
             .size(TEXT_MD)
             .style(style::muted),

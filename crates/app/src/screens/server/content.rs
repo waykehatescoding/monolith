@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::time::Duration;
 
 use iced::widget::image::{self, Handle};
 use iced::widget::{
@@ -123,6 +124,7 @@ pub struct State {
     search_seq: u64,
     detail: Option<Detail>,
     icons: HashMap<String, Option<Handle>>,
+    confirming: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -134,12 +136,13 @@ pub enum Message {
     Updated(String, String, String, Result<bool, String>),
     UpdateAll,
     UpdatedAll(String, usize, Option<String>),
+    AskRemove(Option<String>),
     Remove(String, String),
     Removed(String, String, String, Result<(), String>),
     Query(String),
     Sort(SortChoice),
     Search,
-    Searched(u64, Result<ModrinthSearchResult, String>),
+    Searched(u64, u32, Result<ModrinthSearchResult, String>),
     Page(bool),
     Open(Box<ModrinthSearchHit>),
     Close,
@@ -197,26 +200,63 @@ fn target(ctx: &Ctx) -> Option<Target> {
     })
 }
 
-fn icon_source(project_id: &str, icon_url: Option<&str>) -> String {
-    match icon_url {
-        Some(url) if url.starts_with(ICON_HOST) => url.to_string(),
-        _ => format!("{ICON_HOST}data/{project_id}/icon.png"),
+fn is_slug(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn is_safe_path(path: &str) -> bool {
+    !path.contains("..")
+        && path
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_./".contains(c))
+}
+
+fn icon_source(project_id: &str, icon_url: Option<&str>) -> Option<String> {
+    let direct = icon_url.filter(|url| {
+        url.strip_prefix(ICON_HOST)
+            .is_some_and(|path| !path.is_empty() && is_safe_path(path))
+    });
+    match direct {
+        Some(url) => Some(url.to_string()),
+        None => is_slug(project_id).then(|| format!("{ICON_HOST}data/{project_id}/icon.png")),
     }
 }
 
 async fn fetch_icon(url: String) -> Option<Handle> {
     let client = reqwest::Client::builder()
         .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
         .build()
         .ok()?;
-    let response = client.get(url).send().await.ok()?.error_for_status().ok()?;
-    let bytes = response.bytes().await.ok()?;
-    (bytes.len() <= MAX_ICON_BYTES).then(|| Handle::from_bytes(bytes.to_vec()))
+    let mut response = client.get(url).send().await.ok()?.error_for_status().ok()?;
+    if response
+        .content_length()
+        .is_some_and(|len| len > MAX_ICON_BYTES as u64)
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.ok()? {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > MAX_ICON_BYTES {
+            return None;
+        }
+    }
+    Some(Handle::from_bytes(bytes))
 }
 
-fn load_icons(state: &mut State, sources: Vec<String>) -> Task<Message> {
+fn safe_link(url: &str) -> bool {
+    url.strip_prefix("https://modrinth.com/")
+        .is_some_and(is_safe_path)
+}
+
+fn load_icons(state: &mut State, sources: Vec<Option<String>>) -> Task<Message> {
     let missing: Vec<_> = sources
         .into_iter()
+        .flatten()
         .collect::<HashSet<_>>()
         .into_iter()
         .filter(|url| !state.icons.contains_key(url))
@@ -269,7 +309,7 @@ fn check_latest(target: &Target, entries: &[ModrinthInstallEntry]) -> Task<Messa
     )
 }
 
-fn search(state: &mut State, target: &Target) -> Task<Message> {
+fn search(state: &mut State, target: &Target, page: u32) -> Task<Message> {
     state.search_seq += 1;
     state.searching = true;
     let seq = state.search_seq;
@@ -279,7 +319,7 @@ fn search(state: &mut State, target: &Target) -> Task<Message> {
         loader: Some(target.loader.to_string()),
         game_version: Some(target.game_version.clone()),
         limit: Some(PAGE_SIZE),
-        offset: Some(state.page * PAGE_SIZE),
+        offset: Some(page * PAGE_SIZE),
         sort: Some(state.sort.sort()),
     };
     Task::perform(
@@ -287,7 +327,7 @@ fn search(state: &mut State, target: &Target) -> Task<Message> {
             let value = serde_json::to_value(params).map_err(|e| e.to_string())?;
             search_modrinth(value).await
         },
-        move |result| Message::Searched(seq, result),
+        move |result| Message::Searched(seq, page, result),
     )
 }
 
@@ -338,7 +378,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::ShowPane(pane) => {
             state.pane = pane;
             if pane == Pane::Browse && state.results.is_none() && !state.searching {
-                return search(state, &target);
+                return search(state, &target, 0);
             }
             Task::none()
         }
@@ -351,6 +391,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 .map(|e| icon_source(&e.project_id, e.icon_url.as_deref()))
                 .collect();
             let check = check_latest(&target, &entries);
+            state.latest.clear();
             state.installed = Some(entries);
             Task::batch([check, load_icons(state, sources)])
         }
@@ -426,7 +467,12 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             reload(&id)
         }
+        Message::AskRemove(project_id) => {
+            state.confirming = project_id;
+            Task::none()
+        }
         Message::Remove(project_id, title) => {
+            state.confirming = None;
             state.busy.insert(project_id.clone());
             let id = target.server_id.clone();
             Task::perform(
@@ -457,39 +503,42 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::Sort(sort) => {
             state.sort = sort;
-            state.page = 0;
-            search(state, &target)
+            search(state, &target, 0)
         }
-        Message::Search => {
-            state.page = 0;
-            search(state, &target)
-        }
-        Message::Searched(seq, result) => {
+        Message::Search => search(state, &target, 0),
+        Message::Searched(seq, page, result) => {
             if seq != state.search_seq {
                 return Task::none();
             }
             state.searching = false;
-            let task = match &result {
+            match result {
                 Ok(found) => {
                     let sources = found
                         .hits
                         .iter()
                         .map(|h| icon_source(&h.project_id, h.icon_url.as_deref()))
                         .collect();
+                    state.page = page;
+                    state.results = Some(Ok(found));
                     load_icons(state, sources)
                 }
-                Err(_) => Task::none(),
-            };
-            state.results = Some(result);
-            task
+                Err(error) if matches!(state.results, Some(Ok(_))) => {
+                    ctx.error(format!("Couldn't load that page. {error}"));
+                    Task::none()
+                }
+                Err(error) => {
+                    state.results = Some(Err(error));
+                    Task::none()
+                }
+            }
         }
         Message::Page(forward) => {
-            state.page = if forward {
+            let page = if forward {
                 state.page + 1
             } else {
                 state.page.saturating_sub(1)
             };
-            search(state, &target)
+            search(state, &target, page)
         }
         Message::Open(hit) => {
             let project_id = hit.project_id.clone();
@@ -592,11 +641,14 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             reload(&id)
         }
         Message::Icon(url, handle) => {
-            state.icons.insert(url, handle);
+            match handle {
+                Some(handle) => state.icons.insert(url, Some(handle)),
+                None => state.icons.remove(&url),
+            };
             Task::none()
         }
         Message::OpenLink(url) => {
-            if open::that(&url).is_err() {
+            if !safe_link(&url) || open::that_detached(&url).is_err() {
                 ctx.error("Couldn't open the link. Copy it from your browser instead.");
             }
             Task::none()
@@ -627,7 +679,7 @@ fn mod_icon<'a>(
     icon_url: Option<&str>,
     size: f32,
 ) -> Element<'a, Message> {
-    match state.icons.get(&icon_source(project_id, icon_url)) {
+    match icon_source(project_id, icon_url).and_then(|source| state.icons.get(&source)) {
         Some(Some(handle)) => image::Image::new(handle.clone())
             .width(Length::Fixed(size))
             .height(Length::Fixed(size))
@@ -635,7 +687,6 @@ fn mod_icon<'a>(
             .into(),
         _ => container(icon_colored(Icon::Package, size * 0.5, INK_TERTIARY))
             .center(Length::Fixed(size))
-            .style(style::panel)
             .into(),
     }
 }
@@ -783,14 +834,32 @@ fn installed_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message>
         } else if busy {
             line = line.push(text("Working").size(TEXT_SM).style(style::muted));
         }
-        line = line.push(
-            button(icon(Icon::Trash, 16.0))
-                .padding(SPACE_2)
-                .style(style::danger)
-                .on_press_maybe((!busy).then(|| {
-                    Message::Remove(entry.project_id.clone(), entry.title.clone())
-                })),
-        );
+        if state.confirming.as_deref() == Some(entry.project_id.as_str()) {
+            line = line
+                .push(
+                    button(text("Keep").size(TEXT_SM).font(UI_MEDIUM))
+                        .padding([SPACE_1 + 2.0, SPACE_3])
+                        .style(style::secondary)
+                        .on_press(Message::AskRemove(None)),
+                )
+                .push(
+                    button(text("Delete file").size(TEXT_SM).font(UI_MEDIUM))
+                        .padding([SPACE_1 + 2.0, SPACE_3])
+                        .style(style::danger)
+                        .on_press_maybe((!busy).then(|| {
+                            Message::Remove(entry.project_id.clone(), entry.title.clone())
+                        })),
+                );
+        } else {
+            line = line.push(
+                button(text("Remove").size(TEXT_SM).font(UI_MEDIUM))
+                    .padding([SPACE_1 + 2.0, SPACE_3])
+                    .style(style::danger)
+                    .on_press_maybe(
+                        (!busy).then(|| Message::AskRemove(Some(entry.project_id.clone()))),
+                    ),
+            );
+        }
         list = list.push(container(line).padding([SPACE_3, 0.0]));
     }
     scrollable(list)
@@ -1001,6 +1070,15 @@ fn drawer<'a>(state: &'a State, detail: &'a Detail) -> Element<'a, Message> {
                 .style(style::muted),
         );
     }
+    if let Some(Ok(project)) = &detail.project {
+        if !project.body.trim().is_empty() {
+            body = body.push(
+                text(truncate(project.body.trim(), 700))
+                    .size(TEXT_SM)
+                    .style(style::muted),
+            );
+        }
+    }
     if let Some(Err(error)) = &detail.project {
         body = body.push(
             text(format!("Couldn't load the full details. {error}"))
@@ -1111,9 +1189,11 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
     let Some(target) = target(ctx) else {
         return Task::none();
     };
-    if state.server_id.as_deref() != Some(target.server_id.as_str()) {
+    let key = format!("{}@{}", target.server_id, target.game_version);
+    if state.server_id.as_deref() != Some(key.as_str()) {
         *state = State {
-            server_id: Some(target.server_id.clone()),
+            server_id: Some(key),
+            search_seq: state.search_seq,
             icons: std::mem::take(&mut state.icons),
             ..State::default()
         };

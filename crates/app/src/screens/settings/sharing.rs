@@ -1,5 +1,5 @@
 use iced::widget::{button, column, container, progress_bar, row, scrollable, text, text_input, toggler};
-use monolith_theme::token::{BUTTON_MD};
+use monolith_theme::token::BUTTON_MD;
 use monolith_theme::widget::{sized, sized_icon};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
@@ -241,12 +241,12 @@ fn action<'a>(
 fn install_section(state: &State) -> Element<'_, Message> {
     let status: Element<Message> = if !state.loaded {
         text("Checking for ngrok")
-            .size(TEXT_MD)
+            .size(TEXT_SM)
             .style(style::muted)
             .into()
     } else if state.installing {
         column![
-            text(format!("Downloading ngrok, {:.0}%", state.percent)).size(TEXT_MD),
+            text(format!("Downloading ngrok, {:.0}%", state.percent)).size(TEXT_SM),
             progress_bar(0.0..=100.0, state.percent)
                 .girth(6)
                 .style(style::progress)
@@ -255,12 +255,12 @@ fn install_section(state: &State) -> Element<'_, Message> {
         .into()
     } else if state.installed {
         text("ngrok is installed.")
-            .size(TEXT_MD)
+            .size(TEXT_SM)
             .style(style::muted)
             .into()
     } else {
         text("ngrok is not installed yet. Monolith downloads it for you.")
-            .size(TEXT_MD)
+            .size(TEXT_SM)
             .style(style::muted)
             .into()
     };
@@ -280,8 +280,9 @@ fn install_section(state: &State) -> Element<'_, Message> {
             (state.loaded && !state.installing).then_some(Message::Install),
             !state.installed,
         ))
+        .padding(iced::Padding::ZERO.top(SPACE_1))
     ]
-    .spacing(SPACE_3)
+    .spacing(SPACE_2)
     .into()
 }
 
@@ -308,12 +309,12 @@ fn remove_controls(state: &State) -> Element<'_, Message> {
 }
 
 fn token_section(state: &State) -> Element<'_, Message> {
-    let mut section = column![subheading("Authtoken")].spacing(SPACE_3);
+    let mut section = column![subheading("Authtoken")].spacing(SPACE_2);
 
     if let Some(saved) = &state.saved_token {
         section = section.push(
             row![
-                text(saved.as_str()).size(TEXT_MD).width(Length::Fill),
+                text(saved.as_str()).size(TEXT_MD).font(MONO).width(Length::Fill),
                 remove_controls(state)
             ]
             .spacing(SPACE_4)
@@ -351,17 +352,20 @@ fn token_section(state: &State) -> Element<'_, Message> {
         "Save"
     };
     section = section.push(
-        row![
-            input,
-            action(
-                save_label,
-                Icon::Check,
-                can_save.then_some(Message::SaveToken),
-                true
-            )
-        ]
-        .spacing(SPACE_3)
-        .align_y(Alignment::Center),
+        container(
+            row![
+                input,
+                action(
+                    save_label,
+                    Icon::Check,
+                    can_save.then_some(Message::SaveToken),
+                    true
+                )
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center),
+        )
+        .padding(iced::Padding::ZERO.top(SPACE_1)),
     );
 
     if let Some(error) = &state.error {
@@ -432,24 +436,27 @@ fn lan_section(state: &State) -> Element<'_, Message> {
         text("Players on your Wi-Fi or router can join with this address and the server port. No account needed.")
             .size(TEXT_SM)
             .style(style::muted),
-        address
+        container(address).padding(iced::Padding::ZERO.top(SPACE_1))
     ]
-    .spacing(SPACE_3)
+    .spacing(SPACE_2)
     .into()
 }
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     let body = column![
-        heading("Sharing"),
-        text("Sharing lets friends outside your home network join your server through a free ngrok tunnel.")
-            .size(TEXT_MD)
-            .style(style::muted),
+        column![
+            heading("Sharing"),
+            text("Sharing lets friends outside your home network join your server through a free ngrok tunnel.")
+                .size(TEXT_MD)
+                .style(style::muted),
+        ]
+        .spacing(SPACE_2),
         install_section(state),
         token_section(state),
         enable_section(state),
         lan_section(state),
     ]
-    .spacing(SPACE_6);
+    .spacing(SPACE_6 + SPACE_2);
     scrollable(container(body).padding([0, 16]))
         .style(style::scroll)
         .width(Length::Fill)

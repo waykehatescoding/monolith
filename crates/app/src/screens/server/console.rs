@@ -13,7 +13,6 @@ use monolith_core::types::{ConsoleLine, ConsoleLineType, ServerRuntimeStatus};
 use monolith_theme::style;
 use monolith_theme::token::{
     CORAL, INK, INK_TERTIARY, LOG_INFO, MOSS, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_MD, TEXT_SM,
-    TEXT_XS,
 };
 use monolith_theme::{icon_colored, Icon, MONO, UI_MEDIUM};
 
@@ -336,7 +335,7 @@ fn log_area(state: &State) -> Element<'_, Message> {
         scrollable(container(list).padding([SPACE_3, SPACE_4]).width(Length::Fill))
             .id(LOG_ID)
             .anchor_bottom()
-            .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset_reversed().y))
+            .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
             .style(style::scroll)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -366,33 +365,17 @@ fn log_area(state: &State) -> Element<'_, Message> {
     stack![surface, pill].into()
 }
 
-fn clock(timestamp: &str) -> String {
-    chrono::DateTime::parse_from_rfc3339(timestamp).map_or_else(
-        |_| timestamp.to_string(),
-        |time| time.with_timezone(&chrono::Local).format("%H:%M:%S").to_string(),
-    )
-}
-
 fn line_view<'a>(line: ConsoleLine) -> Element<'a, Message> {
     let base = match line.kind {
         ConsoleLineType::Stdout => LOG_INFO,
         ConsoleLineType::Stderr => CORAL,
         ConsoleLineType::System => MOSS,
     };
-    let stamp = text(clock(&line.timestamp))
-        .size(TEXT_XS)
+    rich_text::<(), Message, _, _>(ansi_spans(&line.text, base))
+        .size(TEXT_SM)
         .font(MONO)
-        .style(style::faint);
-    let spans = ansi_spans(&line.text, base);
-    row![
-        stamp,
-        rich_text::<(), Message, _, _>(spans)
-            .size(TEXT_SM)
-            .font(MONO)
-            .width(Length::Fill)
-    ]
-    .spacing(SPACE_3)
-    .into()
+        .width(Length::Fill)
+        .into()
 }
 
 fn command_bar<'a>(state: &'a State, ctx: &'a Ctx, id: &str) -> Element<'a, Message> {

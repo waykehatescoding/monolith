@@ -384,6 +384,7 @@ fn report_view<'a>(state: &'a State, report: &'a Report) -> Element<'a, Message>
         .padding(iced::Padding::ZERO.bottom(SPACE_5));
 
     scrollable(content)
+        .spacing(SPACE_3)
         .style(style::scroll)
         .width(Length::Fill)
         .height(Length::Fill)

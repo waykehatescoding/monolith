@@ -21,6 +21,7 @@ const MAX_LINES: usize = 2000;
 const HISTORY_LIMIT: usize = 100;
 const LOG_ID: &str = "console-log";
 const INPUT_ID: &str = "console-input";
+const RENDER_LIMIT: usize = 500;
 const BOTTOM_SLACK: f32 = 4.0;
 
 #[derive(Debug)]
@@ -76,7 +77,17 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
     match message {
         Message::Loaded(id, lines) => {
             if state.server_id.as_deref() == Some(id.as_str()) {
+                let pending = std::mem::take(&mut state.lines);
                 state.lines = lines;
+                let seen = state.lines.len().saturating_sub(pending.len() + 50);
+                for line in pending {
+                    let duplicate = state.lines[seen..]
+                        .iter()
+                        .any(|old| old.timestamp == line.timestamp && old.text == line.text);
+                    if !duplicate {
+                        state.lines.push(line);
+                    }
+                }
                 trim(&mut state.lines);
                 state.loading = false;
             }
@@ -132,6 +143,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::Clear => {
             state.lines.clear();
             state.at_bottom = true;
+            ctx.info("Console cleared. New output will keep appearing.");
             Task::none()
         }
         Message::ArrowKey(up) => {
@@ -141,10 +153,11 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             operation::is_focused(INPUT_ID).map(move |focused| Message::ArrowResolved(up, focused))
         }
         Message::ArrowResolved(up, focused) => {
-            if focused {
-                step_history(state, up);
+            if !focused {
+                return Task::none();
             }
-            Task::none()
+            step_history(state, up);
+            operation::move_cursor_to_end(INPUT_ID)
         }
     }
 }
@@ -242,9 +255,9 @@ fn toolbar(state: &State) -> Element<'_, Message> {
     let search = text_input("Search output", &state.search)
         .on_input(Message::Search)
         .size(TEXT_MD)
-        .padding([7, 10])
+        .padding([SPACE_2, SPACE_3])
         .style(style::input)
-        .width(Length::Fixed(260.0));
+        .width(Length::FillPortion(2));
     let chips = [
         (ConsoleLineType::Stdout, "Output"),
         (ConsoleLineType::Stderr, "Errors"),
@@ -254,16 +267,25 @@ fn toolbar(state: &State) -> Element<'_, Message> {
     .fold(row![].spacing(SPACE_1), |chips, (kind, label)| {
         chips.push(
             button(text(label).size(TEXT_SM).font(UI_MEDIUM))
-                .padding([6, 10])
+                .padding([SPACE_2, SPACE_3])
                 .style(style::tab(state.kinds.contains(&kind)))
                 .on_press(Message::ToggleKind(kind)),
         )
     });
     let empty = state.lines.is_empty();
+    let filtering = !state.search.is_empty() || !state.kinds.is_empty();
+    let count = if filtering {
+        text(format!("{} of {} lines", visible(state).len(), state.lines.len()))
+            .size(TEXT_SM)
+            .style(style::muted)
+    } else {
+        text("")
+    };
     row![
         search,
         chips,
-        space().width(Length::Fill),
+        count,
+        space().width(Length::FillPortion(3)),
         action_button("Copy", Icon::Copy, (!empty).then_some(Message::Copy)),
         action_button("Clear", Icon::Trash, (!empty).then_some(Message::Clear)),
     ]
@@ -284,7 +306,7 @@ fn action_button(
     ]
     .spacing(SPACE_2)
     .align_y(Alignment::Center);
-    let base = button(content).padding([6, 10]).style(style::ghost);
+    let base = button(content).padding([SPACE_2, SPACE_3]).style(style::ghost);
     match on_press {
         Some(message) => base.on_press(message).into(),
         None => base.into(),
@@ -305,13 +327,15 @@ fn log_area(state: &State) -> Element<'_, Message> {
             .center(Length::Fill)
             .into()
     } else {
+        let skip = lines.len().saturating_sub(RENDER_LIMIT);
         let list = lines
             .into_iter()
+            .skip(skip)
             .fold(column![].spacing(2), |list, line| list.push(line_view(line)));
         scrollable(container(list).padding([SPACE_3, SPACE_4]).width(Length::Fill))
             .id(LOG_ID)
             .anchor_bottom()
-            .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
+            .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset_reversed().y))
             .style(style::scroll)
             .width(Length::Fill)
             .height(Length::Fill)
@@ -333,7 +357,7 @@ fn log_area(state: &State) -> Element<'_, Message> {
             .spacing(SPACE_1)
             .align_y(Alignment::Center),
         )
-        .padding([6, 12])
+        .padding([SPACE_2, SPACE_3])
         .style(style::secondary)
         .on_press(Message::JumpToLatest),
     )
@@ -367,16 +391,20 @@ fn line_view<'a>(line: ConsoleLine) -> Element<'a, Message> {
 
 fn command_bar<'a>(state: &'a State, ctx: &'a Ctx, id: &str) -> Element<'a, Message> {
     let enabled = accepts_commands(ctx, id);
+    let reason = match ctx.status(id) {
+        ServerRuntimeStatus::Stopping => "The server is stopping. Start it again to send commands.",
+        _ => "The server is offline. Start it to send commands.",
+    };
     let placeholder = if enabled {
         "Type a command and press Enter"
     } else {
-        "Start the server to send commands"
+        reason
     };
     let mut field = text_input(placeholder, &state.input)
         .id(INPUT_ID)
         .size(TEXT_MD)
         .font(MONO)
-        .padding([8, 12])
+        .padding([SPACE_2, SPACE_3])
         .style(style::input)
         .width(Length::Fill);
     if enabled {
@@ -384,13 +412,19 @@ fn command_bar<'a>(state: &'a State, ctx: &'a Ctx, id: &str) -> Element<'a, Mess
     }
     let can_send = enabled && !state.sending && !state.input.trim().is_empty();
     let send = button(text(if state.sending { "Sending" } else { "Send" }).font(UI_MEDIUM))
-        .padding([8, 16])
+        .padding([SPACE_2, SPACE_4])
         .style(style::primary)
         .on_press_maybe(can_send.then_some(Message::Submit));
-    row![field, send]
+    let bar = row![field, send]
         .spacing(SPACE_2)
-        .align_y(Alignment::Center)
-        .into()
+        .align_y(Alignment::Center);
+    if enabled {
+        bar.into()
+    } else {
+        column![bar, text(reason).size(TEXT_SM).style(style::muted)]
+            .spacing(SPACE_1)
+            .into()
+    }
 }
 
 pub fn on_event(state: &mut State, event: &Event, _ctx: &Ctx) -> Task<Message> {
@@ -421,15 +455,15 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
 }
 
 pub fn subscription(_state: &State) -> Subscription<Message> {
-    event::listen_with(|event, _, _| match event {
+    event::listen_with(|event, status, _| match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed {
-            key: keyboard::Key::Named(keyboard::key::Named::ArrowUp),
+            key: keyboard::Key::Named(named),
             ..
-        }) => Some(Message::ArrowKey(true)),
-        iced::Event::Keyboard(keyboard::Event::KeyPressed {
-            key: keyboard::Key::Named(keyboard::key::Named::ArrowDown),
-            ..
-        }) => Some(Message::ArrowKey(false)),
+        }) if status == event::Status::Ignored => match named {
+            keyboard::key::Named::ArrowUp => Some(Message::ArrowKey(true)),
+            keyboard::key::Named::ArrowDown => Some(Message::ArrowKey(false)),
+            _ => None,
+        },
         _ => None,
     })
 }
@@ -487,20 +521,51 @@ fn segments(input: &str) -> impl Iterator<Item = (&str, Option<&str>)> {
 
 fn apply_sgr(codes: &str, current: Color, base: Color) -> Color {
     let mut color = current;
-    for code in codes.split(';') {
-        let value: u8 = if code.is_empty() {
-            0
-        } else {
-            code.parse().unwrap_or(u8::MAX)
-        };
-        color = match value {
-            0 | 39 => base,
-            30..=37 => palette(value - 30, false),
-            90..=97 => palette(value - 90, true),
-            _ => color,
-        };
+    let mut args = codes
+        .split(';')
+        .map(|code| if code.is_empty() { Some(0) } else { code.parse::<u8>().ok() });
+    while let Some(code) = args.next() {
+        let Some(value) = code else { continue };
+        match value {
+            0 | 39 => color = base,
+            30..=37 => color = palette(value - 30, false),
+            90..=97 => color = palette(value - 90, true),
+            38 | 48 => {
+                let parsed = match args.next() {
+                    Some(Some(5)) => args.next().flatten().map(indexed),
+                    Some(Some(2)) => {
+                        let mut channel = || args.next().flatten();
+                        match (channel(), channel(), channel()) {
+                            (Some(r), Some(g), Some(b)) => Some(Color::from_rgb8(r, g, b)),
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                if let (38, Some(parsed)) = (value, parsed) {
+                    color = parsed;
+                }
+            }
+            _ => {}
+        }
     }
     color
+}
+
+fn indexed(n: u8) -> Color {
+    match n {
+        0..=7 => palette(n, false),
+        8..=15 => palette(n - 8, true),
+        16..=231 => {
+            let n = n - 16;
+            let level = |v: u8| if v == 0 { 0 } else { 55 + v * 40 };
+            Color::from_rgb8(level(n / 36), level(n / 6 % 6), level(n % 6))
+        }
+        _ => {
+            let gray = 8 + (n - 232) * 10;
+            Color::from_rgb8(gray, gray, gray)
+        }
+    }
 }
 
 fn palette(index: u8, bright: bool) -> Color {
@@ -533,5 +598,16 @@ mod tests {
     fn strips_ansi_sequences() {
         assert_eq!(strip_ansi("\x1b[31mred\x1b[0m plain"), "red plain");
         assert_eq!(strip_ansi("no codes"), "no codes");
+    }
+
+    #[test]
+    fn extended_colours_do_not_leak_arguments() {
+        let base = Color::WHITE;
+        assert_eq!(apply_sgr("38;5;1", base, base), indexed(1));
+        assert_eq!(
+            apply_sgr("38;2;10;20;30", base, base),
+            Color::from_rgb8(10, 20, 30)
+        );
+        assert_eq!(apply_sgr("1", base, base), base);
     }
 }

@@ -445,10 +445,11 @@ fn list_view<'a>(state: &'a State, can_restore: bool) -> Element<'a, Message> {
                 ),
             ]
             .spacing(SPACE_3)
-            .align_x(Alignment::Start)
+            .align_x(Alignment::Center)
             .max_width(460),
         )
         .padding([SPACE_5, 0.0])
+        .center_x(Length::Fill)
         .into();
     }
 
@@ -546,7 +547,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         }
     };
 
-    let header = row![
+    let mut header = row![
         column![
             text("Backups").size(TEXT_XL).font(UI_SEMIBOLD),
             text(summary).size(TEXT_SM).style(style::muted),
@@ -558,6 +559,12 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             style::ghost,
             Some(Message::OpenFolder)
         ),
+    ]
+    .spacing(SPACE_2)
+    .align_y(Alignment::Center);
+
+    if !state.backups.is_empty() {
+        header = header.push(
         action(
             label(
                 if state.creating {
@@ -569,10 +576,9 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             ),
             style::primary,
             (!state.creating).then_some(Message::Create),
-        ),
-    ]
-    .spacing(SPACE_2)
-    .align_y(Alignment::Center);
+        )
+        );
+    }
 
     let mut body = column![header].spacing(SPACE_4);
     if state.creating {

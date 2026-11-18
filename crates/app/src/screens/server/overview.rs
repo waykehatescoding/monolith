@@ -575,15 +575,35 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         .started_at
         .filter(|_| online)
         .map_or_else(dash, uptime_label);
-    page = page.push(
-        row![
-            readout("Players", players),
-            readout("TPS", tps),
-            readout("Memory", memory),
-            readout("Uptime", uptime),
-        ]
-        .spacing(SPACE_4),
-    );
+    if online {
+        page = page.push(
+            row![
+                readout("Players", players),
+                readout("TPS", tps),
+                readout("Memory", memory),
+                readout("Uptime", uptime),
+            ]
+            .spacing(SPACE_4),
+        );
+    } else if state.eula_accepted && !matches!(status, ServerRuntimeStatus::Starting | ServerRuntimeStatus::Stopping) {
+        page = page.push(
+            row![
+                text("This server is offline. Start it to see players, memory and uptime.")
+                    .size(TEXT_MD)
+                    .style(style::muted)
+                    .width(Length::Fill),
+                busy_button(
+                    "Start",
+                    "Starting",
+                    state.busy == Some(Busy::Start),
+                    Some(Message::Start).filter(|_| idle),
+                    style::primary,
+                ),
+            ]
+            .spacing(SPACE_4)
+            .align_y(Alignment::Center),
+        );
+    }
 
     page = page.push(
         column![
@@ -592,33 +612,6 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         ]
         .spacing(SPACE_2),
     );
-
-    let links = [
-        (Tab::Console, Icon::Terminal),
-        (Tab::Files, Icon::Folder),
-        (Tab::Players, Icon::Users),
-        (Tab::Content, Icon::Package),
-        (Tab::Backups, Icon::Archive),
-        (Tab::Analytics, Icon::Chart),
-        (Tab::Settings, Icon::Settings),
-    ]
-    .into_iter()
-    .fold(row![].spacing(SPACE_1), |links, (tab, glyph)| {
-        links.push(
-            button(
-                row![
-                    icon_colored(glyph, 16.0, INK_SECONDARY),
-                    text(tab.label()).size(TEXT_SM).font(UI_MEDIUM)
-                ]
-                .spacing(SPACE_2)
-                .align_y(Alignment::Center),
-            )
-            .padding([6, 12])
-            .style(style::ghost)
-            .on_press(Message::Open(tab)),
-        )
-    });
-    page = page.push(links.wrap());
 
     page.into()
 }

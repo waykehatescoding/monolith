@@ -415,16 +415,10 @@ fn command_bar<'a>(state: &'a State, ctx: &'a Ctx, id: &str) -> Element<'a, Mess
         .padding([SPACE_2, SPACE_4])
         .style(style::primary)
         .on_press_maybe(can_send.then_some(Message::Submit));
-    let bar = row![field, send]
+    row![field, send]
         .spacing(SPACE_2)
-        .align_y(Alignment::Center);
-    if enabled {
-        bar.into()
-    } else {
-        column![bar, text(reason).size(TEXT_SM).style(style::muted)]
-            .spacing(SPACE_1)
-            .into()
-    }
+        .align_y(Alignment::Center)
+        .into()
 }
 
 pub fn on_event(state: &mut State, event: &Event, _ctx: &Ctx) -> Task<Message> {

@@ -20,7 +20,6 @@ hex = "0.4"
 uuid = { version = "1", features = ["v4"] }
 dirs = "6"
 anyhow = "1"
-thiserror = "2"
 walkdir = "2"
 regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
@@ -32,6 +31,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 rfd = "0.18"
 open = "5"
 tray-icon = "0.26"
+tauri-winrt-notification = "0.7"
 winreg = "0.56"
 mslnk = "0.1"
 windows-sys = "0.61"

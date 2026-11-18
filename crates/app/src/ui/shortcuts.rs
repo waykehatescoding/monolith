@@ -11,14 +11,6 @@ pub enum Shortcut {
     Escape,
 }
 
-pub const BINDINGS: [(&str, &str); 5] = [
-    ("Ctrl+K", "Command palette"),
-    ("Ctrl+N", "New server"),
-    ("Ctrl+,", "Settings"),
-    ("Ctrl+1 to 9", "Open server"),
-    ("Esc", "Close dialog or panel"),
-];
-
 pub fn from_event(event: Event, status: event::Status, _: window::Id) -> Option<Shortcut> {
     let Event::Keyboard(KeyEvent::KeyPressed {
         key,

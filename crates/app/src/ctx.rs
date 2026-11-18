@@ -300,10 +300,6 @@ impl Ctx {
         self.request(Action::RefreshPreferences);
     }
 
-    pub fn open_palette(&self) {
-        self.request(Action::OpenPalette);
-    }
-
     pub fn close_palette(&self) {
         self.request(Action::ClosePalette);
     }

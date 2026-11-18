@@ -170,6 +170,7 @@ fn build_tray() -> Result<TrayIcon, String> {
         .with_icon(icon)
         .with_tooltip("Monolith")
         .with_menu(Box::new(Menu::new()))
+        .with_menu_on_left_click(false)
         .build()
         .map_err(|e| e.to_string())
 }

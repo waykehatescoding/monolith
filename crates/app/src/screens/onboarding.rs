@@ -49,11 +49,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             )
         }
         Message::Picked(None) => Task::none(),
+        Message::Picked(Some(_)) if state.importing => Task::none(),
         Message::Picked(Some(path)) => {
-            let name = path
-                .file_stem()
-                .map(|stem| stem.to_string_lossy().into_owned())
-                .unwrap_or_default();
+            let name = unique_name(ctx, &path);
             state.importing = true;
             Task::perform(
                 import_server(path.to_string_lossy().into_owned(), name),
@@ -96,7 +94,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     )
     .padding([12, 24])
     .style(style::primary)
-    .on_press(Message::Create);
+    .on_press_maybe((!state.importing).then_some(Message::Create));
 
     let import = busy_button(
         "Import a server",
@@ -125,16 +123,31 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     if let Some(error) = &state.error {
         content = content.push(text(error).size(TEXT_SM).style(style::colored(CORAL)));
     }
-    if let Some(hint) = java_hint(state) {
-        content = content.push(
-            text(hint)
-                .size(TEXT_SM)
-                .font(UI_MEDIUM)
-                .style(style::faint),
-        );
-    }
+    let hint = java_hint(state).unwrap_or_else(|| "Checking for Java on this PC".into());
+    content = content.push(
+        text(hint)
+            .size(TEXT_SM)
+            .font(UI_MEDIUM)
+            .style(style::faint),
+    );
 
     container(content).center(Length::Fill).into()
+}
+
+fn unique_name(ctx: &Ctx, path: &std::path::Path) -> String {
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().trim().to_string())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| "Imported server".into());
+    let taken = |name: &str| ctx.servers.iter().any(|s| s.name.eq_ignore_ascii_case(name));
+    if !taken(&stem) {
+        return stem;
+    }
+    (2..)
+        .map(|n| format!("{stem} {n}"))
+        .find(|name| !taken(name))
+        .unwrap_or(stem)
 }
 
 fn java_hint(state: &State) -> Option<String> {

@@ -18,6 +18,7 @@ use monolith_theme::{icon_colored, style, Icon, MONO, UI_MEDIUM};
 use crate::ctx::{Confirm, Ctx};
 
 const MAX_EDIT_BYTES: u64 = 2 * 1024 * 1024;
+const PROMPT_ID: &str = "file-prompt";
 
 #[derive(Default)]
 pub struct State {
@@ -25,6 +26,7 @@ pub struct State {
     path: Vec<String>,
     entries: Vec<FileEntry>,
     loaded: bool,
+    failure: Option<String>,
     editor: Option<Editor>,
     prompt: Option<Prompt>,
     notice: Option<String>,
@@ -36,6 +38,7 @@ struct Editor {
     name: String,
     content: text_editor::Content,
     original: String,
+    pending: String,
     dirty: bool,
     saving: bool,
     leaving: bool,
@@ -57,15 +60,16 @@ struct Prompt {
 
 #[derive(Clone)]
 pub enum Message {
-    Loaded(String, Vec<String>, Vec<FileEntry>),
+    Loaded(String, Vec<String>, Vec<FileEntry>, Option<String>),
     Tick,
     Enter(String),
     Crumb(usize),
     Open(String),
-    Opened(Result<(String, String), String>),
+    Opened(String, Vec<String>, Result<(String, String), String>),
     Edit(text_editor::Action),
     Save,
     Saved(Result<(), String>),
+    Retry,
     Revert,
     Close,
     Discard,
@@ -109,18 +113,29 @@ fn root_of(ctx: &Ctx, id: &str) -> Option<String> {
     ctx.server(id).map(|server| server.server_path.clone())
 }
 
-fn reload(state: &State) -> Task<Message> {
+fn reload(state: &State, ctx: &Ctx) -> Task<Message> {
     let Some(id) = state.server_id.clone() else {
+        return Task::none();
+    };
+    let Some(root) = root_of(ctx, &id) else {
         return Task::none();
     };
     let path = state.path.clone();
     let rel = state.dir();
     Task::perform(
         async move {
-            let entries = server_files::list_server_files(id.clone(), rel).await;
-            (id, path, entries)
+            let entries = server_files::list_server_files(id.clone(), rel.clone()).await;
+            let failure = if entries.is_empty() {
+                match resolve_safe_server_path(Path::new(&root), &rel, true) {
+                    Ok(dir) => tokio::fs::read_dir(&dir).await.err().map(|e| e.to_string()),
+                    Err(error) => Some(error),
+                }
+            } else {
+                None
+            };
+            (id, path, entries, failure)
         },
-        |(id, path, entries)| Message::Loaded(id, path, entries),
+        |(id, path, entries, failure)| Message::Loaded(id, path, entries, failure),
     )
 }
 
@@ -165,7 +180,7 @@ fn format_modified(stamp: &str) -> String {
 
 pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
     match message {
-        Message::Loaded(id, path, entries) => {
+        Message::Loaded(id, path, entries, failure) => {
             if state.server_id.as_deref() == Some(id.as_str()) && state.path == path {
                 let changed = state
                     .entries
@@ -176,13 +191,18 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                     state.watch = 0;
                 }
                 state.entries = entries;
+                state.failure = failure;
                 state.loaded = true;
             }
             Task::none()
         }
+        Message::Retry => {
+            state.loaded = false;
+            reload(state, ctx)
+        }
         Message::Tick => {
             state.watch = state.watch.saturating_sub(1);
-            reload(state)
+            reload(state, ctx)
         }
         Message::Enter(name) => {
             state.path.push(name);
@@ -190,7 +210,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.loaded = false;
             state.prompt = None;
             state.notice = None;
-            reload(state)
+            reload(state, ctx)
         }
         Message::Crumb(depth) => {
             state.path.truncate(depth);
@@ -198,7 +218,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.loaded = false;
             state.prompt = None;
             state.notice = None;
-            reload(state)
+            reload(state, ctx)
         }
         Message::Open(name) => {
             let Some(id) = state.server_id.clone() else {
@@ -223,6 +243,8 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             state.notice = None;
             let rel = state.rel(&name);
+            let path = state.path.clone();
+            let key = id.clone();
             Task::perform(
                 async move {
                     let result = server_files::read_server_file(id, rel).await;
@@ -236,16 +258,20 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                             .unwrap_or_else(|| format!("Couldn't read {name}."))),
                     }
                 },
-                Message::Opened,
+                move |result| Message::Opened(key.clone(), path.clone(), result),
             )
         }
-        Message::Opened(result) => {
+        Message::Opened(id, path, result) => {
+            if state.server_id.as_deref() != Some(id.as_str()) || state.path != path {
+                return Task::none();
+            }
             match result {
                 Ok((name, content)) => {
                     state.editor = Some(Editor {
                         name,
                         content: text_editor::Content::with_text(&content),
                         original: content,
+                        pending: String::new(),
                         dirty: false,
                         saving: false,
                         leaving: false,
@@ -257,10 +283,13 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::Edit(action) => {
             if let Some(editor) = &mut state.editor {
+                if editor.saving && action.is_edit() {
+                    return Task::none();
+                }
                 let edit = action.is_edit();
                 editor.content.perform(action);
                 if edit {
-                    editor.dirty = true;
+                    editor.dirty = editor.content.text() != editor.original;
                 }
             }
             Task::none()
@@ -281,7 +310,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             editor.saving = true;
             let text = editor.content.text();
-            editor.original = text.clone();
+            editor.pending = text.clone();
             Task::perform(
                 async move { check(server_files::write_server_file(id, rel, text).await) },
                 Message::Saved,
@@ -294,12 +323,13 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             editor.saving = false;
             match result {
                 Ok(()) => {
+                    editor.original = std::mem::take(&mut editor.pending);
                     editor.dirty = false;
                     ctx.success(format!("Saved {}", editor.name));
                     if editor.leaving {
                         state.editor = None;
                     }
-                    reload(state)
+                    reload(state, ctx)
                 }
                 Err(error) => {
                     editor.leaving = false;
@@ -343,7 +373,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 input,
                 error: None,
             });
-            Task::none()
+            iced::widget::operation::focus(PROMPT_ID)
         }
         Message::PromptInput(value) => {
             if let Some(prompt) = &mut state.prompt {
@@ -363,7 +393,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 Ok(done) => {
                     state.prompt = None;
                     ctx.success(done);
-                    reload(state)
+                    reload(state, ctx)
                 }
                 Err(error) => {
                     if let Some(prompt) = &mut state.prompt {
@@ -417,7 +447,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 Ok(done) if done.is_empty() => Task::none(),
                 Ok(done) => {
                     ctx.success(done);
-                    reload(state)
+                    reload(state, ctx)
                 }
                 Err(error) => {
                     ctx.error(error);
@@ -458,6 +488,12 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Message> {
             return Task::none();
         }
     };
+    if name.ends_with(['.', ' ']) || name.contains(['<', '>', ':', '"', '|', '?', '*']) {
+        if let Some(prompt) = &mut state.prompt {
+            prompt.error = Some("Names can't contain < > : \" | ? * or end with a dot or space.".into());
+        }
+        return Task::none();
+    }
     let unchanged = matches!(&kind, PromptKind::Rename(old) if *old == name);
     if unchanged {
         state.prompt = None;
@@ -487,10 +523,18 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Message> {
             match kind {
                 PromptKind::NewFile => {
                     let target = child_path(&root, &dir, &name)?;
-                    tokio::fs::write(&target, "")
+                    tokio::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&target)
                         .await
-                        .map(|()| format!("Created {name}"))
-                        .map_err(|e| format!("Couldn't create {name}. {e}"))
+                        .map(|_| format!("Created {name}"))
+                        .map_err(|e| match e.kind() {
+                            std::io::ErrorKind::AlreadyExists => {
+                                format!("{name} already exists here. Choose a different name.")
+                            }
+                            _ => format!("Couldn't create {name}. {e}"),
+                        })
                 }
                 PromptKind::NewFolder => {
                     let target = child_path(&root, &dir, &name)?;
@@ -515,6 +559,21 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Message> {
 
 fn child_path(root: &str, dir: &str, name: &str) -> Result<PathBuf, String> {
     resolve_safe_server_path(Path::new(root), dir, true).map(|base| base.join(name))
+}
+
+async fn copy_new(source: &Path, target: &Path) -> std::io::Result<()> {
+    let mut from = tokio::fs::File::open(source).await?;
+    let mut to = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(target)
+        .await?;
+    if let Err(error) = tokio::io::copy(&mut from, &mut to).await {
+        drop(to);
+        let _ = tokio::fs::remove_file(target).await;
+        return Err(error);
+    }
+    Ok(())
 }
 
 async fn upload(root: String, dir: String) -> Result<String, String> {
@@ -542,10 +601,16 @@ async fn upload(root: String, dir: String) -> Result<String, String> {
             "{name} already exists in this folder. Rename or delete it, then add it again."
         ));
     }
-    for (source, target) in &targets {
-        tokio::fs::copy(source, target)
-            .await
-            .map_err(|e| format!("Couldn't add {}. {e}", source.display()))?;
+    for (index, (source, target)) in targets.iter().enumerate() {
+        if let Err(error) = copy_new(source, target).await {
+            for (_, done) in &targets[..index] {
+                let _ = tokio::fs::remove_file(done).await;
+            }
+            return Err(format!(
+                "Couldn't add {}. {error} Nothing was added.",
+                source.display()
+            ));
+        }
     }
     Ok(match targets.len() {
         1 => "Added 1 file".to_string(),
@@ -694,6 +759,7 @@ fn prompt_view<'a>(prompt: &'a Prompt, busy: bool) -> Element<'a, Message> {
         PromptKind::Duplicate(_) => "Duplicate",
     };
     let mut field = text_input("Name", &prompt.input)
+        .id(PROMPT_ID)
         .size(TEXT_MD)
         .padding([8, 12])
         .style(if prompt.error.is_some() {
@@ -741,6 +807,20 @@ fn list_view<'a>(state: &'a State) -> Element<'a, Message> {
         return container(text("Loading files").size(TEXT_MD).style(style::muted))
             .padding(SPACE_5)
             .into();
+    }
+    if let Some(error) = &state.failure {
+        return container(
+            column![
+                text("Couldn't read this folder").size(TEXT_LG).font(UI_MEDIUM),
+                text(error).size(TEXT_MD).color(CORAL),
+                labeled(Icon::Restart, "Try again", Some(Message::Retry), style::primary),
+            ]
+            .spacing(SPACE_3)
+            .align_x(Alignment::Center),
+        )
+        .center_x(Length::Fill)
+        .padding(SPACE_6)
+        .into();
     }
     if state.entries.is_empty() {
         return container(
@@ -818,14 +898,12 @@ fn entry_row<'a>(entry: &'a FileEntry) -> Element<'a, Message> {
         style::icon_button
     )]
     .spacing(SPACE_1);
-    if !entry.is_directory {
-        actions = actions.push(icon_action(
-            Icon::Copy,
-            "Duplicate",
-            Message::Ask(PromptKind::Duplicate(entry.name.clone())),
-            style::icon_button,
-        ));
-    }
+    actions = actions.push(icon_action(
+        Icon::Copy,
+        "Duplicate",
+        Message::Ask(PromptKind::Duplicate(entry.name.clone())),
+        style::icon_button,
+    ));
     actions = actions.push(icon_action(
         Icon::Trash,
         "Delete",
@@ -926,9 +1004,9 @@ fn editor_style(_: &iced::Theme, status: text_editor::Status) -> text_editor::St
     }
 }
 
-pub fn on_event(state: &mut State, event: &Event, _ctx: &Ctx) -> Task<Message> {
+pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
     match event {
-        Event::ServerStatus(_) if state.loaded => reload(state),
+        Event::ServerStatus(_) if state.loaded => reload(state, ctx),
         _ => Task::none(),
     }
 }
@@ -938,7 +1016,7 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
         *state = State::default();
         state.server_id = ctx.selected.clone();
     }
-    reload(state)
+    reload(state, ctx)
 }
 
 pub fn subscription(state: &State) -> Subscription<Message> {

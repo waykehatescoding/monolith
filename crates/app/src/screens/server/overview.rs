@@ -3,27 +3,25 @@ use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::widget::{sized, sized_icon};
 use std::time::{Duration, Instant};
 
-use iced::widget::text::Wrapping;
-use iced::widget::{column, container, rich_text, row, text, Space};
+use iced::widget::{column, container, row, text, Space};
 use iced::{clipboard, Alignment, Color, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
 use monolith_core::types::{
-    ConsoleLine, ConsoleLineType, ServerProperty, ServerRecord, ServerRuntimeStatus,
+    ServerProperty, ServerRecord, ServerRuntimeStatus,
     ServerSettingsUpdate, SuccessResult,
 };
 use monolith_core::{ngrok_manager, server_props, server_runner, server_store};
 use monolith_theme::token::{
-    AMBER, CORAL, INK_SECONDARY, LOG_INFO, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, TEXT_MD,
+    AMBER, CORAL, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, TEXT_MD,
     TEXT_SM, TEXT_XL, TEXT_2XL,
 };
 use monolith_theme::{icon, icon_colored, style, Icon, MONO, UI_MEDIUM, UI_SEMIBOLD};
 
-use crate::ctx::{status_color, Ctx, Route, SettingsPage, Tab};
+use crate::ctx::{status_color, Ctx, Route, SettingsPage};
 use crate::demo;
 use crate::ui::busy_button;
 
 const DEFAULT_PORT: u16 = 25565;
-const TAIL_LINES: usize = 8;
 const NO_TOKEN: &str = "Add your ngrok authtoken in Settings, Sharing, then try again.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,7 +40,6 @@ pub struct State {
     address: String,
     port: u16,
     eula_accepted: bool,
-    tail: Vec<ConsoleLine>,
     tunnel_url: Option<String>,
     busy: Option<Busy>,
     error: Option<String>,
@@ -56,7 +53,6 @@ pub struct Loaded {
     address: String,
     port: u16,
     eula_accepted: bool,
-    tail: Vec<ConsoleLine>,
 }
 
 #[derive(Debug, Clone)]
@@ -72,7 +68,6 @@ pub enum Message {
     Dismiss,
     Done(Busy, SuccessResult),
     Copy(String),
-    Open(Tab),
     Tick,
 }
 
@@ -92,14 +87,11 @@ async fn load(server: ServerRecord) -> Loaded {
         .map(|content| content.lines().any(|line| line.trim() == "eula=true"))
         .unwrap_or(false);
     let address = ngrok_manager::get_local_ip().await;
-    let logs = server_runner::get_server_logs(server.id.clone()).await;
-    let skip = logs.len().saturating_sub(TAIL_LINES);
     Loaded {
         server_id: server.id,
         address,
         port: port_of(&properties),
         eula_accepted: eula || server.eula_accepted == Some(true),
-        tail: logs.into_iter().skip(skip).collect(),
     }
 }
 
@@ -202,7 +194,6 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 state.address = loaded.address;
                 state.port = loaded.port;
                 state.eula_accepted = loaded.eula_accepted;
-                state.tail = loaded.tail;
             }
             Task::none()
         }
@@ -250,10 +241,6 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::Copy(value) => {
             ctx.success("Address copied");
             clipboard::write(value)
-        }
-        Message::Open(tab) => {
-            ctx.navigate(Route::Server(tab));
-            Task::none()
         }
         Message::Tick => Task::none(),
     }
@@ -436,48 +423,6 @@ fn notice<'a>(
         .into()
 }
 
-fn console_tail<'a>(state: &'a State) -> Element<'a, Message> {
-    let body: Element<'a, Message> = if state.tail.is_empty() {
-        row![
-            text("Console output appears here once the server starts.")
-                .size(TEXT_SM)
-                .style(style::faint)
-                .width(Length::Fill),
-            sized(text("Open console").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
-                .style(style::ghost)
-                .on_press(Message::Open(Tab::Console)),
-        ]
-        .align_y(Alignment::Center)
-        .into()
-    } else {
-        state
-            .tail
-            .iter()
-            .fold(column![].spacing(2), |lines, line| {
-                let color = match line.kind {
-                    ConsoleLineType::Stderr => CORAL,
-                    ConsoleLineType::System => INK_SECONDARY,
-                    ConsoleLineType::Stdout => LOG_INFO,
-                };
-                lines.push(
-                    rich_text::<(), Message, _, _>(super::console::ansi_spans(&line.text, color))
-                        .size(TEXT_SM)
-                        .font(MONO)
-                        .wrapping(Wrapping::None),
-                )
-            })
-            .into()
-    };
-    let line_height = TEXT_SM * 1.3 + 2.0;
-    container(body)
-        .padding(SPACE_4)
-        .width(Length::Fill)
-        .height(line_height * TAIL_LINES as f32 + SPACE_4 * 2.0)
-        .clip(true)
-        .style(style::console)
-        .into()
-}
-
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(server) = ctx.selected_server() else {
         return Space::new().into();
@@ -579,14 +524,6 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         );
     }
 
-    page = page.push(
-        column![
-            text("Recent console").size(TEXT_MD).font(UI_MEDIUM),
-            console_tail(state),
-        ]
-        .spacing(SPACE_2),
-    );
-
     page.into()
 }
 
@@ -595,11 +532,6 @@ pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
         return Task::none();
     };
     match event {
-        Event::ConsoleOutput { server_id, line } if server_id == id => {
-            state.tail.push(line.clone());
-            let excess = state.tail.len().saturating_sub(TAIL_LINES);
-            state.tail.drain(..excess);
-        }
         Event::ServerStatus(update) if update.server_id == id => {
             match update.status {
                 ServerRuntimeStatus::Starting => {

@@ -11,7 +11,6 @@ use monolith_theme::token::{AMBER, CORAL, INK_SECONDARY, MOSS, STONE};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tab {
     Overview,
-    Console,
     Files,
     Players,
     Content,
@@ -21,9 +20,8 @@ pub enum Tab {
 }
 
 impl Tab {
-    pub const ALL: [Tab; 8] = [
+    pub const ALL: [Tab; 7] = [
         Tab::Overview,
-        Tab::Console,
         Tab::Files,
         Tab::Players,
         Tab::Content,
@@ -35,7 +33,6 @@ impl Tab {
     pub fn label(self) -> &'static str {
         match self {
             Tab::Overview => "Overview",
-            Tab::Console => "Console",
             Tab::Files => "Files",
             Tab::Players => "Players",
             Tab::Content => "Content",
@@ -90,7 +87,7 @@ impl Route {
     pub fn parse(name: &str) -> Option<Route> {
         Some(match name {
             "overview" => Route::Server(Tab::Overview),
-            "console" => Route::Server(Tab::Console),
+            "console" => Route::Server(Tab::Overview),
             "files" => Route::Server(Tab::Files),
             "players" => Route::Server(Tab::Players),
             "content" => Route::Server(Tab::Content),

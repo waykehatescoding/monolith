@@ -88,7 +88,6 @@ fn action(icon: Icon, label: String, hint: Option<&str>, command: Command) -> It
 fn tab_icon(tab: Tab) -> Icon {
     match tab {
         Tab::Overview => Icon::Info,
-        Tab::Console => Icon::Terminal,
         Tab::Files => Icon::File,
         Tab::Players => Icon::Users,
         Tab::Content => Icon::Package,

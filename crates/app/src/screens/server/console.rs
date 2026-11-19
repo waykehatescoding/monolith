@@ -3,16 +3,15 @@ use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::widget::sized;
 use iced::widget::text::Span;
 use iced::widget::{
-    column, container, row, rich_text, scrollable, space, span, stack, text, text_input,
+    column, container, row, rich_text, scrollable, span, stack, text, text_input,
 };
-use iced::{clipboard, event, keyboard, Alignment, Color, Element, Length, Subscription, Task};
+use iced::{event, keyboard, Alignment, Color, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
-use monolith_core::log_filter::filter_logs;
 use monolith_core::server_runner;
 use monolith_core::types::{ConsoleLine, ConsoleLineType, ServerRuntimeStatus};
 use monolith_theme::style;
 use monolith_theme::token::{
-    CORAL, INK, INK_TERTIARY, LOG_INFO, MOSS, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_MD, TEXT_SM,
+    CORAL, INK, LOG_INFO, MOSS, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_MD, TEXT_SM,
 };
 use monolith_theme::{icon_colored, Icon, MONO, UI_MEDIUM};
 
@@ -30,8 +29,6 @@ pub struct State {
     server_id: Option<String>,
     lines: Vec<ConsoleLine>,
     loading: bool,
-    search: String,
-    kinds: Vec<ConsoleLineType>,
     input: String,
     history: Vec<String>,
     history_pos: Option<usize>,
@@ -46,8 +43,6 @@ impl Default for State {
             server_id: None,
             lines: Vec::new(),
             loading: false,
-            search: String::new(),
-            kinds: Vec::new(),
             input: String::new(),
             history: Vec::new(),
             history_pos: None,
@@ -61,15 +56,11 @@ impl Default for State {
 #[derive(Debug, Clone)]
 pub enum Message {
     Loaded(String, Vec<ConsoleLine>),
-    Search(String),
-    ToggleKind(ConsoleLineType),
     Input(String),
     Submit,
     Sent(Result<(), String>),
     Scrolled(f32),
     JumpToLatest,
-    Copy,
-    Clear,
     ArrowKey(bool),
     ArrowResolved(bool, bool),
 }
@@ -94,19 +85,6 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             Task::none()
         }
-        Message::Search(value) => {
-            state.search = value;
-            Task::none()
-        }
-        Message::ToggleKind(kind) => {
-            match state.kinds.iter().position(|k| *k == kind) {
-                Some(index) => {
-                    state.kinds.remove(index);
-                }
-                None => state.kinds.push(kind),
-            }
-            Task::none()
-        }
         Message::Input(value) => {
             state.input = value;
             state.history_pos = None;
@@ -128,27 +106,8 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.at_bottom = true;
             jump_to_latest()
         }
-        Message::Copy => {
-            let text = visible(state)
-                .iter()
-                .map(|line| strip_ansi(&line.text))
-                .collect::<Vec<_>>()
-                .join("\n");
-            if text.is_empty() {
-                ctx.info("There is nothing to copy yet.");
-                return Task::none();
-            }
-            ctx.success("Console output copied.");
-            clipboard::write(text)
-        }
-        Message::Clear => {
-            state.lines.clear();
-            state.at_bottom = true;
-            ctx.info("Console cleared. New output will keep appearing.");
-            Task::none()
-        }
         Message::ArrowKey(up) => {
-            if ctx.route != Route::Server(Tab::Console) || state.history.is_empty() {
+            if ctx.route != Route::Server(Tab::Overview) || state.history.is_empty() {
                 return Task::none();
             }
             operation::is_focused(INPUT_ID).map(move |focused| Message::ArrowResolved(up, focused))
@@ -236,92 +195,25 @@ fn accepts_commands(ctx: &Ctx, id: &str) -> bool {
     )
 }
 
-fn visible(state: &State) -> Vec<ConsoleLine> {
-    filter_logs(&state.lines, &state.search, &state.kinds)
-}
-
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(id) = state.server_id.as_deref().or(ctx.selected.as_deref()) else {
         return container(text("Select a server to see its console.").style(style::muted))
             .center(Length::Fill)
             .into();
     };
-    column![toolbar(state), log_area(state), command_bar(state, ctx, id)]
+    column![log_area(state), command_bar(state, ctx, id)]
         .spacing(SPACE_3)
         .height(Length::Fill)
         .into()
 }
 
-fn toolbar(state: &State) -> Element<'_, Message> {
-    let search = text_input("Search output", &state.search)
-        .on_input(Message::Search)
-        .size(TEXT_SM)
-        .padding([5.0, SPACE_3])
-        .style(style::input)
-        .width(Length::FillPortion(2));
-    let chips = [
-        (ConsoleLineType::Stdout, "Output"),
-        (ConsoleLineType::Stderr, "Errors"),
-        (ConsoleLineType::System, "System"),
-    ]
-    .into_iter()
-    .fold(row![].spacing(SPACE_1), |chips, (kind, label)| {
-        chips.push(
-            sized(text(label).size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
-                .style(style::tab(state.kinds.contains(&kind)))
-                .on_press(Message::ToggleKind(kind)),
-        )
-    });
-    let empty = state.lines.is_empty();
-    let filtering = !state.search.is_empty() || !state.kinds.is_empty();
-    let count = if filtering {
-        text(format!("{} of {} lines", visible(state).len(), state.lines.len()))
-            .size(TEXT_SM)
-            .style(style::muted)
-    } else {
-        text("")
-    };
-    row![
-        search,
-        chips,
-        count,
-        space().width(Length::FillPortion(3)),
-        action_button("Copy", Icon::Copy, (!empty).then_some(Message::Copy)),
-        action_button("Clear", Icon::Trash, (!empty).then_some(Message::Clear)),
-    ]
-    .spacing(SPACE_2)
-    .align_y(Alignment::Center)
-    .into()
-}
-
-fn action_button(
-    label: &'static str,
-    glyph: Icon,
-    on_press: Option<Message>,
-) -> Element<'static, Message> {
-    let color = if on_press.is_some() { INK } else { INK_TERTIARY };
-    let content = row![
-        icon_colored(glyph, 14.0, color),
-        text(label).size(TEXT_SM).font(UI_MEDIUM)
-    ]
-    .spacing(SPACE_2)
-    .align_y(Alignment::Center);
-    let base = sized(content, BUTTON_SM).style(style::ghost);
-    match on_press {
-        Some(message) => base.on_press(message).into(),
-        None => base.into(),
-    }
-}
-
 fn log_area(state: &State) -> Element<'_, Message> {
-    let lines = visible(state);
+    let lines = &state.lines;
     let body: Element<'_, Message> = if lines.is_empty() {
         let note = if state.loading {
             "Loading console output"
-        } else if state.lines.is_empty() {
-            "No output yet. Start the server and its log will appear here."
         } else {
-            "Nothing matches. Clear the search or turn off a filter."
+            "No output yet. Start the server and its log will appear here."
         };
         container(text(note).size(TEXT_MD).style(style::muted))
             .center(Length::Fill)
@@ -329,7 +221,7 @@ fn log_area(state: &State) -> Element<'_, Message> {
     } else {
         let skip = lines.len().saturating_sub(RENDER_LIMIT);
         let list = lines
-            .into_iter()
+            .iter()
             .skip(skip)
             .fold(column![].spacing(2), |list, line| list.push(line_view(line)));
         scrollable(container(list).padding([SPACE_3, SPACE_4]).width(Length::Fill))
@@ -365,7 +257,7 @@ fn log_area(state: &State) -> Element<'_, Message> {
     stack![surface, pill].into()
 }
 
-fn line_view<'a>(line: ConsoleLine) -> Element<'a, Message> {
+fn line_view<'a>(line: &ConsoleLine) -> Element<'a, Message> {
     let base = match line.kind {
         ConsoleLineType::Stdout => LOG_INFO,
         ConsoleLineType::Stderr => CORAL,
@@ -451,11 +343,7 @@ pub fn subscription(_state: &State) -> Subscription<Message> {
     })
 }
 
-fn strip_ansi(input: &str) -> String {
-    segments(input).map(|(segment, _)| segment).collect()
-}
-
-pub(super) fn ansi_spans(input: &str, base: Color) -> Vec<Span<'static, (), iced::Font>> {
+fn ansi_spans(input: &str, base: Color) -> Vec<Span<'static, (), iced::Font>> {
     let mut color = base;
     let mut spans = Vec::new();
     for (segment, codes) in segments(input) {
@@ -576,12 +464,6 @@ fn palette(index: u8, bright: bool) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn strips_ansi_sequences() {
-        assert_eq!(strip_ansi("\x1b[31mred\x1b[0m plain"), "red plain");
-        assert_eq!(strip_ansi("no codes"), "no codes");
-    }
 
     #[test]
     fn extended_colours_do_not_leak_arguments() {

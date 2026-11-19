@@ -507,8 +507,7 @@ impl App {
                     Task::none()
                 };
                 let body = match tab {
-                    Tab::Overview => Task::none(),
-                    Tab::Console => console::on_show(&mut screens.console, ctx).map(S::Console),
+                    Tab::Overview => console::on_show(&mut screens.console, ctx).map(S::Console),
                     Tab::Files => files::on_show(&mut screens.files, ctx).map(S::Files),
                     Tab::Players => players::on_show(&mut screens.players, ctx).map(S::Players),
                     Tab::Content => content::on_show(&mut screens.content, ctx).map(S::Content),
@@ -773,8 +772,13 @@ impl App {
                 )
             });
         let body = match tab {
-            Tab::Overview => mapped(overview::view(&screens.overview, ctx), S::Overview),
-            Tab::Console => mapped(console::view(&screens.console, ctx), S::Console),
+            Tab::Overview => column![
+                mapped(overview::view(&screens.overview, ctx), S::Overview),
+                mapped(console::view(&screens.console, ctx), S::Console),
+            ]
+            .spacing(SPACE_4)
+            .height(Length::Fill)
+            .into(),
             Tab::Files => mapped(files::view(&screens.files, ctx), S::Files),
             Tab::Players => mapped(players::view(&screens.players, ctx), S::Players),
             Tab::Content => mapped(content::view(&screens.content, ctx), S::Content),

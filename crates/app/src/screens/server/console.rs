@@ -455,7 +455,7 @@ fn strip_ansi(input: &str) -> String {
     segments(input).map(|(segment, _)| segment).collect()
 }
 
-fn ansi_spans(input: &str, base: Color) -> Vec<Span<'static, (), iced::Font>> {
+pub(super) fn ansi_spans(input: &str, base: Color) -> Vec<Span<'static, (), iced::Font>> {
     let mut color = base;
     let mut spans = Vec::new();
     for (segment, codes) in segments(input) {

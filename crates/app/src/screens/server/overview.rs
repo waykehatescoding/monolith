@@ -3,7 +3,8 @@ use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::widget::{sized, sized_icon};
 use std::time::{Duration, Instant};
 
-use iced::widget::{column, container, row, text, Space};
+use iced::widget::text::Wrapping;
+use iced::widget::{column, container, rich_text, row, text, Space};
 use iced::{clipboard, Alignment, Color, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
 use monolith_core::types::{
@@ -459,17 +460,20 @@ fn console_tail<'a>(state: &'a State) -> Element<'a, Message> {
                     ConsoleLineType::Stdout => LOG_INFO,
                 };
                 lines.push(
-                    text(line.text.as_str())
+                    rich_text::<(), Message, _, _>(super::console::ansi_spans(&line.text, color))
                         .size(TEXT_SM)
                         .font(MONO)
-                        .style(style::colored(color)),
+                        .wrapping(Wrapping::None),
                 )
             })
             .into()
     };
+    let line_height = TEXT_SM * 1.3 + 2.0;
     container(body)
         .padding(SPACE_4)
         .width(Length::Fill)
+        .height(line_height * TAIL_LINES as f32 + SPACE_4 * 2.0)
+        .clip(true)
         .style(style::console)
         .into()
 }

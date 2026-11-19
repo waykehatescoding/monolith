@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.4
+
+- The console now lives on the Overview tab and fills the page, with player, TPS, memory and uptime counts above it. The separate Console tab is gone, along with its search, filters, copy and clear.
+- You can scroll back through console output again. Scrolling up no longer snaps straight back to the bottom.
+
 ## 0.0.3
 
 - The Recent console on the Overview tab now shows log colours, keeps each entry on one line, and stays a fixed height.

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.3
+
+- The Recent console on the Overview tab now shows log colours, keeps each entry on one line, and stays a fixed height.
+
 ## 0.0.2
 
 - The Add plugins panel in Default plugins now opens with a list of the most popular Modrinth plugins instead of an empty search box.

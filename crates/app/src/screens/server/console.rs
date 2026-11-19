@@ -238,7 +238,7 @@ fn log_area(state: &State) -> Element<'_, Message> {
         .width(Length::Fill)
         .height(Length::Fill);
     if state.at_bottom {
-        return surface.into();
+        return stack![surface].into();
     }
     let pill = container(
         sized(

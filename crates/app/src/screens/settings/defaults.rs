@@ -212,6 +212,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::ToggleAdd => {
             state.adding = !state.adding;
+            if state.adding && !state.searched && state.hits.is_empty() {
+                return update(state, Message::Search, ctx);
+            }
             Task::none()
         }
         Message::Target(group) => {
@@ -224,16 +227,17 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::Search => {
             let query = state.query.trim().to_string();
-            if query.is_empty() || state.searching {
+            if state.searching {
                 return Task::none();
             }
+            let sort = if query.is_empty() { "downloads" } else { "relevance" };
             state.searching = true;
             state.search_error = None;
             state.hits.clear();
             Task::perform(
                 async move {
                     modrinth::search_modrinth(
-                        json!({ "query": query, "projectType": "plugin", "limit": 12 }),
+                        json!({ "query": query, "projectType": "plugin", "sort": sort, "limit": 20 }),
                     )
                     .await
                     .map(|result| result.hits)
@@ -625,7 +629,7 @@ fn hit_row<'a>(state: &'a State, index: usize, hit: &'a ModrinthSearchHit) -> El
 
 fn add_panel<'a>(state: &'a State) -> Element<'a, Message> {
     let search = row![
-        text_input("Search Modrinth for a plugin", &state.query)
+        text_input("Search Modrinth, or browse the most popular plugins below", &state.query)
             .on_input(Message::Query)
             .on_submit(Message::Search)
             .size(TEXT_MD)
@@ -635,7 +639,7 @@ fn add_panel<'a>(state: &'a State) -> Element<'a, Message> {
         action(
             if state.searching { "Searching" } else { "Search" },
             Icon::Search,
-            (!state.searching && !state.query.trim().is_empty()).then_some(Message::Search),
+            (!state.searching).then_some(Message::Search),
             true,
         ),
     ]

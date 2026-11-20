@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.5
+
+- New server platforms: Forge, NeoForge and Quilt. Monolith runs the loader's installer for you, and the Content tab installs matching mods from Modrinth.
+- Modrinth search in Content and Default plugins now updates as you type.
+
 ## 0.0.4
 
 - The console now lives on the Overview tab and fills the page, with player, TPS, memory and uptime counts above it. The separate Console tab is gone, along with its search, filters, copy and clear.

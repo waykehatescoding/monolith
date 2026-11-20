@@ -8,7 +8,8 @@ Monolith is a Minecraft server manager for Windows. It sets up, runs, shares and
 
 - **Create a server in about a minute.** Pick Paper, Purpur, Fabric or Vanilla and a Minecraft version (snapshots and pre-releases included). Monolith downloads the server jar and the right Java runtime for you.
 - **Play with friends.** Copy the join address for your local network, or turn on sharing to get a public address through ngrok.
-- **Live console.** Colour-coded output, search and filters, command history, and a view that stays put while you scroll.
+- **Live console.** Colour-coded output right on the Overview, with players, TPS, memory and uptime above it, command history, and a view that stays put while you scroll.
+- **Players.** Kick, ban or make someone an operator straight from the list of who's online.
 - **Plugins and mods.** Search, install and update from Modrinth. Default plugin groups (for example "Performance" or "Skript") let you choose what goes on every new server.
 - **Settings without config files.** Common `server.properties` options as plain controls, plus a raw editor, whitelist, ban list and file browser.
 - **Backups.** One-click backups, scheduled backups and safe restores.
@@ -18,7 +19,7 @@ Monolith is a Minecraft server manager for Windows. It sets up, runs, shares and
 - **Optional AI assistant.** Bring your own OpenAI-compatible key. It can suggest changes, but nothing runs until you confirm the exact command or edit.
 
 <p>
-  <img src="docs/screenshots/console.png" width="49%" alt="Console">
+  <img src="docs/screenshots/players.png" width="49%" alt="Players">
   <img src="docs/screenshots/analytics.png" width="49%" alt="Analytics">
 </p>
 

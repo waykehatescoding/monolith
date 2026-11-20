@@ -41,6 +41,7 @@ pub struct State {
     port: u16,
     eula_accepted: bool,
     tunnel_url: Option<String>,
+    tunnel_error: Option<String>,
     busy: Option<Busy>,
     error: Option<String>,
     port_fix: Option<u16>,
@@ -203,6 +204,8 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::Share => {
             let enable = server.use_ngrok != Some(true);
             let port = state.port;
+            state.tunnel_url = None;
+            state.tunnel_error = None;
             run(state, Busy::Share, toggle_share(server, port, enable))
         }
         Message::AcceptEula => run(state, Busy::Eula, server_props::accept_eula(server.id)),
@@ -224,9 +227,6 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             if result.success {
                 if busy == Busy::Eula {
                     state.eula_accepted = true;
-                }
-                if busy == Busy::Share {
-                    state.tunnel_url = None;
                 }
                 ctx.refresh_servers();
                 return Task::none();
@@ -356,9 +356,17 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             addresses = addresses.push(
                 row![
                     text("Public").size(TEXT_SM).style(style::muted).width(52),
-                    text("Creating public address")
-                        .size(TEXT_MD)
-                        .style(style::muted),
+                    text(
+                        state
+                            .tunnel_error
+                            .as_deref()
+                            .unwrap_or("Creating public address")
+                    )
+                    .size(TEXT_MD)
+                    .style(|theme| match state.tunnel_error {
+                        Some(_) => style::colored(CORAL)(theme),
+                        None => style::muted(theme),
+                    }),
                 ]
                 .spacing(SPACE_2),
             );
@@ -538,6 +546,7 @@ pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
                     state.error = None;
                     state.port_fix = None;
                     state.started_at = Some(Instant::now());
+                    state.tunnel_error = None;
                 }
                 ServerRuntimeStatus::Offline | ServerRuntimeStatus::Crashed => {
                     state.started_at = None;
@@ -548,7 +557,11 @@ pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
         }
         Event::NgrokUrlChanged(info) if info.server_id == id => {
             state.tunnel_url = Some(info.public_url.clone());
+            state.tunnel_error = None;
             ctx.refresh_servers();
+        }
+        Event::NgrokFailed { server_id, error } if *server_id == id => {
+            state.tunnel_error = Some(error.clone());
         }
         _ => {}
     }

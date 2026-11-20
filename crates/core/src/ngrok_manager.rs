@@ -11,7 +11,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde_json::Value;
 use sysinfo::Networks;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::oneshot;
 
@@ -36,6 +36,7 @@ static TOKEN_RE: Lazy<Regex> = Lazy::new(|| re(r"^[a-zA-Z0-9_\-]+$"));
 static URL_RE: Lazy<Regex> = Lazy::new(|| re(r"url=(tcp://\S+)"));
 static ESTABLISHED_RE: Lazy<Regex> = Lazy::new(|| re(r"Tunnel established at (tcp://\S+)"));
 static AUTHTOKEN_RE: Lazy<Regex> = Lazy::new(|| re(r"(?:auth_token|authtoken):\s*(.+)"));
+static ERR_RE: Lazy<Regex> = Lazy::new(|| re(r#"lvl=(?:eror|crit)\b.*\berr="((?:[^"\\]|\\.)*)""#));
 
 fn lock_tunnels() -> std::sync::MutexGuard<'static, HashMap<String, Tunnel>> {
     TUNNELS.lock().unwrap_or_else(|e| e.into_inner())
@@ -339,7 +340,10 @@ pub async fn is_ngrok_authtoken_configured() -> bool {
 }
 
 async fn fetch_tunnel_url() -> Option<String> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()?;
     let response = client
         .get("http://127.0.0.1:4040/api/tunnels")
         .send()
@@ -352,6 +356,17 @@ async fn fetch_tunnel_url() -> Option<String> {
         .get("public_url")?
         .as_str()
         .map(str::to_string)
+}
+
+fn ngrok_error(line: &str) -> Option<String> {
+    if let Some(rest) = line.trim().strip_prefix("ERROR:") {
+        return Some(rest.trim().to_string()).filter(|s| !s.is_empty());
+    }
+    ERR_RE.captures(line).map(|c| {
+        c[1].replace("\\r", "")
+            .replace("\\n", " ")
+            .replace("\\\"", "\"")
+    })
 }
 
 fn capture_url(line: &str, slot: &std::sync::Mutex<String>) {
@@ -382,11 +397,17 @@ pub async fn start_ngrok(server_id: String, port: u16) -> StartNgrokResult {
                 error: None,
             }
         }
-        Err(error) => StartNgrokResult {
-            success: false,
-            public_url: None,
-            error: Some(error),
-        },
+        Err(error) => {
+            emit(Event::NgrokFailed {
+                server_id,
+                error: error.clone(),
+            });
+            StartNgrokResult {
+                success: false,
+                public_url: None,
+                error: Some(error),
+            }
+        }
     }
 }
 
@@ -423,20 +444,31 @@ async fn start_tunnel(server_id: &str, port: u16) -> Result<String, String> {
         .map_err(|e| spawn_error(&ngrok_path(), e))?;
 
     let found_url = Arc::new(std::sync::Mutex::new(String::new()));
+    let last_error = Arc::new(std::sync::Mutex::new(String::new()));
 
-    if let Some(stdout) = child.stdout.take() {
-        let slot = Arc::clone(&found_url);
+    for stream in [
+        child
+            .stdout
+            .take()
+            .map(|s| Box::new(s) as Box<dyn AsyncRead + Send + Unpin>),
+        child
+            .stderr
+            .take()
+            .map(|s| Box::new(s) as Box<dyn AsyncRead + Send + Unpin>),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        let url_slot = Arc::clone(&found_url);
+        let error_slot = Arc::clone(&last_error);
         tokio::spawn(async move {
-            let mut lines = BufReader::new(stdout).lines();
+            let mut lines = BufReader::new(stream).lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                capture_url(&line, &slot);
+                capture_url(&line, &url_slot);
+                if let (Some(error), Ok(mut slot)) = (ngrok_error(&line), error_slot.lock()) {
+                    *slot = error;
+                }
             }
-        });
-    }
-    if let Some(mut stderr) = child.stderr.take() {
-        tokio::spawn(async move {
-            let mut sink = Vec::new();
-            let _ = stderr.read_to_end(&mut sink).await;
         });
     }
 
@@ -474,6 +506,9 @@ async fn start_tunnel(server_id: &str, port: u16) -> Result<String, String> {
         if !public_url.is_empty() {
             break;
         }
+        if kill_tx.is_closed() {
+            break;
+        }
         if let Some(url) = fetch_tunnel_url().await {
             public_url = url;
             break;
@@ -482,7 +517,12 @@ async fn start_tunnel(server_id: &str, port: u16) -> Result<String, String> {
 
     if public_url.is_empty() {
         kill_with_ack(kill_tx).await;
-        return Err("Failed to get tunnel URL. Ngrok may require authentication.".to_string());
+        let error = last_error.lock().map(|g| g.clone()).unwrap_or_default();
+        return Err(if error.is_empty() {
+            "ngrok did not create a public address in time. Check your authtoken in Settings > Sharing.".to_string()
+        } else {
+            format!("ngrok: {error}")
+        });
     }
 
     let clean_url = public_url
@@ -663,5 +703,28 @@ pub async fn remove_ngrok_authtoken() -> SuccessResult {
             config_path().display()
         )),
         Err(error) => SuccessResult::err(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_ngrok_errors() {
+        assert_eq!(
+            ngrok_error("ERROR:  authentication failed: Your account is suspended."),
+            Some("authentication failed: Your account is suspended.".into())
+        );
+        assert_eq!(
+            ngrok_error(r#"t=1 lvl=eror msg="session closing" obj=tunnels.session err="TCP tunnels are only available to verified accounts.\r\n\r\nERR_NGROK_8013""#)
+                .as_deref()
+                .map(|e| e.contains("ERR_NGROK_8013")),
+            Some(true)
+        );
+        assert_eq!(
+            ngrok_error(r#"t=1 lvl=info msg="started tunnel" url=tcp://0.tcp.ngrok.io:1"#),
+            None
+        );
     }
 }

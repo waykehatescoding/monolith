@@ -19,6 +19,10 @@ pub enum Event {
     BackupProgress(BackupProgressEvent),
     BackupCompleted(BackupCompletedEvent),
     NgrokUrlChanged(NgrokTunnelInfo),
+    NgrokFailed {
+        server_id: String,
+        error: String,
+    },
     NgrokInstallProgress(NgrokInstallProgress),
     UpdateDownloadProgress(DownloadUpdateProgress),
 }

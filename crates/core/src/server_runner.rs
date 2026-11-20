@@ -628,7 +628,14 @@ async fn read_lines<R: AsyncRead + Unpin>(reader: R, mut on_line: impl FnMut(Str
 }
 
 async fn start_ngrok_for(server_id: &str, server_path: &str) {
-    if !(is_ngrok_enabled().await && is_ngrok_authtoken_configured().await) {
+    let wanted = match get_server(server_id.to_string())
+        .await
+        .and_then(|s| s.use_ngrok)
+    {
+        Some(sharing) => sharing,
+        None => is_ngrok_enabled().await,
+    };
+    if !(wanted && is_ngrok_authtoken_configured().await) {
         return;
     }
     let properties = read_properties(Path::new(server_path)).await;
@@ -637,14 +644,20 @@ async fn start_ngrok_for(server_id: &str, server_path: &str) {
         .find(|p| p.key == "server-port")
         .map(|p| parse_port(&p.value))
         .unwrap_or(25565);
-    let _ = start_ngrok(server_id.to_string(), port).await;
+    if let Some(error) = start_ngrok(server_id.to_string(), port).await.error {
+        send_console_line(
+            server_id,
+            &format!("Could not create a public address: {error}"),
+            ConsoleLineType::Stderr,
+        );
+    }
 }
 
 fn start_boxed(server_id: String) -> Pin<Box<dyn Future<Output = SuccessResult> + Send>> {
     Box::pin(start_server_core(server_id))
 }
 
-async fn handle_close(server_id: String, server_path: String, code: Option<i32>) {
+async fn handle_close(server_id: String, code: Option<i32>) {
     remove_running(&server_id);
     stop_stats_polling(&server_id);
 
@@ -684,21 +697,19 @@ async fn handle_close(server_id: String, server_path: String, code: Option<i32>)
                 ConsoleLineType::Stderr,
             );
             set_offline(&server_id, true).await;
-            return;
         }
-        start_ngrok_for(&server_id, &server_path).await;
         return;
     }
 
     if is_crash(stopped_by_user, code) {
         set_ended(&server_id, ServerRuntimeStatus::Crashed, true).await;
-        restart_after_crash(&server_id, &server_path).await;
+        restart_after_crash(&server_id).await;
     } else {
         set_offline(&server_id, true).await;
     }
 }
 
-async fn restart_after_crash(server_id: &str, server_path: &str) {
+async fn restart_after_crash(server_id: &str) {
     let enabled = get_server(server_id.to_string())
         .await
         .map(|s| s.auto_restart_enabled())
@@ -736,9 +747,7 @@ async fn restart_after_crash(server_id: &str, server_path: &str) {
     }
 
     let result = start_boxed(server_id.to_string()).await;
-    if result.success {
-        start_ngrok_for(server_id, server_path).await;
-    } else {
+    if !result.success {
         let error = result.error.unwrap_or_default();
         send_console_line(
             server_id,
@@ -908,7 +917,6 @@ async fn start_server_core(server_id: String) -> SuccessResult {
     });
 
     let id = server_id.clone();
-    let server_path = server.server_path.clone();
     tokio::spawn(async move {
         let status = tokio::select! {
             result = child.wait() => result,
@@ -922,7 +930,7 @@ async fn start_server_core(server_id: String) -> SuccessResult {
         }
         let _ = closed_tx.send(true);
         match status {
-            Ok(status) => handle_close(id, server_path, status.code()).await,
+            Ok(status) => handle_close(id, status.code()).await,
             Err(err) => {
                 remove_running(&id);
                 stop_stats_polling(&id);
@@ -931,6 +939,7 @@ async fn start_server_core(server_id: String) -> SuccessResult {
             }
         }
     });
+    tokio::spawn(async move { start_ngrok_for(&server_id, &server.server_path).await });
 
     SuccessResult::ok()
 }
@@ -1032,10 +1041,6 @@ pub async fn restart_server(id: String) -> SuccessResult {
                 .error
                 .unwrap_or_else(|| "Failed to start server".to_string()),
         );
-    }
-
-    if let Some(server) = get_server(id.clone()).await {
-        start_ngrok_for(&id, &server.server_path).await;
     }
 
     SuccessResult::ok()

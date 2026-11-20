@@ -173,10 +173,12 @@ pub fn build_java_args(ram_mb: u32, jar_file: &str) -> Vec<String> {
             "-XX:SurvivorRatio=32",
             "-Dusing.aikars.flags=https://mcflags.emc.gs",
             "-Daikars.new.flags=true",
-            "-jar",
         ]
         .map(String::from),
     );
+    if !crate::server_create::is_args_file(jar_file) {
+        args.push("-jar".to_string());
+    }
     args.push(jar_file.to_string());
     args.push("nogui".to_string());
     args

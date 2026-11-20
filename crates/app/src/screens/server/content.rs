@@ -1,6 +1,6 @@
-use std::collections::{HashMap, HashSet};
 use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::widget::{sized, sized_icon};
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::time::Duration;
 
@@ -145,6 +145,7 @@ pub enum Message {
     Query(String),
     Sort(SortChoice),
     Search,
+    Debounced(u64),
     Searched(u64, u32, Result<ModrinthSearchResult, String>),
     Page(bool),
     Open(Box<ModrinthSearchHit>),
@@ -192,7 +193,9 @@ fn target(ctx: &Ctx) -> Option<Target> {
     let (project_type, loader) = match server.framework.as_str() {
         "Paper" | "Purpur" => (ModrinthProjectType::Plugin, "paper"),
         "Fabric" => (ModrinthProjectType::Mod, "fabric"),
+        "Quilt" => (ModrinthProjectType::Mod, "quilt"),
         "Forge" => (ModrinthProjectType::Mod, "forge"),
+        "NeoForge" => (ModrinthProjectType::Mod, "neoforge"),
         _ => return None,
     };
     Some(Target {
@@ -293,7 +296,13 @@ fn check_latest(target: &Target, entries: &[ModrinthInstallEntry]) -> Task<Messa
     let game_version = target.game_version.clone();
     let projects: Vec<_> = entries
         .iter()
-        .map(|e| (e.project_id.clone(), e.loader.clone(), e.game_version.clone()))
+        .map(|e| {
+            (
+                e.project_id.clone(),
+                e.loader.clone(),
+                e.game_version.clone(),
+            )
+        })
         .collect();
     Task::perform(
         async move {
@@ -505,8 +514,14 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::Query(query) => {
             state.query = query;
-            Task::none()
+            state.search_seq += 1;
+            let seq = state.search_seq;
+            Task::perform(tokio::time::sleep(Duration::from_millis(250)), move |_| {
+                Message::Debounced(seq)
+            })
         }
+        Message::Debounced(seq) if seq == state.search_seq => search(state, &target, 0),
+        Message::Debounced(_) => Task::none(),
         Message::Sort(sort) => {
             state.sort = sort;
             search(state, &target, 0)
@@ -627,7 +642,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                     let outcome = if result.success {
                         Ok(())
                     } else {
-                        Err(result.error.unwrap_or_else(|| "The download failed.".into()))
+                        Err(result
+                            .error
+                            .unwrap_or_else(|| "The download failed.".into()))
                     };
                     Message::Installed(
                         id.clone(),
@@ -787,9 +804,12 @@ fn installed_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message>
                 .size(TEXT_MD)
                 .style(style::muted),
                 Space::new().height(SPACE_2),
-                sized(text("Browse Modrinth").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
-                    .style(style::primary)
-                    .on_press(Message::ShowPane(Pane::Browse)),
+                sized(
+                    text("Browse Modrinth").size(TEXT_MD).font(UI_MEDIUM),
+                    BUTTON_MD
+                )
+                .style(style::primary)
+                .on_press(Message::ShowPane(Pane::Browse)),
             ]
             .spacing(SPACE_2)
             .align_x(Alignment::Center),
@@ -829,9 +849,7 @@ fn installed_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message>
                 .push(
                     sized(text("Update").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
                         .style(style::secondary)
-                        .on_press_maybe(
-                            (!busy).then(|| Message::Update(entry.project_id.clone())),
-                        ),
+                        .on_press_maybe((!busy).then(|| Message::Update(entry.project_id.clone()))),
                 );
         } else if busy {
             line = line.push(text("Working").size(TEXT_SM).style(style::muted));
@@ -908,7 +926,9 @@ fn result_row<'a>(state: &'a State, hit: &'a ModrinthSearchHit) -> Element<'a, M
                 .size(TEXT_SM)
                 .font(UI_MEDIUM)
                 .width(Length::Fill)
-                .align_x(Alignment::Center), BUTTON_SM)
+                .align_x(Alignment::Center),
+            BUTTON_SM,
+        )
         .width(Length::Fixed(84.0))
         .style(style::secondary)
         .on_press_maybe((!installing).then(|| Message::Install(Box::new(hit.clone()))))
@@ -930,8 +950,7 @@ fn result_row<'a>(state: &'a State, hit: &'a ModrinthSearchHit) -> Element<'a, M
 
 fn browse_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message> {
     let search_button = if state.searching {
-        sized(ghost_label(Icon::Search, "Searching"), BUTTON_MD)
-            .style(style::secondary)
+        sized(ghost_label(Icon::Search, "Searching"), BUTTON_MD).style(style::secondary)
     } else {
         sized(primary_label(Icon::Search, "Search"), BUTTON_MD)
             .style(style::primary)
@@ -1045,7 +1064,10 @@ fn drawer<'a>(state: &'a State, detail: &'a Detail) -> Element<'a, Message> {
     let (followers, categories, link) = match &detail.project {
         Some(Ok(project)) => (
             Some(project.followers),
-            project.categories.clone().or_else(|| hit.categories.clone()),
+            project
+                .categories
+                .clone()
+                .or_else(|| hit.categories.clone()),
             project.project_url.clone(),
         ),
         _ => (None, hit.categories.clone(), None),
@@ -1088,12 +1110,10 @@ fn drawer<'a>(state: &'a State, detail: &'a Detail) -> Element<'a, Message> {
             .size(TEXT_SM)
             .style(style::colored(CORAL))
             .into(),
-        Some(Ok(versions)) if versions.is_empty() => {
-            text("No versions found for this server")
-                .size(TEXT_SM)
-                .style(style::muted)
-                .into()
-        }
+        Some(Ok(versions)) if versions.is_empty() => text("No versions found for this server")
+            .size(TEXT_SM)
+            .style(style::muted)
+            .into(),
         Some(Ok(versions)) => column![
             text("Version").size(TEXT_SM).style(style::muted),
             pick_list(
@@ -1125,7 +1145,9 @@ fn drawer<'a>(state: &'a State, detail: &'a Detail) -> Element<'a, Message> {
                 .size(TEXT_MD)
                 .font(UI_MEDIUM)
                 .width(Length::Fill)
-                .align_x(Alignment::Center), BUTTON_MD)
+                .align_x(Alignment::Center),
+            BUTTON_MD,
+        )
         .width(Length::Fill)
         .padding([SPACE_2 + 2.0, SPACE_4])
         .style(style::primary)
@@ -1136,9 +1158,12 @@ fn drawer<'a>(state: &'a State, detail: &'a Detail) -> Element<'a, Message> {
     );
     if let Some(url) = link {
         body = body.push(
-            sized(ghost_label(Icon::ExternalLink, "View on Modrinth"), BUTTON_MD)
-                .style(style::ghost)
-                .on_press(Message::OpenLink(url)),
+            sized(
+                ghost_label(Icon::ExternalLink, "View on Modrinth"),
+                BUTTON_MD,
+            )
+            .style(style::ghost)
+            .on_press(Message::OpenLink(url)),
         );
     }
 
@@ -1157,7 +1182,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(target) = target(ctx) else {
         return centered_message(
             "This server can't use plugins or mods",
-            "Vanilla servers have no add-on support. Switch to Paper, Purpur, Fabric or Forge in Settings to install content.",
+            "Vanilla servers have no add-on support. Switch to a plugin or mod platform in Settings to install content.",
             None,
         );
     };

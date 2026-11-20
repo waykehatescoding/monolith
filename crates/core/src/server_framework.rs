@@ -1,7 +1,9 @@
 use crate::events::{emit, Event};
 use crate::java_manager::{ensure_java_installed, get_required_java_version, JavaInstallStage};
 use crate::safety::sanitize_download_file_name;
-use crate::server_create::{download_file, generate_start_bat, resolve_framework_download};
+use crate::server_create::{
+    download_file, generate_start_bat, resolve_framework_download, run_installer,
+};
 use crate::server_store::{load_server_list, save_server_list};
 use crate::types::{
     ChangeServerFrameworkResult, ServerCreationProgress, ServerCreationStage, ServerRecord,
@@ -105,7 +107,7 @@ async fn run_change(
                 bytes_total: total,
             });
         });
-    let _ = ensure_java_installed(java_version, Some(java_progress)).await;
+    let java = ensure_java_installed(java_version, Some(java_progress)).await;
 
     send(progress(
         ServerCreationStage::Downloading,
@@ -148,9 +150,18 @@ async fn run_change(
     )
     .await?;
 
+    if !info.install_args.is_empty() {
+        send(progress(
+            ServerCreationStage::WritingFiles,
+            format!("Running the {framework} installer..."),
+            90.0,
+        ));
+    }
+    let launch = run_installer(&info, &server_path, java).await?;
+
     if let Some(old) = old_jar
         .as_deref()
-        .filter(|j| !j.is_empty() && *j != dest_filename)
+        .filter(|j| !j.is_empty() && *j != launch && !j.starts_with('@'))
     {
         let _ = tokio::fs::remove_file(server_path.join(old)).await;
     }
@@ -162,7 +173,7 @@ async fn run_change(
     ));
     tokio::fs::write(
         server_path.join("start.bat"),
-        generate_start_bat(ram_mb, &dest_filename),
+        generate_start_bat(ram_mb, &launch),
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -175,7 +186,7 @@ async fn run_change(
     }
     server.framework = framework.to_string();
     server.version = version.to_string();
-    server.jar_file = Some(dest_filename);
+    server.jar_file = Some(launch);
     let updated = server.clone();
 
     send(progress(

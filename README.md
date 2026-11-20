@@ -6,7 +6,7 @@ Monolith is a Minecraft server manager for Windows. It sets up, runs, shares and
 
 ## Features
 
-- **Create a server in about a minute.** Pick Paper, Purpur, Fabric or Vanilla and a Minecraft version (snapshots and pre-releases included). Monolith downloads the server jar and the right Java runtime for you.
+- **Create a server in about a minute.** Pick Paper, Purpur, Fabric, Quilt, Forge, NeoForge or Vanilla and a Minecraft version (snapshots and pre-releases included). Monolith downloads the server (running the loader installer for Forge, NeoForge and Quilt) and the right Java runtime for you.
 - **Play with friends.** Copy the join address for your local network, or turn on sharing to get a public address through ngrok.
 - **Live console.** Colour-coded output right on the Overview, with players, TPS, memory and uptime above it, command history, and a view that stays put while you scroll.
 - **Players.** Kick, ban or make someone an operator straight from the list of who's online.

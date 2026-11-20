@@ -1,6 +1,6 @@
-use std::collections::HashSet;
 use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
-use monolith_theme::widget::{sized};
+use monolith_theme::widget::sized;
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use iced::widget::{
@@ -48,14 +48,20 @@ pub enum Platform {
     Paper,
     Purpur,
     Fabric,
+    Quilt,
+    Forge,
+    NeoForge,
     Vanilla,
 }
 
 impl Platform {
-    const ALL: [Platform; 4] = [
+    const ALL: [Platform; 7] = [
         Platform::Paper,
         Platform::Purpur,
         Platform::Fabric,
+        Platform::Quilt,
+        Platform::Forge,
+        Platform::NeoForge,
         Platform::Vanilla,
     ];
 
@@ -64,6 +70,9 @@ impl Platform {
             Platform::Paper => "Paper",
             Platform::Purpur => "Purpur",
             Platform::Fabric => "Fabric",
+            Platform::Quilt => "Quilt",
+            Platform::Forge => "Forge",
+            Platform::NeoForge => "NeoForge",
             Platform::Vanilla => "Vanilla",
         }
     }
@@ -77,6 +86,9 @@ impl Platform {
                 "Paper with extra gameplay options you can switch on. Also runs plugins."
             }
             Platform::Fabric => "Light and quick to update. Choose it to play with Fabric mods.",
+            Platform::Quilt => "A Fabric fork that runs most Fabric mods plus Quilt mods.",
+            Platform::Forge => "The classic mod loader. Choose it for big modpacks and older mods.",
+            Platform::NeoForge => "The modern Forge fork. Most new Forge-style mods target it.",
             Platform::Vanilla => "The official server from Mojang. No plugins and no mods.",
         }
     }
@@ -493,8 +505,14 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 .file_stem()
                 .map(|stem| stem.to_string_lossy().into_owned())
                 .unwrap_or_default();
-            if let Some(problem) = name_issue(&name, ctx).or(name.trim().is_empty().then_some("The zip has no usable name.")) {
-                state.import_error = Some(format!("Could not import \"{name}\". {problem} Rename the zip file and try again."));
+            if let Some(problem) = name_issue(&name, ctx).or(name
+                .trim()
+                .is_empty()
+                .then_some("The zip has no usable name."))
+            {
+                state.import_error = Some(format!(
+                    "Could not import \"{name}\". {problem} Rename the zip file and try again."
+                ));
                 return Task::none();
             }
             state.step = Step::Importing;
@@ -590,7 +608,9 @@ fn back<'a>() -> Element<'a, Message> {
             text("Back").size(TEXT_MD).font(UI_MEDIUM)
         ]
         .spacing(SPACE_1)
-        .align_y(Alignment::Center), BUTTON_MD)
+        .align_y(Alignment::Center),
+        BUTTON_MD,
+    )
     .style(style::ghost)
     .on_press(Message::Back)
     .into()
@@ -647,7 +667,10 @@ fn name_step<'a>(state: &'a State, ctx: &'a Ctx) -> Column<'a, Message> {
             .size(TEXT_SM)
             .style(style::muted),
         if state.picking {
-            text("Choosing a file").size(TEXT_SM).style(style::muted).into()
+            text("Choosing a file")
+                .size(TEXT_SM)
+                .style(style::muted)
+                .into()
         } else {
             link("Import it from a zip", Message::Import)
         },
@@ -777,7 +800,10 @@ fn memory_step(state: &State) -> Column<'_, Message> {
     };
     if state.max_ram == 0 {
         return step_layout(
-            heading("Set the memory".into(), "Checking how much memory your computer has."),
+            heading(
+                "Set the memory".into(),
+                "Checking how much memory your computer has.",
+            ),
             text("Loading").size(TEXT_SM).style(style::muted).into(),
             footer(primary("Continue", None), true),
         );
@@ -821,7 +847,9 @@ fn plugin_chips<'a>(state: &'a State, members: &[&'a DefaultPlugin]) -> Element<
                     text(plugin_title(plugin)).size(TEXT_SM)
                 ]
                 .spacing(SPACE_1)
-                .align_y(Alignment::Center), BUTTON_SM)
+                .align_y(Alignment::Center),
+                BUTTON_SM,
+            )
             .style(if on { style::secondary } else { style::ghost })
             .on_press(Message::Plugin(key.to_string())),
         );
@@ -841,7 +869,11 @@ fn plugins_step(state: &State) -> Column<'_, Message> {
 
     let mut content = column![].spacing(SPACE_5);
     if !state.plugins_loaded {
-        content = content.push(text("Loading your default plugins").size(TEXT_SM).style(style::muted));
+        content = content.push(
+            text("Loading your default plugins")
+                .size(TEXT_SM)
+                .style(style::muted),
+        );
     } else if groups.is_empty() {
         content = content.push(
             column![
@@ -1014,12 +1046,10 @@ fn creating_step(state: &State) -> Column<'_, Message> {
 }
 
 fn importing_step<'a>() -> Column<'a, Message> {
-    column![
-        heading(
-            "Importing your server".into(),
-            "Unpacking the files. Large worlds can take a minute."
-        ),
-    ]
+    column![heading(
+        "Importing your server".into(),
+        "Unpacking the files. Large worlds can take a minute."
+    ),]
     .spacing(SPACE_6)
 }
 
@@ -1036,17 +1066,23 @@ fn done_step(state: &State) -> Column<'_, Message> {
     };
     let joined = join_address(state);
     let address: Row<Message> = row![
-        text(joined.clone().unwrap_or_else(|| String::from("Finding your address")))
-            .font(MONO)
-            .size(TEXT_LG)
-            .width(Length::Fill),
+        text(
+            joined
+                .clone()
+                .unwrap_or_else(|| String::from("Finding your address"))
+        )
+        .font(MONO)
+        .size(TEXT_LG)
+        .width(Length::Fill),
         sized(
             row![
                 icon(Icon::Copy, 16.0),
                 text("Copy").size(TEXT_MD).font(UI_MEDIUM)
             ]
             .spacing(SPACE_2)
-            .align_y(Alignment::Center), BUTTON_MD)
+            .align_y(Alignment::Center),
+            BUTTON_MD
+        )
         .style(style::secondary)
         .on_press_maybe(joined.map(|_| Message::CopyAddress))
     ]
@@ -1071,9 +1107,12 @@ fn done_step(state: &State) -> Column<'_, Message> {
     }
 
     let actions = row![
-        sized(text("Create another").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
-            .style(style::ghost)
-            .on_press(Message::Another),
+        sized(
+            text("Create another").size(TEXT_MD).font(UI_MEDIUM),
+            BUTTON_MD
+        )
+        .style(style::ghost)
+        .on_press(Message::Another),
         sized(text("Open server").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
             .style(style::secondary)
             .on_press(Message::Open),
@@ -1083,7 +1122,9 @@ fn done_step(state: &State) -> Column<'_, Message> {
             "Starting",
             state.starting,
             Some(Message::Start),
-            style::primary, BUTTON_MD),
+            style::primary,
+            BUTTON_MD
+        ),
     ]
     .spacing(SPACE_2)
     .align_y(Alignment::Center);

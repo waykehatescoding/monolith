@@ -16,7 +16,7 @@ use serde_json::Value;
 use sha1::{Digest, Sha1};
 use sha2::Sha256;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -28,6 +28,14 @@ const VANILLA_MANIFEST_URL: &str =
     "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
 const MALFORMED: &str = "Unexpected response from version API";
 const FABRIC_META_URL: &str = "https://meta.fabricmc.net/v2";
+const QUILT_META_URL: &str = "https://meta.quiltmc.org/v3";
+const FORGE_PROMOS_URL: &str =
+    "https://files.minecraftforge.net/net/minecraftforge/forge/promotions_slim.json";
+const FORGE_MAVEN: &str = "https://maven.minecraftforge.net/net/minecraftforge/forge";
+const NEOFORGE_VERSIONS_URL: &str =
+    "https://maven.neoforged.net/api/maven/versions/releases/net/neoforged/neoforge";
+const NEOFORGE_MAVEN: &str = "https://maven.neoforged.net/releases/net/neoforged/neoforge";
+const INSTALLER_JAR: &str = "installer.jar";
 
 static VERSION_CACHE: Lazy<Mutex<HashMap<String, Vec<MinecraftVersion>>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
@@ -44,6 +52,7 @@ pub struct FrameworkDownload {
     pub filename: String,
     pub jar_file: String,
     pub hashes: Option<FrameworkHashes>,
+    pub install_args: Vec<String>,
 }
 
 fn is_release_version(id: &str) -> bool {
@@ -119,6 +128,7 @@ async fn paper_download(version: &str) -> Result<FrameworkDownload, String> {
         filename: download["name"].as_str().unwrap_or_default().to_string(),
         jar_file: "server.jar".into(),
         hashes,
+        ..Default::default()
     })
 }
 
@@ -128,6 +138,7 @@ fn purpur_download(version: &str) -> FrameworkDownload {
         filename: format!("purpur-{}.jar", version),
         jar_file: "server.jar".into(),
         hashes: None,
+        ..Default::default()
     }
 }
 
@@ -169,6 +180,7 @@ async fn vanilla_download(version: &str) -> Result<FrameworkDownload, String> {
             sha1: server["sha1"].as_str().map(str::to_string),
             sha256: None,
         }),
+        ..Default::default()
     })
 }
 
@@ -203,7 +215,195 @@ async fn fabric_download(version: &str) -> Result<FrameworkDownload, String> {
         filename: name.clone(),
         jar_file: name,
         hashes: None,
+        ..Default::default()
     })
+}
+
+fn installer_download(url: String, install_args: &[&str]) -> FrameworkDownload {
+    FrameworkDownload {
+        url,
+        filename: INSTALLER_JAR.into(),
+        jar_file: INSTALLER_JAR.into(),
+        hashes: None,
+        install_args: install_args.iter().map(|a| a.to_string()).collect(),
+    }
+}
+
+async fn forge_download(version: &str) -> Result<FrameworkDownload, String> {
+    let data = fetch_value(
+        FORGE_PROMOS_URL,
+        None,
+        false,
+        "Failed to fetch Forge versions".into(),
+    )
+    .await?;
+    let promos = &data["promos"];
+    let forge = promos[format!("{version}-recommended").as_str()]
+        .as_str()
+        .or_else(|| promos[format!("{version}-latest").as_str()].as_str())
+        .ok_or_else(|| format!("No Forge build found for {version}"))?;
+    let full = format!("{version}-{forge}");
+    Ok(installer_download(
+        format!("{FORGE_MAVEN}/{full}/forge-{full}-installer.jar"),
+        &["--installServer"],
+    ))
+}
+
+fn is_prerelease(v: &str) -> bool {
+    v.contains("beta") || v.contains("alpha")
+}
+
+fn neoforge_mc_version(neoforge: &str) -> Option<String> {
+    let mut parts = neoforge.split(['.', '-']);
+    let mut next = || parts.next()?.parse::<u32>().ok();
+    let (major, minor, patch) = (next()?, next()?, next()?);
+    if major < 20 {
+        None
+    } else if major >= 25 {
+        Some(if patch == 0 {
+            format!("{major}.{minor}")
+        } else {
+            format!("{major}.{minor}.{patch}")
+        })
+    } else if minor == 0 {
+        Some(format!("1.{major}"))
+    } else {
+        Some(format!("1.{major}.{minor}"))
+    }
+}
+
+async fn neoforge_versions() -> Result<Vec<String>, String> {
+    let data = fetch_value(
+        NEOFORGE_VERSIONS_URL,
+        None,
+        false,
+        "Failed to fetch NeoForge versions".into(),
+    )
+    .await?;
+    data["versions"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .rev()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect()
+        })
+        .ok_or_else(|| MALFORMED.to_string())
+}
+
+async fn neoforge_download(version: &str) -> Result<FrameworkDownload, String> {
+    let all = neoforge_versions().await?;
+    let matching: Vec<&String> = all
+        .iter()
+        .filter(|v| neoforge_mc_version(v).as_deref() == Some(version))
+        .collect();
+    let neoforge = matching
+        .iter()
+        .find(|v| !is_prerelease(v))
+        .or(matching.first())
+        .ok_or_else(|| format!("No NeoForge build found for {version}"))?;
+    Ok(installer_download(
+        format!("{NEOFORGE_MAVEN}/{neoforge}/neoforge-{neoforge}-installer.jar"),
+        &["--installServer"],
+    ))
+}
+
+async fn quilt_download(version: &str) -> Result<FrameworkDownload, String> {
+    let fail = || "Failed to fetch Quilt versions".to_string();
+    let loaders = fetch_value(
+        &format!("{QUILT_META_URL}/versions/loader"),
+        None,
+        false,
+        fail(),
+    )
+    .await?;
+    let loader = loaders
+        .as_array()
+        .and_then(|a| {
+            a.iter()
+                .filter_map(|v| v["version"].as_str())
+                .find(|v| !v.contains('-'))
+        })
+        .ok_or_else(|| "No stable Quilt loader found".to_string())?;
+    let installers = fetch_value(
+        &format!("{QUILT_META_URL}/versions/installer"),
+        None,
+        false,
+        fail(),
+    )
+    .await?;
+    let url = installers[0]["url"]
+        .as_str()
+        .ok_or_else(|| "No Quilt installer found".to_string())?;
+    Ok(installer_download(
+        url.to_string(),
+        &[
+            "install",
+            "server",
+            version,
+            loader,
+            "--download-server",
+            "--install-dir=.",
+        ],
+    ))
+}
+
+fn find_launch_target(dir: &Path) -> Option<String> {
+    let root_jar = std::fs::read_dir(dir).ok()?.flatten().find_map(|e| {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let launcher = ["forge-", "neoforge-", "quilt-server-launch"]
+            .iter()
+            .any(|p| name.starts_with(p));
+        (launcher && name.ends_with(".jar") && !name.contains("installer")).then_some(name)
+    });
+    let args_name = if cfg!(windows) {
+        "win_args.txt"
+    } else {
+        "unix_args.txt"
+    };
+    root_jar.or_else(|| {
+        walkdir::WalkDir::new(dir.join("libraries"))
+            .into_iter()
+            .flatten()
+            .find(|e| e.file_name() == args_name)
+            .and_then(|e| e.path().strip_prefix(dir).ok().map(Path::to_path_buf))
+            .map(|p| format!("@{}", p.to_string_lossy().replace('\\', "/")))
+    })
+}
+
+pub async fn run_installer(
+    info: &FrameworkDownload,
+    dir: &Path,
+    java: Result<PathBuf, String>,
+) -> Result<String, String> {
+    if info.install_args.is_empty() {
+        return Ok(info.jar_file.clone());
+    }
+    let mut cmd = tokio::process::Command::new(java?);
+    cmd.arg("-jar")
+        .arg(&info.jar_file)
+        .args(&info.install_args)
+        .current_dir(dir)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let status = cmd.status().await.map_err(|e| e.to_string())?;
+    if !status.success() {
+        return Err(format!(
+            "The installer failed (see {}.log in the server folder)",
+            info.jar_file
+        ));
+    }
+    let _ = tokio::fs::remove_file(dir.join(&info.jar_file)).await;
+    let _ = tokio::fs::remove_file(dir.join(format!("{}.log", info.jar_file))).await;
+    let dir = dir.to_path_buf();
+    tokio::task::spawn_blocking(move || find_launch_target(&dir))
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| "The installer finished but no server launcher was found".to_string())
 }
 
 pub async fn resolve_framework_download(
@@ -215,6 +415,9 @@ pub async fn resolve_framework_download(
         "Purpur" => Ok(purpur_download(version)),
         "Vanilla" => vanilla_download(version).await,
         "Fabric" => fabric_download(version).await,
+        "Quilt" => quilt_download(version).await,
+        "Forge" => forge_download(version).await,
+        "NeoForge" => neoforge_download(version).await,
         _ => Err(format!("Unsupported framework: {}", framework)),
     }
 }
@@ -256,14 +459,13 @@ async fn fetch_version_list(framework: &str) -> Result<Vec<MinecraftVersion>, St
                 })
                 .ok_or_else(|| MALFORMED.to_string())
         }
-        "Fabric" => {
-            let data = fetch_value(
-                &format!("{}/versions/game", FABRIC_META_URL),
-                None,
-                false,
-                fail,
-            )
-            .await?;
+        "Fabric" | "Quilt" => {
+            let base = if framework == "Fabric" {
+                FABRIC_META_URL
+            } else {
+                QUILT_META_URL
+            };
+            let data = fetch_value(&format!("{}/versions/game", base), None, false, fail).await?;
             data.as_array()
                 .map(|a| {
                     a.iter()
@@ -287,6 +489,36 @@ async fn fetch_version_list(framework: &str) -> Result<Vec<MinecraftVersion>, St
                         .collect()
                 })
                 .ok_or_else(|| MALFORMED.to_string())
+        }
+        "Forge" => {
+            let data = fetch_value(FORGE_PROMOS_URL, None, false, fail).await?;
+            let promos = data["promos"]
+                .as_object()
+                .ok_or_else(|| MALFORMED.to_string())?;
+            let mut ids: Vec<&str> = promos
+                .keys()
+                .filter_map(|k| k.strip_suffix("-latest"))
+                .filter(|id| id.split('.').nth(1).and_then(|m| m.parse::<u32>().ok()) >= Some(12))
+                .collect();
+            ids.sort_by(|a, b| crate::update_checker::compare_versions(b, a).cmp(&0));
+            Ok(ids
+                .into_iter()
+                .map(|id| version(id, promos.contains_key(&format!("{id}-recommended"))))
+                .collect())
+        }
+        "NeoForge" => {
+            let mut out: Vec<MinecraftVersion> = Vec::new();
+            for v in neoforge_versions().await? {
+                let Some(id) = neoforge_mc_version(&v) else {
+                    continue;
+                };
+                let stable = !is_prerelease(&v);
+                match out.iter_mut().find(|m| m.id == id) {
+                    Some(m) => m.stable |= stable,
+                    None => out.push(version(&id, stable)),
+                }
+            }
+            Ok(out)
         }
         _ => Err(format!("Unsupported framework: {}", framework)),
     }
@@ -389,8 +621,19 @@ pub async fn download_file(
     Ok(())
 }
 
+pub fn is_args_file(jar_file: &str) -> bool {
+    jar_file.starts_with("@libraries/")
+        && !jar_file.contains("..")
+        && !jar_file.contains(['"', '&', '|', '%', '^', '<', '>', '\r', '\n', ' '])
+}
+
 pub fn generate_start_bat(ram_mb: u32, jar_file: &str) -> String {
-    let jar = sanitize_download_file_name(jar_file).unwrap_or_else(|_| "server.jar".into());
+    let target = if is_args_file(jar_file) {
+        jar_file.to_string()
+    } else {
+        let jar = sanitize_download_file_name(jar_file).unwrap_or_else(|_| "server.jar".into());
+        format!("-jar \"{jar}\"")
+    };
     let ram = if ram_mb == 0 {
         1024
     } else {
@@ -398,7 +641,7 @@ pub fn generate_start_bat(ram_mb: u32, jar_file: &str) -> String {
     };
     let initial = ((ram as f64 * 0.4).floor() as u32).min(ram).max(256);
     format!(
-        "@echo off\r\njava -Xms{initial}M -Xmx{ram}M -XX:+DisableExplicitGC -XX:+ParallelRefProcEnabled -XX:+PerfDisableSharedMem -XX:+UnlockExperimentalVMOptions -XX:+UseG1GC -XX:G1HeapRegionSize=8M -XX:G1HeapWastePercent=5 -XX:G1MaxNewSizePercent=40 -XX:G1MixedGCCountTarget=4 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1NewSizePercent=30 -XX:G1RSetUpdatingPauseTimePercent=5 -XX:G1ReservePercent=20 -XX:InitiatingHeapOccupancyPercent=15 -XX:MaxGCPauseMillis=200 -XX:MaxTenuringThreshold=1 -XX:SurvivorRatio=32 -Dusing.aikars.flags=https://mcflags.emc.gs -Daikars.new.flags=true -jar \"{jar}\" nogui\r\npause\r\n"
+        "@echo off\r\njava -Xms{initial}M -Xmx{ram}M -XX:+DisableExplicitGC -XX:+ParallelRefProcEnabled -XX:+PerfDisableSharedMem -XX:+UnlockExperimentalVMOptions -XX:+UseG1GC -XX:G1HeapRegionSize=8M -XX:G1HeapWastePercent=5 -XX:G1MaxNewSizePercent=40 -XX:G1MixedGCCountTarget=4 -XX:G1MixedGCLiveThresholdPercent=90 -XX:G1NewSizePercent=30 -XX:G1RSetUpdatingPauseTimePercent=5 -XX:G1ReservePercent=20 -XX:InitiatingHeapOccupancyPercent=15 -XX:MaxGCPauseMillis=200 -XX:MaxTenuringThreshold=1 -XX:SurvivorRatio=32 -Dusing.aikars.flags=https://mcflags.emc.gs -Daikars.new.flags=true {target} nogui\r\npause\r\n"
     )
 }
 
@@ -448,7 +691,7 @@ async fn create_server_inner(params: &CreateServerParams) -> Result<ServerRecord
         12.0,
     );
     let java_version = get_required_java_version(&params.version);
-    let _ = ensure_java_installed(
+    let java = ensure_java_installed(
         java_version,
         Some(Box::new(move |stage, percent, downloaded, total| {
             let message = if stage == JavaInstallStage::Extracting {
@@ -512,14 +755,23 @@ async fn create_server_inner(params: &CreateServerParams) -> Result<ServerRecord
     )
     .await?;
 
+    if !info.install_args.is_empty() {
+        progress(
+            ServerCreationStage::WritingFiles,
+            format!("Running the {} installer...", params.framework),
+            88.0,
+        );
+    }
+    let launch = run_installer(&info, &final_dir, java).await?;
+
     progress(
         ServerCreationStage::WritingFiles,
         "Creating start.bat...",
-        85.0,
+        89.0,
     );
     tokio::fs::write(
         final_dir.join("start.bat"),
-        generate_start_bat(clamp_ram(params.ram_mb), &dest_filename),
+        generate_start_bat(clamp_ram(params.ram_mb), &launch),
     )
     .await
     .map_err(|e| e.to_string())?;
@@ -561,7 +813,7 @@ async fn create_server_inner(params: &CreateServerParams) -> Result<ServerRecord
         created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         server_path: final_dir.to_string_lossy().into_owned(),
         eula_accepted: Some(false),
-        jar_file: Some(dest_filename),
+        jar_file: Some(launch),
         analytics_enabled: Some(analytics_enabled),
         ..Default::default()
     };
@@ -620,4 +872,34 @@ pub async fn get_minecraft_versions(framework: String) -> Result<Vec<MinecraftVe
         cache.insert(framework, versions.clone());
     }
     Ok(versions)
+}
+
+#[cfg(test)]
+mod modded_tests {
+    use super::*;
+
+    #[test]
+    fn maps_neoforge_versions() {
+        assert_eq!(neoforge_mc_version("21.1.77").as_deref(), Some("1.21.1"));
+        assert_eq!(neoforge_mc_version("21.0.167").as_deref(), Some("1.21"));
+        assert_eq!(
+            neoforge_mc_version("20.4.237-beta").as_deref(),
+            Some("1.20.4")
+        );
+        assert_eq!(
+            neoforge_mc_version("26.1.0.5-beta").as_deref(),
+            Some("26.1")
+        );
+        assert_eq!(neoforge_mc_version("0.25w14craftmine.3-beta"), None);
+    }
+
+    #[test]
+    fn start_bat_uses_args_file() {
+        let bat = generate_start_bat(
+            4096,
+            "@libraries/net/neoforged/neoforge/21.1.77/win_args.txt",
+        );
+        assert!(bat.contains(" @libraries/net/neoforged/neoforge/21.1.77/win_args.txt nogui"));
+        assert!(generate_start_bat(4096, "@libraries/x & calc").contains("-jar \"server.jar\""));
+    }
 }

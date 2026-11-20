@@ -1,9 +1,7 @@
 use iced::widget::{
-    column, container, pick_list, progress_bar, row, rule, scrollable, slider, text,
-    text_editor, text_input, toggler, Space,
+    column, container, pick_list, progress_bar, row, rule, scrollable, slider, text, text_editor,
+    text_input, toggler, Space,
 };
-use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
-use monolith_theme::widget::{sized};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
 use monolith_core::java_manager::discover_installed_javas;
@@ -18,16 +16,20 @@ use monolith_core::types::{
     MinecraftVersion, ServerProperty, ServerRecord, ServerRuntimeStatus, ServerSettingsUpdate,
     SuccessResult, SystemInfo,
 };
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::token::{
     CORAL, INK, INK_TERTIARY, LAYER_2, MOSS, RADIUS_CONTROL, SPACE_1, SPACE_2, SPACE_3, SPACE_4,
     SPACE_5, SPACE_6, SPACE_7, TEXT_MD, TEXT_SM, TEXT_XL,
 };
+use monolith_theme::widget::sized;
 use monolith_theme::{style, MONO, UI_SEMIBOLD};
 
 use crate::ctx::{Confirm, Ctx};
 use crate::ui::busy_button;
 
-const FRAMEWORKS: [&str; 4] = ["Paper", "Purpur", "Fabric", "Vanilla"];
+const FRAMEWORKS: [&str; 7] = [
+    "Paper", "Purpur", "Fabric", "Quilt", "Forge", "NeoForge", "Vanilla",
+];
 const DIFFICULTIES: [&str; 4] = ["peaceful", "easy", "normal", "hard"];
 const GAMEMODES: [&str; 4] = ["survival", "creative", "adventure", "spectator"];
 const CONTROL_WIDTH: f32 = 260.0;
@@ -192,7 +194,10 @@ fn parse_raw(text: &str, previous: &[ServerProperty]) -> Result<Vec<ServerProper
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
-            return Err(format!("Line {} needs a key and a value, like pvp=true.", index + 1));
+            return Err(format!(
+                "Line {} needs a key and a value, like pvp=true.",
+                index + 1
+            ));
         };
         let key = key.trim().to_string();
         if key.is_empty() || key.contains(char::is_whitespace) {
@@ -217,7 +222,13 @@ fn parse_raw(text: &str, previous: &[ServerProperty]) -> Result<Vec<ServerProper
 fn safe_file_name(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|c| if r#"<>:"/\|?*"#.contains(c) || c.is_control() { '_' } else { c })
+        .map(|c| {
+            if r#"<>:"/\|?*"#.contains(c) || c.is_control() {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     let cleaned = cleaned.trim().trim_end_matches('.');
     if cleaned.is_empty() {
@@ -340,7 +351,9 @@ impl State {
     }
 }
 
-async fn save_settings(id: String, update: ServerSettingsUpdate) -> Result<(), String> { outcome(update_server_settings(id, update).await, "Could not save") }
+async fn save_settings(id: String, update: ServerSettingsUpdate) -> Result<(), String> {
+    outcome(update_server_settings(id, update).await, "Could not save")
+}
 
 pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
     let Some(id) = state.server_id.clone() else {
@@ -418,7 +431,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.saving_general = false;
             match result {
                 Ok(()) => {
-                    ctx.success("Saved. Memory and Java changes apply the next time the server starts.");
+                    ctx.success(
+                        "Saved. Memory and Java changes apply the next time the server starts.",
+                    );
                     ctx.refresh_servers();
                 }
                 Err(error) => ctx.error(format!("Could not save settings: {error}")),
@@ -607,7 +622,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::ApplyPlatform => {
             let idle = matches!(
                 ctx.status(&id),
-                ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle | ServerRuntimeStatus::Crashed
+                ServerRuntimeStatus::Offline
+                    | ServerRuntimeStatus::Idle
+                    | ServerRuntimeStatus::Crashed
             );
             let Some(version) = state.version.clone() else {
                 return Task::none();
@@ -808,8 +825,18 @@ fn save_row<'a>(
     }
     footer
         .push(Space::new().width(Length::Fill))
-        .push(busy_button(label, busy_label, busy, message, style::primary, BUTTON_MD))
-        .padding(iced::Padding { top: SPACE_2, ..iced::Padding::ZERO })
+        .push(busy_button(
+            label,
+            busy_label,
+            busy,
+            message,
+            style::primary,
+            BUTTON_MD,
+        ))
+        .padding(iced::Padding {
+            top: SPACE_2,
+            ..iced::Padding::ZERO
+        })
         .into()
 }
 
@@ -877,7 +904,11 @@ fn general<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Messag
                 "Shown in the sidebar and in exports.",
                 field("Server name", &state.name, name_empty, Message::Name),
             ),
-            setting("Memory", "More RAM helps with many players or plugins.", ram),
+            setting(
+                "Memory",
+                "More RAM helps with many players or plugins.",
+                ram,
+            ),
             setting("Custom Java", java_hint, java),
             save_row(
                 "Save changes",
@@ -960,7 +991,9 @@ fn gameplay(state: &State) -> Element<'_, Message> {
         } else {
             "Edit as text"
         })
-        .size(TEXT_MD), BUTTON_MD)
+        .size(TEXT_MD),
+        BUTTON_MD,
+    )
     .style(style::ghost)
     .on_press(Message::ToggleRaw);
     let dirty = state.raw_open || state.props != state.saved_props;
@@ -981,9 +1014,12 @@ fn gameplay(state: &State) -> Element<'_, Message> {
             setting(
                 "Message of the day",
                 "Shown under the server name in the multiplayer list.",
-                field("A Minecraft Server", prop(&state.props, "motd", "A Minecraft Server"), false, |v| {
-                    Message::Prop("motd", v)
-                }),
+                field(
+                    "A Minecraft Server",
+                    prop(&state.props, "motd", "A Minecraft Server"),
+                    false,
+                    |v| Message::Prop("motd", v),
+                ),
             ),
             setting(
                 "Max players",
@@ -1046,7 +1082,10 @@ fn reliability<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Me
     for (index, time) in server.restart_times.iter().enumerate() {
         times = times.push(
             row![
-                text(time.as_str()).font(MONO).size(TEXT_MD).width(Length::Fill),
+                text(time.as_str())
+                    .font(MONO)
+                    .size(TEXT_MD)
+                    .width(Length::Fill),
                 sized(text("Remove").size(TEXT_SM), BUTTON_SM)
                     .style(style::ghost)
                     .on_press_maybe((!saving).then_some(Message::RemoveTime(index)))
@@ -1062,15 +1101,22 @@ fn reliability<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Me
         );
     }
     let mut adder = column![row![
-        field("04:30", &state.new_time, state.time_error.is_some(), Message::NewTime)
-            .on_submit(Message::AddTime)
-            .width(Length::Fill),
+        field(
+            "04:30",
+            &state.new_time,
+            state.time_error.is_some(),
+            Message::NewTime
+        )
+        .on_submit(Message::AddTime)
+        .width(Length::Fill),
         busy_button(
             "Add time",
             "Saving",
             saving,
             (!state.new_time.trim().is_empty()).then_some(Message::AddTime),
-            style::secondary, BUTTON_MD)
+            style::secondary,
+            BUTTON_MD
+        )
     ]
     .spacing(SPACE_2)]
     .spacing(SPACE_2);
@@ -1110,13 +1156,12 @@ fn platform<'a>(state: &'a State, server: &'a ServerRecord, ctx: &'a Ctx) -> Ele
         FRAMEWORKS.iter().copied().find(|f| *f == state.framework),
         Message::Framework,
     );
-    let version = dropdown(state.version_ids(), state.version.clone(), Message::Version).placeholder(
-        if state.versions_loading {
+    let version = dropdown(state.version_ids(), state.version.clone(), Message::Version)
+        .placeholder(if state.versions_loading {
             "Loading versions"
         } else {
             "Choose a version"
-        },
-    );
+        });
     let unchanged = state.framework == server.framework
         && state.version.as_deref() == Some(server.version.as_str());
     let ready = idle && !unchanged && state.version.is_some() && state.changing.is_none();
@@ -1136,10 +1181,12 @@ fn platform<'a>(state: &'a State, server: &'a ServerRecord, ctx: &'a Ctx) -> Ele
     if let Some(error) = &state.versions_error {
         rows.push(
             row![
-                text(format!("Could not load versions: {error}. Check your connection and retry."))
-                    .size(TEXT_SM)
-                    .color(CORAL)
-                    .width(Length::Fill),
+                text(format!(
+                    "Could not load versions: {error}. Check your connection and retry."
+                ))
+                .size(TEXT_SM)
+                .color(CORAL)
+                .width(Length::Fill),
                 sized(text("Retry").size(TEXT_MD), BUTTON_MD)
                     .style(style::secondary)
                     .on_press(Message::RetryVersions)
@@ -1185,7 +1232,9 @@ fn platform<'a>(state: &'a State, server: &'a ServerRecord, ctx: &'a Ctx) -> Ele
                     "Changing",
                     false,
                     ready.then_some(Message::ApplyPlatform),
-                    style::danger, BUTTON_MD)
+                    style::danger,
+                    BUTTON_MD
+                )
             ]
             .spacing(SPACE_2)
             .align_y(Alignment::Center)
@@ -1224,7 +1273,9 @@ fn danger<'a>(state: &'a State, ctx: &'a Ctx, server: &'a ServerRecord) -> Eleme
                     "Exporting",
                     state.exporting,
                     Some(Message::Export),
-                    style::secondary, BUTTON_MD),
+                    style::secondary,
+                    BUTTON_MD,
+                ),
             ),
             setting(
                 "Remove from this PC",
@@ -1238,7 +1289,9 @@ fn danger<'a>(state: &'a State, ctx: &'a Ctx, server: &'a ServerRecord) -> Eleme
                     "Deleting",
                     false,
                     idle.then_some(Message::Delete),
-                    style::danger, BUTTON_MD),
+                    style::danger,
+                    BUTTON_MD,
+                ),
             ),
         ],
     )

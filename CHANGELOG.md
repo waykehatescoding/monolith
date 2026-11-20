@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.6
+
+- Sharing no longer gets stuck on "Creating public address". Servers with sharing on now get their public address whenever they start, and if ngrok can't create one, the reason is shown instead.
+
 ## 0.0.5
 
 - New server platforms: Forge, NeoForge and Quilt. Monolith runs the loader's installer for you, and the Content tab installs matching mods from Modrinth.

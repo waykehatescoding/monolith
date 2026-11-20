@@ -1,18 +1,18 @@
 use iced::widget::{
     button, column, container, pick_list, row, scrollable, text, text_input, tooltip, Space,
 };
-use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
-use monolith_theme::widget::{sized, sized_icon};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use monolith_core::default_plugins;
 use monolith_core::events::Event;
 use monolith_core::modrinth;
 use monolith_core::types::{DefaultPlugin, DefaultPluginSource, ModrinthSearchHit};
 use monolith_theme::style;
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::token::{
     CORAL, INK, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, TEXT_LG, TEXT_MD, TEXT_SM, TEXT_XL,
     TEXT_XS,
 };
+use monolith_theme::widget::{sized, sized_icon};
 use monolith_theme::{icon, Icon, UI_MEDIUM, UI_SEMIBOLD};
 use serde_json::json;
 use std::collections::BTreeSet;
@@ -36,6 +36,7 @@ pub struct State {
     target: Option<String>,
     query: String,
     searching: bool,
+    search_seq: u64,
     searched: bool,
     hits: Vec<ModrinthSearchHit>,
     search_error: Option<String>,
@@ -53,7 +54,8 @@ pub enum Message {
     Target(String),
     Query(String),
     Search,
-    Searched(Result<Vec<ModrinthSearchHit>, String>),
+    Debounced(u64),
+    Searched(u64, Result<Vec<ModrinthSearchHit>, String>),
     AddHit(usize),
     PickFiles,
     Toggle(String),
@@ -189,7 +191,9 @@ async fn add_files(group: Option<String>) -> Result<String, String> {
             n => format!("{n} plugin files added"),
         })
     } else {
-        Err(result.error.unwrap_or_else(|| "No files were added.".into()))
+        Err(result
+            .error
+            .unwrap_or_else(|| "No files were added.".into()))
     }
 }
 
@@ -223,14 +227,24 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::Query(query) => {
             state.query = query;
-            Task::none()
+            state.search_seq += 1;
+            let seq = state.search_seq;
+            Task::perform(
+                tokio::time::sleep(std::time::Duration::from_millis(250)),
+                move |_| Message::Debounced(seq),
+            )
         }
+        Message::Debounced(seq) if seq == state.search_seq => update(state, Message::Search, ctx),
+        Message::Debounced(_) => Task::none(),
         Message::Search => {
             let query = state.query.trim().to_string();
-            if state.searching {
-                return Task::none();
-            }
-            let sort = if query.is_empty() { "downloads" } else { "relevance" };
+            state.search_seq += 1;
+            let seq = state.search_seq;
+            let sort = if query.is_empty() {
+                "downloads"
+            } else {
+                "relevance"
+            };
             state.searching = true;
             state.search_error = None;
             state.hits.clear();
@@ -242,10 +256,11 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                     .await
                     .map(|result| result.hits)
                 },
-                Message::Searched,
+                move |result| Message::Searched(seq, result),
             )
         }
-        Message::Searched(result) => {
+        Message::Searched(seq, _) if seq != state.search_seq => Task::none(),
+        Message::Searched(_, result) => {
             state.searching = false;
             state.searched = true;
             match result {
@@ -407,8 +422,14 @@ fn action<'a>(
     sized(
         row![icon(glyph, 16.0), text(label).size(TEXT_MD).font(UI_MEDIUM)]
             .spacing(SPACE_2)
-            .align_y(Alignment::Center), BUTTON_MD)
-    .style(if primary { style::primary } else { style::secondary })
+            .align_y(Alignment::Center),
+        BUTTON_MD,
+    )
+    .style(if primary {
+        style::primary
+    } else {
+        style::secondary
+    })
     .on_press_maybe(message)
     .into()
 }
@@ -440,7 +461,11 @@ fn plugin_row<'a>(state: &'a State, plugin: &'a DefaultPlugin) -> Element<'a, Me
     };
     let plugin_key = key(plugin).to_string();
     let current = group_of(plugin);
-    let others: Vec<String> = state.groups().into_iter().filter(|g| g != current).collect();
+    let others: Vec<String> = state
+        .groups()
+        .into_iter()
+        .filter(|g| g != current)
+        .collect();
     let move_key = plugin_key.clone();
     let mut controls = row![].spacing(SPACE_2).align_y(Alignment::Center);
     if !others.is_empty() {
@@ -523,7 +548,11 @@ fn group_section<'a>(state: &'a State, group: &str) -> Element<'a, Message> {
         button(
             row![
                 icon(
-                    if open { Icon::ChevronDown } else { Icon::ChevronRight },
+                    if open {
+                        Icon::ChevronDown
+                    } else {
+                        Icon::ChevronRight
+                    },
                     16.0
                 ),
                 text(group.to_string()).size(TEXT_LG).font(UI_SEMIBOLD),
@@ -613,9 +642,7 @@ fn hit_row<'a>(state: &'a State, index: usize, hit: &'a ModrinthSearchHit) -> El
         icon(Icon::Package, 20.0),
         column![
             text(&hit.title).size(TEXT_MD).font(UI_MEDIUM),
-            text(&hit.description)
-                .size(TEXT_SM)
-                .style(style::muted),
+            text(&hit.description).size(TEXT_SM).style(style::muted),
         ]
         .spacing(2)
         .width(Length::Fill),
@@ -629,15 +656,22 @@ fn hit_row<'a>(state: &'a State, index: usize, hit: &'a ModrinthSearchHit) -> El
 
 fn add_panel<'a>(state: &'a State) -> Element<'a, Message> {
     let search = row![
-        text_input("Search Modrinth, or browse the most popular plugins below", &state.query)
-            .on_input(Message::Query)
-            .on_submit(Message::Search)
-            .size(TEXT_MD)
-            .padding(SPACE_2)
-            .style(style::input)
-            .width(Length::Fill),
+        text_input(
+            "Search Modrinth, or browse the most popular plugins below",
+            &state.query
+        )
+        .on_input(Message::Query)
+        .on_submit(Message::Search)
+        .size(TEXT_MD)
+        .padding(SPACE_2)
+        .style(style::input)
+        .width(Length::Fill),
         action(
-            if state.searching { "Searching" } else { "Search" },
+            if state.searching {
+                "Searching"
+            } else {
+                "Search"
+            },
             Icon::Search,
             (!state.searching).then_some(Message::Search),
             true,
@@ -706,9 +740,13 @@ fn empty<'a>() -> Element<'a, Message> {
 
 pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(plugins) = &state.plugins else {
-        return container(text("Loading default plugins").size(TEXT_MD).style(style::muted))
-            .padding([0.0, SPACE_4])
-            .into();
+        return container(
+            text("Loading default plugins")
+                .size(TEXT_MD)
+                .style(style::muted),
+        )
+        .padding([0.0, SPACE_4])
+        .into();
     };
 
     let is_empty = plugins.is_empty() && state.extra_groups.is_empty() && !state.adding;
@@ -724,8 +762,16 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     .align_y(Alignment::Center);
     if !is_empty {
         header = header.push(action(
-            if state.adding { "Done adding" } else { "Add plugins" },
-            if state.adding { Icon::Check } else { Icon::Plus },
+            if state.adding {
+                "Done adding"
+            } else {
+                "Add plugins"
+            },
+            if state.adding {
+                Icon::Check
+            } else {
+                Icon::Plus
+            },
             Some(Message::ToggleAdd),
             !state.adding,
         ));

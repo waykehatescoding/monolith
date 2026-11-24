@@ -28,6 +28,92 @@ const SEARCH_ID: &str = "console-search";
 const MATCH_BG: Color = Color::from_rgba(0.91, 0.71, 0.38, 0.35);
 const RENDER_LIMIT: usize = 500;
 const BOTTOM_SLACK: f32 = 4.0;
+const COMMANDS: &[&str] = &[
+    "advancement",
+    "attribute",
+    "ban",
+    "ban-ip",
+    "banlist",
+    "bossbar",
+    "clear",
+    "clone",
+    "damage",
+    "data",
+    "datapack",
+    "debug",
+    "defaultgamemode",
+    "deop",
+    "difficulty",
+    "effect",
+    "enchant",
+    "execute",
+    "experience",
+    "fill",
+    "fillbiome",
+    "forceload",
+    "function",
+    "gamemode",
+    "gamerule",
+    "give",
+    "help",
+    "item",
+    "jfr",
+    "kick",
+    "kill",
+    "list",
+    "locate",
+    "loot",
+    "me",
+    "msg",
+    "op",
+    "pardon",
+    "pardon-ip",
+    "particle",
+    "perf",
+    "place",
+    "playsound",
+    "publish",
+    "random",
+    "recipe",
+    "reload",
+    "return",
+    "ride",
+    "rotate",
+    "save-all",
+    "save-off",
+    "save-on",
+    "say",
+    "schedule",
+    "scoreboard",
+    "seed",
+    "setblock",
+    "setidletimeout",
+    "setworldspawn",
+    "spawnpoint",
+    "spectate",
+    "spreadplayers",
+    "stop",
+    "stopsound",
+    "summon",
+    "tag",
+    "team",
+    "teammsg",
+    "teleport",
+    "tell",
+    "tellraw",
+    "tick",
+    "time",
+    "title",
+    "tm",
+    "tp",
+    "transfer",
+    "trigger",
+    "w",
+    "weather",
+    "whitelist",
+    "worldborder",
+    "xp",
+];
 
 #[derive(Debug)]
 pub struct State {
@@ -42,6 +128,14 @@ pub struct State {
     sending: bool,
     search: Option<String>,
     view: LogView,
+    completion: Option<Completion>,
+}
+
+#[derive(Debug)]
+struct Completion {
+    base: String,
+    options: Vec<String>,
+    index: usize,
 }
 
 impl Default for State {
@@ -58,6 +152,7 @@ impl Default for State {
             sending: false,
             search: None,
             view: LogView::All,
+            completion: None,
         }
     }
 }
@@ -72,6 +167,8 @@ pub enum Message {
     JumpToLatest,
     ArrowKey(bool),
     ArrowResolved(bool, bool),
+    TabKey,
+    TabResolved(bool),
     Find,
     Search(String),
     CloseSearch,
@@ -101,6 +198,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::Input(value) => {
             state.input = value;
             state.history_pos = None;
+            state.completion = None;
             Task::none()
         }
         Message::Submit => submit(state, ctx),
@@ -130,6 +228,25 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 return Task::none();
             }
             step_history(state, up);
+            operation::move_cursor_to_end(INPUT_ID)
+        }
+        Message::TabKey => {
+            if ctx.route != Route::Server(Tab::Overview) || state.server_id.is_none() {
+                return Task::none();
+            }
+            operation::is_focused(INPUT_ID).map(Message::TabResolved)
+        }
+        Message::TabResolved(focused) => {
+            if !focused {
+                return Task::none();
+            }
+            let players = state
+                .server_id
+                .as_deref()
+                .and_then(|id| ctx.stats(id))
+                .map(|stats| stats.online_players.as_slice())
+                .unwrap_or_default();
+            complete(state, players);
             operation::move_cursor_to_end(INPUT_ID)
         }
         Message::Find => {
@@ -176,6 +293,7 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Message> {
         }
     }
     state.history_pos = None;
+    state.completion = None;
     state.input.clear();
     state.sending = true;
     state.at_bottom = true;
@@ -191,7 +309,56 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Message> {
     ])
 }
 
+fn complete(state: &mut State, players: &[String]) {
+    if let Some(completion) = &mut state.completion {
+        completion.index = (completion.index + 1) % completion.options.len();
+        state.input = format!(
+            "{}{}",
+            completion.base, completion.options[completion.index]
+        );
+        return;
+    }
+    let (base, mut options) = candidates(&state.input, players);
+    match options.len() {
+        0 => {}
+        1 => state.input = format!("{base}{} ", options.remove(0)),
+        _ => {
+            state.input = format!("{base}{}", options[0]);
+            state.completion = Some(Completion {
+                base,
+                options,
+                index: 0,
+            });
+        }
+    }
+}
+
+fn candidates(input: &str, players: &[String]) -> (String, Vec<String>) {
+    let split = input.rfind(' ').map_or(0, |i| i + 1);
+    let (base, token) = input.split_at(split);
+    let token = token.to_lowercase();
+    let options = if split == 0 {
+        let slash = if token.starts_with('/') { "/" } else { "" };
+        let token = token.trim_start_matches('/');
+        COMMANDS
+            .iter()
+            .filter(|command| command.starts_with(token))
+            .map(|command| format!("{slash}{command}"))
+            .collect()
+    } else {
+        let mut names: Vec<String> = players
+            .iter()
+            .filter(|name| name.to_lowercase().starts_with(&token))
+            .cloned()
+            .collect();
+        names.sort_by_key(|name| name.to_lowercase());
+        names
+    };
+    (base.to_string(), options)
+}
+
 fn step_history(state: &mut State, up: bool) {
+    state.completion = None;
     let len = state.history.len();
     let next = match (state.history_pos, up) {
         (None, true) => {
@@ -493,6 +660,7 @@ pub fn subscription(_state: &State) -> Subscription<Message> {
         }) if status == event::Status::Ignored => match named {
             keyboard::key::Named::ArrowUp => Some(Message::ArrowKey(true)),
             keyboard::key::Named::ArrowDown => Some(Message::ArrowKey(false)),
+            keyboard::key::Named::Tab => Some(Message::TabKey),
             _ => None,
         },
         _ => None,
@@ -726,6 +894,33 @@ fn palette(index: u8, bright: bool) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completes_commands_and_players() {
+        let players = vec!["Steve".to_string(), "stan".to_string(), "Alex".to_string()];
+        let (base, options) = candidates("gam", &players);
+        assert_eq!(base, "");
+        assert_eq!(options, ["gamemode", "gamerule"]);
+        assert_eq!(candidates("/wh", &players).1, ["/whitelist"]);
+        let (base, options) = candidates("tp st", &players);
+        assert_eq!(base, "tp ");
+        assert_eq!(options, ["stan", "Steve"]);
+
+        let mut state = State {
+            input: "op S".into(),
+            ..State::default()
+        };
+        complete(&mut state, &players);
+        assert_eq!(state.input, "op stan");
+        complete(&mut state, &players);
+        assert_eq!(state.input, "op Steve");
+        complete(&mut state, &players);
+        assert_eq!(state.input, "op stan");
+        state.completion = None;
+        state.input = "kick al".into();
+        complete(&mut state, &players);
+        assert_eq!(state.input, "kick Alex ");
+    }
 
     #[test]
     fn extended_colours_do_not_leak_arguments() {

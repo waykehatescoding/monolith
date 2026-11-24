@@ -3,6 +3,7 @@ pub mod backups;
 pub mod configs;
 pub mod console;
 pub mod content;
+pub mod discord;
 pub mod files;
 pub mod gamerules;
 pub mod highlight;

@@ -6,7 +6,7 @@ use iced::window::{Direction, Screenshot};
 use iced::{event, window, Alignment, Element, Length, Padding, Subscription, Task};
 use monolith_core::events::{self, Event};
 use monolith_core::types::{AppPreferences, ServerRecord, ServerRuntimeStatus};
-use monolith_core::{app_preferences, lifecycle, server_store};
+use monolith_core::{app_preferences, lifecycle, server_store, webhooks};
 use monolith_theme::token::*;
 use monolith_theme::widget::{drag_region, resize_grips, server_icon, window_controls};
 use monolith_theme::{app_icon, icon, style, Icon, UI_MEDIUM, UI_SEMIBOLD};
@@ -115,6 +115,7 @@ impl App {
                 Task::future(lifecycle::startup()).discard(),
                 Task::future(lifecycle::run_auto_backups()).discard(),
                 Task::future(lifecycle::run_scheduled_restarts()).discard(),
+                Task::future(webhooks::run()).discard(),
             ]);
         }
         if launch.screenshot.is_some() {

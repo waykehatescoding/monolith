@@ -708,6 +708,7 @@ async fn handle_close(server_id: String, code: Option<i32>) {
         restart_after_crash(&server_id).await;
     } else {
         set_offline(&server_id, true).await;
+        tokio::spawn(crate::backup_manager::back_up_after_stop(server_id));
     }
 }
 

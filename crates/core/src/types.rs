@@ -233,6 +233,8 @@ pub struct BackupConfig {
     pub copy_to: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub before_change: Option<bool>,
+    #[serde(default)]
+    pub on_stop: bool,
 }
 
 impl BackupConfig {

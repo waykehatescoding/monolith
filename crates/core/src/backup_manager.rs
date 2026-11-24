@@ -183,7 +183,8 @@ fn run_archive(
     let total_size: u64 = files.iter().map(|(_, size)| size).sum();
     let total_files = files.len() as u64;
 
-    let output = File::create(zip_path).map_err(|e| format!("Output stream error: {e}"))?;
+    let partial = zip_path.with_extension("zip.part");
+    let output = File::create(&partial).map_err(|e| format!("Output stream error: {e}"))?;
     let mut writer = ZipWriter::new(output);
     let base_options = SimpleFileOptions::default()
         .compression_method(CompressionMethod::Deflated)
@@ -255,6 +256,7 @@ fn run_archive(
     let mut output = writer.finish().map_err(|e| e.to_string())?;
     output.flush().map_err(|e| e.to_string())?;
     drop(output);
+    fs::rename(&partial, zip_path).map_err(|e| e.to_string())?;
 
     send_progress(server_id, notify, 100.0, Some("complete"), None, None);
     fs::metadata(zip_path)
@@ -432,6 +434,7 @@ async fn create_backup_inner(
                 send_error(server_id, notify, &error);
             }
             release(server_id);
+            let _ = tokio::fs::remove_file(zip_path.with_extension("zip.part")).await;
             let _ = tokio::fs::remove_file(&zip_path).await;
             failure(error)
         }
@@ -478,6 +481,19 @@ pub async fn check_and_run_auto_backups() {
             },
         )
         .await;
+    }
+}
+
+pub async fn back_up_after_stop(server_id: String) {
+    let enabled = server_store::get_server(server_id.clone())
+        .await
+        .and_then(|server| server.backup_config)
+        .is_some_and(|config| config.on_stop);
+    if enabled {
+        let result = create_backup_inner(&server_id, None, BackupType::Auto, true).await;
+        if let Some(error) = result.error {
+            eprintln!("[BACKUP] Backup after stop failed for {server_id}: {error}");
+        }
     }
 }
 

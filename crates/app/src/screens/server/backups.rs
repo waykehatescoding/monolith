@@ -41,6 +41,7 @@ struct Form {
     exclusions: Vec<String>,
     copy_to: Option<String>,
     before_change: bool,
+    on_stop: bool,
 }
 
 #[derive(Debug, Default)]
@@ -85,6 +86,7 @@ pub enum Message {
     CopyFolderChosen(Option<String>),
     ClearCopyFolder,
     BeforeChange(bool),
+    OnStop(bool),
     SaveSchedule,
     ScheduleSaved(Result<(), String>),
 }
@@ -179,6 +181,7 @@ fn sync_config(state: &mut State, ctx: &Ctx) {
         keep_last: limit(config.keep_last),
         keep_days: limit(config.keep_days),
         before_change: config.backs_up_before_change(),
+        on_stop: config.on_stop,
         exclusions: config.exclusions,
         copy_to: config.copy_to,
     };
@@ -425,6 +428,10 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             Task::none()
         }
+        Message::OnStop(value) => {
+            state.form.on_stop = value;
+            Task::none()
+        }
         Message::BeforeChange(value) => {
             state.form.before_change = value;
             Task::none()
@@ -461,6 +468,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 exclusions: state.form.exclusions.clone(),
                 copy_to: state.form.copy_to.clone(),
                 before_change: Some(state.form.before_change),
+                on_stop: state.form.on_stop,
                 ..current
             };
             Task::perform(
@@ -826,6 +834,13 @@ fn schedule_view(state: &State) -> Element<'_, Message> {
         .spacing(SPACE_2)
         .align_y(Alignment::Center),
         hint,
+        toggler(form.on_stop)
+            .label("Back up when the server stops")
+            .size(18)
+            .text_size(TEXT_MD)
+            .spacing(SPACE_2)
+            .style(style::switch)
+            .on_toggle(Message::OnStop),
         toggler(form.before_change)
             .label("Back up before changing the server software or version")
             .size(18)

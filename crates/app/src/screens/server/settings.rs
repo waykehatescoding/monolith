@@ -31,6 +31,7 @@ use super::configs;
 use super::console::legacy_spans;
 use super::discord;
 use super::gamerules;
+use super::profiler;
 use super::properties::{self, Kind, CATALOG};
 use super::storage;
 use crate::ctx::{Confirm, Ctx};
@@ -83,6 +84,7 @@ pub struct State {
     gamerules: gamerules::State,
     discord: discord::State,
     storage: storage::State,
+    profiler: profiler::State,
 }
 
 impl Default for State {
@@ -131,6 +133,7 @@ impl Default for State {
             gamerules: gamerules::State::default(),
             discord: discord::State::default(),
             storage: storage::State::default(),
+            profiler: profiler::State::default(),
         }
     }
 }
@@ -197,6 +200,7 @@ pub enum Message {
     Gamerules(gamerules::Message),
     Discord(discord::Message),
     Storage(storage::Message),
+    Profiler(profiler::Message),
 }
 
 fn outcome(result: SuccessResult, fallback: &str) -> Result<(), String> {
@@ -906,6 +910,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::Discord(message) => {
             discord::update(&mut state.discord, message, ctx).map(Message::Discord)
+        }
+        Message::Profiler(message) => {
+            profiler::update(&mut state.profiler, message, ctx).map(Message::Profiler)
         }
         Message::Storage(message) => match ctx.selected_server() {
             Some(server) => {
@@ -1730,7 +1737,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         return text("Loading settings").style(style::muted).into();
     }
     let divider = || rule::horizontal(1).style(style::hairline);
-    let page = column![
+    let mut page = column![
         general(state, server),
         divider(),
         config_sections(state, ctx),
@@ -1741,18 +1748,24 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         divider(),
         storage::view(&state.storage, server).map(Message::Storage),
         divider(),
-        platform(state, server, ctx),
-        divider(),
-        duplicate(state, ctx, server),
-        divider(),
-        danger(state, ctx, server),
-    ]
-    .spacing(SPACE_7)
-    .padding(iced::Padding {
-        right: SPACE_4,
-        bottom: SPACE_7,
-        ..iced::Padding::ZERO
-    });
+    ];
+    if let Some(performance) = profiler::view(&state.profiler, server, ctx) {
+        page = page
+            .push(performance.map(Message::Profiler))
+            .push(divider());
+    }
+    let page = page
+        .push(platform(state, server, ctx))
+        .push(divider())
+        .push(duplicate(state, ctx, server))
+        .push(divider())
+        .push(danger(state, ctx, server))
+        .spacing(SPACE_7)
+        .padding(iced::Padding {
+            right: SPACE_4,
+            bottom: SPACE_7,
+            ..iced::Padding::ZERO
+        });
     scrollable(page)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -1771,6 +1784,7 @@ pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
             state.duplicating = Some(percent.clamp(0.0, 100.0));
         }
     }
+    profiler::on_event(&mut state.profiler, event);
     gamerules::on_event(&mut state.gamerules, event, ctx).map(Message::Gamerules)
 }
 
@@ -1789,6 +1803,7 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
     tasks.push(gamerules::on_show(&mut state.gamerules, &server.id, ctx).map(Message::Gamerules));
     discord::on_show(&mut state.discord, server);
     tasks.push(storage::on_show(&mut state.storage, server).map(Message::Storage));
+    tasks.push(profiler::on_show(&mut state.profiler, server).map(Message::Profiler));
     let icon = PathBuf::from(&server.server_path).join("server-icon.png");
     tasks.push(Task::perform(
         {
@@ -1815,8 +1830,8 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
     Task::batch(tasks)
 }
 
-pub fn subscription(_state: &State) -> Subscription<Message> {
-    Subscription::none()
+pub fn subscription(state: &State) -> Subscription<Message> {
+    profiler::subscription(&state.profiler).map(Message::Profiler)
 }
 
 #[cfg(test)]

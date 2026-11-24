@@ -35,3 +35,4 @@ pub mod crash_analysis;
 pub mod webhooks;
 pub mod server_ping;
 pub mod disk_usage;
+pub mod spark;

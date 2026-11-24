@@ -10,6 +10,7 @@ pub mod highlight;
 pub mod listing;
 pub mod overview;
 pub mod players;
+pub mod profiler;
 pub mod properties;
 pub mod settings;
 pub mod storage;

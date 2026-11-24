@@ -105,8 +105,17 @@ pub fn refresh(state: &mut State, server: &ServerRecord, online: bool) -> Task<M
         };
     }
     state.loading = true;
-    let online = online && !crate::demo::active();
-    Task::perform(load(server.clone(), online), Message::Loaded)
+    let demo = (online && crate::demo::active()).then(|| server.players.replace('/', " / "));
+    Task::perform(
+        load(server.clone(), online && demo.is_none()),
+        |mut preview| {
+            if let Some(players) = demo {
+                preview.players = players;
+                preview.ping = Some(14);
+            }
+            Message::Loaded(preview)
+        },
+    )
 }
 
 pub fn update(

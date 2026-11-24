@@ -61,7 +61,7 @@ const SEEDS: [Seed; 5] = [
         max_players: 20,
         online: 7,
         port: 25565,
-        motd: "Survival with friends",
+        motd: r"\u00A7aSurvival with friends\n\u00A77Season 3 \u00A78- \u00A7eEnd raid tonight",
         status: ServerRuntimeStatus::Online,
     },
     Seed {
@@ -235,6 +235,7 @@ fn seed(dir: &Path) -> io::Result<()> {
                 last_backup_at: Some(iso(ago(2 * 3600))),
                 ..BackupConfig::default()
             });
+            record.extra.insert("automation".into(), automation());
             seed_survival(&path)?;
         }
         if seed.id == CREATIVE {
@@ -330,7 +331,89 @@ fn seed_survival(path: &Path) -> io::Result<()> {
         )?;
     }
 
+    fs::write(
+        path.join("server-icon.png"),
+        include_bytes!("../../../assets/brand/icon.png"),
+    )?;
+    for (folder, megabytes) in [
+        ("world", 212),
+        ("world_nether", 38),
+        ("world_the_end", 9),
+        ("creative_test", 54),
+    ] {
+        let region = path.join(folder).join("region");
+        fs::create_dir_all(&region)?;
+        fs::write(path.join(folder).join("level.dat"), b"")?;
+        File::create(region.join("r.0.0.mca"))?.set_len(megabytes * 1024 * 1024)?;
+    }
+    for (folder, pack, description) in [
+        (
+            "datapacks",
+            "afk-display",
+            "Shows who is AFK in the tab list",
+        ),
+        (
+            "datapacks",
+            "graves",
+            "Keeps your items safe in a grave when you die",
+        ),
+        (
+            "datapacks_disabled",
+            "more-mob-heads",
+            "Mobs drop their heads",
+        ),
+    ] {
+        let dir = path.join("world").join(folder).join(pack);
+        fs::create_dir_all(&dir)?;
+        fs::write(
+            dir.join("pack.mcmeta"),
+            json!({ "pack": { "pack_format": 61, "description": description } }).to_string(),
+        )?;
+    }
+
     seed_analytics(path, 12, 7)
+}
+
+fn automation() -> serde_json::Value {
+    json!({
+        "tasks": [
+            {
+                "id": "demo-nightly",
+                "name": "Nightly restart",
+                "schedule": { "kind": "daily", "times": ["04:00"] },
+                "steps": [
+                    { "kind": "say", "value": "Restarting in 1 minute" },
+                    { "kind": "wait", "value": 60 },
+                    { "kind": "backup" },
+                    { "kind": "restart" }
+                ]
+            },
+            {
+                "id": "demo-tips",
+                "name": "Discord reminder",
+                "schedule": { "kind": "interval", "minutes": 30 },
+                "steps": [{ "kind": "say", "value": "Join our Discord for event news" }],
+                "onlyWhenOnline": true
+            }
+        ],
+        "triggers": [
+            {
+                "id": "demo-welcome",
+                "event": { "kind": "join", "value": "" },
+                "steps": [{ "kind": "command", "value": "tell {player} Welcome back, {player}!" }]
+            },
+            {
+                "id": "demo-crash",
+                "event": { "kind": "crashed" },
+                "steps": [{ "kind": "backup" }, { "kind": "start" }]
+            }
+        ],
+        "waitForEmpty": true,
+        "maxWaitMinutes": 60,
+        "watchdog": true,
+        "watchdogFailures": 3,
+        "autoUpdate": true
+    })
 }
 
 fn backup(path: &Path, at: SystemTime, megabytes: u64) -> io::Result<()> {

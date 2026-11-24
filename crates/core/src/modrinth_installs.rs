@@ -617,3 +617,133 @@ pub async fn remove_modrinth_install(
         None => SuccessResult::err("Server not found"),
     }
 }
+
+async fn try_set_enabled(
+    server_path: &Path,
+    source: ContentSource,
+    project_id: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    let entries = read_manifest(server_path).await;
+    let entry = entries
+        .iter()
+        .find(|e| is_entry(e, source, project_id))
+        .ok_or("Not installed")?;
+    let install_dir = server_path.join(install_folder(entry.project_type));
+    let (_, active) = safe_install_path(&install_dir, &entry.file_name)?;
+    let (_, disabled) = safe_install_path(&install_dir, &disabled_name(&entry.file_name))?;
+    let (from, to) = if enabled {
+        (disabled, active)
+    } else {
+        (active, disabled)
+    };
+    if tokio::fs::metadata(&to).await.is_ok() {
+        return Ok(());
+    }
+    tokio::fs::rename(from, to).await.map_err(|e| e.to_string())
+}
+
+pub async fn set_enabled_at(
+    server_path: &Path,
+    source: ContentSource,
+    project_id: &str,
+    enabled: bool,
+) -> SuccessResult {
+    match try_set_enabled(server_path, source, project_id, enabled).await {
+        Ok(()) => SuccessResult::ok(),
+        Err(error) => SuccessResult::err(error),
+    }
+}
+
+pub async fn set_install_enabled(
+    server_id: String,
+    source: ContentSource,
+    project_id: String,
+    enabled: bool,
+) -> SuccessResult {
+    match server_path_of(server_id).await {
+        Some(path) => set_enabled_at(&path, source, &project_id, enabled).await,
+        None => SuccessResult::err("Server not found"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(source: ContentSource, project_id: &str, file_name: &str) -> ModrinthInstallEntry {
+        ModrinthInstallEntry {
+            source,
+            disabled: false,
+            project_id: project_id.into(),
+            version_id: "v1".into(),
+            file_name: file_name.into(),
+            title: project_id.into(),
+            slug: None,
+            icon_url: None,
+            project_type: ModrinthProjectType::Plugin,
+            loader: None,
+            game_version: None,
+            installed_at: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn disables_and_enables_without_losing_track() {
+        let dir = std::env::temp_dir().join(format!("monolith-toggle-{}", uuid::Uuid::new_v4()));
+        let plugins = dir.join("plugins");
+        tokio::fs::create_dir_all(&plugins).await.unwrap();
+        tokio::fs::write(plugins.join("a.jar"), b"PK")
+            .await
+            .unwrap();
+        write_manifest(
+            &dir,
+            &[
+                entry(ContentSource::Modrinth, "a", "a.jar"),
+                entry(ContentSource::Hangar, "a", "missing.jar"),
+            ],
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            set_enabled_at(&dir, ContentSource::Modrinth, "a", false)
+                .await
+                .success
+        );
+        assert!(plugins.join("a.jar.disabled").exists());
+        assert!(!plugins.join("a.jar").exists());
+        let listed = list_installs_at(&dir, ModrinthProjectType::Plugin).await;
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].disabled);
+
+        assert!(
+            set_enabled_at(&dir, ContentSource::Modrinth, "a", true)
+                .await
+                .success
+        );
+        assert!(plugins.join("a.jar").exists());
+        assert!(!list_installs_at(&dir, ModrinthProjectType::Plugin).await[0].disabled);
+
+        assert!(
+            set_enabled_at(&dir, ContentSource::Modrinth, "a", false)
+                .await
+                .success
+        );
+        assert!(remove_at(&dir, ContentSource::Modrinth, "a").await.success);
+        assert!(!plugins.join("a.jar.disabled").exists());
+        assert_eq!(read_manifest(&dir).await.len(), 1);
+        let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[test]
+    fn old_manifests_default_to_modrinth() {
+        let parsed: ModrinthInstallEntry = serde_json::from_value(serde_json::json!({
+            "projectId": "abc", "versionId": "v", "fileName": "a.jar", "title": "A",
+            "projectType": "plugin", "installedAt": ""
+        }))
+        .unwrap();
+        assert_eq!(parsed.source, ContentSource::Modrinth);
+        assert!(!parsed.disabled);
+    }
+}

@@ -15,13 +15,13 @@ use monolith_core::content_sources::{
 use monolith_core::events::Event;
 use monolith_core::modrinth::get_modrinth_project;
 use monolith_core::modrinth_installs::{
-    install_modrinth_project, list_modrinth_installs, remove_modrinth_install,
+    install_modrinth_project, list_modrinth_installs, remove_modrinth_install, set_install_enabled,
     update_modrinth_install,
 };
 use monolith_core::types::{
     ContentSource, ModrinthInstallEntry, ModrinthInstallRequest, ModrinthProjectDetails,
     ModrinthProjectType, ModrinthSearchHit, ModrinthSearchParams, ModrinthSearchResult,
-    ModrinthSort, ModrinthVersionOption, ModrinthVersionType,
+    ModrinthSort, ModrinthVersionOption, ModrinthVersionType, SuccessResult,
 };
 use monolith_theme::style;
 use monolith_theme::token::*;
@@ -158,6 +158,8 @@ pub enum Message {
     UpdatedAll(String, usize, Option<String>),
     AskRemove(Option<String>),
     Remove(ContentSource, String, String),
+    Toggle(ContentSource, String, bool),
+    Toggled(String, String, SuccessResult),
     Removed(String, String, String, Result<(), String>),
     Query(String),
     Sort(SortChoice),
@@ -543,6 +545,25 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             reload(&id)
         }
+        Message::Toggle(source, project_id, enabled) => {
+            state.busy.insert(project_id.clone());
+            let id = target.server_id.clone();
+            Task::perform(
+                set_install_enabled(id.clone(), source, project_id.clone(), enabled),
+                move |result| Message::Toggled(id.clone(), project_id.clone(), result),
+            )
+        }
+        Message::Toggled(id, project_id, result) => {
+            state.busy.remove(&project_id);
+            if !result.success {
+                ctx.error(format!(
+                    "Couldn't change {}. {}",
+                    installed_title(state, &project_id),
+                    result.error.unwrap_or_default()
+                ));
+            }
+            reload(&id)
+        }
         Message::Query(query) => {
             state.query = query;
             state.search_seq += 1;
@@ -905,7 +926,22 @@ fn installed_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message>
                 );
         } else if busy {
             line = line.push(text("Working").size(TEXT_SM).style(style::muted));
+        } else if entry.disabled {
+            line = line.push(text("Disabled").size(TEXT_SM).style(style::muted));
         }
+        line =
+            line.push(
+                sized(
+                    text(if entry.disabled { "Enable" } else { "Disable" })
+                        .size(TEXT_SM)
+                        .font(UI_MEDIUM),
+                    BUTTON_SM,
+                )
+                .style(style::secondary)
+                .on_press_maybe((!busy).then(|| {
+                    Message::Toggle(entry.source, entry.project_id.clone(), entry.disabled)
+                })),
+            );
         if state.confirming.as_deref() == Some(entry.project_id.as_str()) {
             line = line
                 .push(

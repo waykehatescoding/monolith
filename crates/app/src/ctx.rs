@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -174,6 +174,7 @@ pub enum Action {
     ToggleAssistant,
     Window(WindowAction),
     SetCloseToTray(bool),
+    RestartRequired(String),
 }
 
 pub struct Ctx {
@@ -187,6 +188,7 @@ pub struct Ctx {
     pub assistant_open: bool,
     pub loaded: bool,
     pub close_to_tray: bool,
+    pub restart_pending: HashSet<String>,
     outbox: RefCell<Vec<Action>>,
 }
 
@@ -203,6 +205,7 @@ impl Ctx {
             assistant_open: false,
             loaded: false,
             close_to_tray: false,
+            restart_pending: HashSet::new(),
             outbox: RefCell::new(Vec::new()),
         }
     }
@@ -316,6 +319,19 @@ impl Ctx {
 
     pub fn set_close_to_tray(&self, enabled: bool) {
         self.request(Action::SetCloseToTray(enabled));
+    }
+
+    pub fn changed_while_running(&self, id: &str) {
+        if matches!(
+            self.status(id),
+            ServerRuntimeStatus::Online | ServerRuntimeStatus::Starting
+        ) {
+            self.request(Action::RestartRequired(id.to_string()));
+        }
+    }
+
+    pub fn needs_restart(&self, id: &str) -> bool {
+        self.restart_pending.contains(id)
     }
 }
 

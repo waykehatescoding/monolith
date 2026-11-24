@@ -479,6 +479,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                     ctx.success(
                         "Saved. Memory and Java changes apply the next time the server starts.",
                     );
+                    ctx.changed_while_running(&id);
                     ctx.refresh_servers();
                 }
                 Err(error) => ctx.error(format!("Could not save settings: {error}")),
@@ -543,6 +544,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                     state.saved_props = state.props.clone();
                     state.raw_open = false;
                     ctx.success("Gameplay settings saved. Restart the server to apply them.");
+                    ctx.changed_while_running(&id);
                 }
                 Err(error) => ctx.error(format!("Could not save gameplay settings: {error}")),
             }

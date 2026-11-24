@@ -281,20 +281,30 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let idle = state.busy.is_none();
     let public = tunnel(state, server);
     let sharing = server.use_ngrok == Some(true);
+    let stale = online && ctx.needs_restart(&server.id);
 
-    let title = column![
-        text(server.name.as_str()).size(TEXT_2XL).font(UI_SEMIBOLD),
-        row![
-            text(format!("{} {}", server.framework, server.version))
-                .size(TEXT_MD)
-                .style(style::muted),
-            text("·").size(TEXT_MD).style(style::faint),
-            text(state_word(status))
+    let mut line = row![
+        text(format!("{} {}", server.framework, server.version))
+            .size(TEXT_MD)
+            .style(style::muted),
+        text("·").size(TEXT_MD).style(style::faint),
+        text(state_word(status))
+            .size(TEXT_MD)
+            .font(UI_MEDIUM)
+            .style(style::colored(status_color(status))),
+    ]
+    .spacing(SPACE_2);
+    if stale {
+        line = line.push(text("·").size(TEXT_MD).style(style::faint)).push(
+            text("Restart to apply changes")
                 .size(TEXT_MD)
                 .font(UI_MEDIUM)
-                .style(style::colored(status_color(status))),
-        ]
-        .spacing(SPACE_2),
+                .style(style::colored(AMBER)),
+        );
+    }
+    let title = column![
+        text(server.name.as_str()).size(TEXT_2XL).font(UI_SEMIBOLD),
+        line,
     ]
     .spacing(SPACE_1);
 
@@ -344,7 +354,11 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             "Restarting",
             state.busy == Some(Busy::Restart),
             Some(Message::Restart).filter(|_| idle && online),
-            style::secondary,
+            if stale {
+                style::primary
+            } else {
+                style::secondary
+            },
             BUTTON_MD
         ),
         busy_button(

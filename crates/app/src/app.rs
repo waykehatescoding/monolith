@@ -313,6 +313,10 @@ impl App {
                 self.ctx.close_to_tray = enabled;
                 Task::none()
             }
+            Action::RestartRequired(id) => {
+                self.ctx.restart_pending.insert(id);
+                Task::none()
+            }
             Action::Window(WindowAction::Hide) => {
                 window::oldest().and_then(|id| window::set_mode(id, window::Mode::Hidden))
             }
@@ -444,6 +448,9 @@ impl App {
                 self.ctx
                     .statuses
                     .insert(update.server_id.clone(), update.status);
+                if update.status != ServerRuntimeStatus::Online {
+                    self.ctx.restart_pending.remove(&update.server_id);
+                }
                 if matches!(
                     update.status,
                     ServerRuntimeStatus::Offline | ServerRuntimeStatus::Crashed

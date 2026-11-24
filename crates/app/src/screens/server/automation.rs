@@ -7,8 +7,8 @@ use monolith_core::automation::{
     self, Automation, Schedule, ScheduledTask, Step, Trigger, TriggerEvent,
 };
 use monolith_core::events::Event;
-use monolith_core::software_updates;
 use monolith_core::types::ServerRecord;
+use monolith_core::{sleep_mode, software_updates};
 use monolith_theme::token::*;
 use monolith_theme::widget::{sized, sized_icon};
 use monolith_theme::{icon, style, Icon, UI_MEDIUM};
@@ -459,6 +459,8 @@ pub enum Message {
     AutoUpdate(bool),
     CheckNow,
     Checked(Result<String, String>),
+    SleepMode(bool),
+    SleepSaved(Automation, Result<(), String>),
 }
 
 fn save(state: &mut State, automation: Automation) -> Task<Message> {
@@ -571,6 +573,36 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 Err(error) => ctx.error(format!("Could not check for updates: {error}")),
             }
             ctx.refresh_servers();
+            Task::none()
+        }
+        Message::SleepMode(on) => {
+            let Some(id) = state.server_id.clone() else {
+                return Task::none();
+            };
+            let next = Automation {
+                sleep_mode: on,
+                ..state.automation.clone()
+            };
+            state.saving = true;
+            let saved = next.clone();
+            Task::perform(
+                async move {
+                    let result = automation::save(id.clone(), saved).await;
+                    if !result.success {
+                        return Err(result.error.unwrap_or_else(|| "Could not save".into()));
+                    }
+                    sleep_mode::sync(id).await
+                },
+                move |result| Message::SleepSaved(next.clone(), result),
+            )
+        }
+        Message::SleepSaved(next, result) => {
+            state.saving = false;
+            state.automation = next;
+            ctx.refresh_servers();
+            if let Err(error) = result {
+                ctx.error(format!("Sleep mode: {error}"));
+            }
             Task::none()
         }
         Message::NewTrigger => {
@@ -1141,6 +1173,25 @@ fn software_view<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, 
     )
 }
 
+fn sleep_view<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Message> {
+    let mut rows = vec![setting(
+        "Sleep while stopped",
+        "While the server is stopped, Monolith answers on its port and starts the server when a player joins. The server list shows it as sleeping.",
+        toggler(state.automation.sleep_mode)
+            .size(18)
+            .style(style::switch)
+            .on_toggle_maybe((!state.saving).then_some(Message::SleepMode)),
+    )];
+    if state.automation.sleep_mode {
+        let status = match sleep_mode::sleeping_port(&server.id) {
+            Some(port) => format!("Sleeping, waiting for players on port {port}."),
+            None => "Starts listening once the server stops.".into(),
+        };
+        rows.push(text(status).size(TEXT_SM).style(style::muted).into());
+    }
+    section("Sleep mode", rows)
+}
+
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(server) = ctx.selected_server() else {
         return Space::new().into();
@@ -1156,6 +1207,8 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         rules_view(state),
         rule::horizontal(1).style(style::hairline),
         software_view(state, server),
+        rule::horizontal(1).style(style::hairline),
+        sleep_view(state, server),
     ]
     .spacing(SPACE_6)
     .padding(iced::Padding {

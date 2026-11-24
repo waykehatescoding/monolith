@@ -33,6 +33,7 @@ pub mod server_store;
 pub mod server_transfer;
 pub mod shutdown_policy;
 pub mod templates;
+pub mod sleep_mode;
 pub mod software_updates;
 pub mod types;
 pub mod update_checker;

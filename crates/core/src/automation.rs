@@ -42,6 +42,7 @@ pub struct Automation {
     pub watchdog: bool,
     pub watchdog_failures: u32,
     pub auto_update: bool,
+    pub sleep_mode: bool,
 }
 
 impl Default for Automation {
@@ -55,6 +56,7 @@ impl Default for Automation {
             watchdog: false,
             watchdog_failures: 3,
             auto_update: false,
+            sleep_mode: false,
         }
     }
 }
@@ -547,6 +549,16 @@ fn remember_triggers(servers: &[ServerRecord]) {
     }
 }
 
+async fn sleep(server_id: String) {
+    if let Err(error) = crate::sleep_mode::sync(server_id.clone()).await {
+        send_console_line(
+            &server_id,
+            &format!("Sleep mode could not start: {error}"),
+            ConsoleLineType::Stderr,
+        );
+    }
+}
+
 pub async fn watch_events() {
     let mut events = subscribe();
     let mut statuses: HashMap<String, ServerRuntimeStatus> = HashMap::new();
@@ -564,6 +576,9 @@ pub async fn watch_events() {
                 None,
             ),
             Event::ServerStatus(update) => {
+                if update.status == ServerRuntimeStatus::Offline {
+                    tokio::spawn(sleep(update.server_id.clone()));
+                }
                 let previous = statuses
                     .insert(update.server_id.clone(), update.status)
                     .unwrap_or_default();

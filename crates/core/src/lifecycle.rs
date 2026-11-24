@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::{
     app_preferences, automation, backup_manager, ngrok_manager, server_runner, server_store,
-    shutdown_policy,
+    shutdown_policy, sleep_mode,
 };
 
 const SCHEDULE_TICK: Duration = Duration::from_secs(5);
@@ -13,6 +13,8 @@ pub async fn startup() {
     for server in server_store::load_server_list().await {
         if server.start_on_launch {
             tokio::spawn(server_runner::start_server(server.id));
+        } else {
+            tokio::spawn(sleep_mode::sync(server.id));
         }
     }
 }
@@ -25,7 +27,8 @@ pub async fn should_confirm_close() -> bool {
 pub async fn shutdown() {
     tokio::join!(
         server_runner::stop_all_servers(),
-        ngrok_manager::stop_all_tunnels()
+        ngrok_manager::stop_all_tunnels(),
+        sleep_mode::stop_all()
     );
 }
 

@@ -21,7 +21,6 @@ const MAX_FILE_BYTES: usize = 1024 * 1024;
 const MAX_FILES: usize = 200;
 const MAX_CONTENT: usize = 500;
 const SKIPPED_PROPERTIES: [&str; 4] = ["level-seed", "level-name", "server-port", "rcon.password"];
-const CONFIG_EXTENSIONS: [&str; 7] = ["yml", "yaml", "json", "toml", "properties", "conf", "txt"];
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -177,13 +176,15 @@ fn safe_id(id: &str) -> bool {
 }
 
 fn safe_config_path(rel: &str) -> bool {
-    let extension = Path::new(rel)
-        .extension()
-        .map(|e| e.to_string_lossy().to_lowercase());
-    !rel.contains('\\')
-        && !rel.contains(':')
-        && safe_join(Path::new("server"), rel).is_some()
-        && extension.is_some_and(|e| CONFIG_EXTENSIONS.contains(&e.as_str()))
+    let plain =
+        |name: &str| !name.is_empty() && !name.starts_with('.') && !name.contains(['/', '\\', ':']);
+    let known = match rel.split('/').collect::<Vec<_>>()[..] {
+        ["bukkit.yml"] | ["spigot.yml"] => true,
+        ["config", name] => name.starts_with("paper-") && name.ends_with(".yml") && plain(name),
+        ["plugins", name, "config.yml"] => plain(name),
+        _ => false,
+    };
+    known && safe_join(Path::new("server"), rel).is_some()
 }
 
 pub fn validate(mut template: ServerTemplate) -> Result<ServerTemplate, String> {
@@ -332,7 +333,12 @@ pub async fn import_template(path: PathBuf) -> Result<ServerTemplate, String> {
     Ok(template)
 }
 
-const UNTRUSTED_PROPERTIES: [&str; 8] = [
+const UNTRUSTED_PROPERTIES: [&str; 13] = [
+    "online-mode",
+    "white-list",
+    "enforce-whitelist",
+    "enforce-secure-profile",
+    "prevent-proxy-connections",
     "enable-rcon",
     "rcon.port",
     "rcon.password",
@@ -346,6 +352,7 @@ const UNTRUSTED_PROPERTIES: [&str; 8] = [
 fn untrusted(mut template: ServerTemplate) -> ServerTemplate {
     template.jvm_args = None;
     template.ops = None;
+    template.whitelist = None;
     for key in UNTRUSTED_PROPERTIES {
         template.properties.remove(key);
     }
@@ -481,6 +488,32 @@ mod tests {
             title: "X".into(),
         });
         assert!(validate(template).is_err());
+    }
+
+    #[test]
+    fn only_captured_config_locations_are_allowed() {
+        for ok in [
+            "bukkit.yml",
+            "spigot.yml",
+            "config/paper-global.yml",
+            "plugins/Essentials/config.yml",
+        ] {
+            assert!(safe_config_path(ok), "{ok}");
+        }
+        for bad in [
+            "server.properties",
+            "ops.json",
+            "whitelist.json",
+            "eula.txt",
+            "user_jvm_args.txt",
+            "plugins/../ops.json",
+            "plugins/x/other.yml",
+            "config/other.yml",
+            "plugins/.x/config.yml",
+            "plugins/a\\b/config.yml",
+        ] {
+            assert!(!safe_config_path(bad), "{bad}");
+        }
     }
 
     #[test]

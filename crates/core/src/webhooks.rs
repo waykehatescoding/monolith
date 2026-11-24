@@ -245,6 +245,18 @@ fn is_error_line(kind: ConsoleLineType, text: &str) -> bool {
 
 async fn crash_summary(server_id: &str) -> String {
     let logs = get_server_logs(server_id.to_string()).await;
+    if let Some(server) = crate::server_store::get_server(server_id.to_string()).await {
+        let console = logs.iter().map(|line| line.text.clone()).collect();
+        if let Some(found) =
+            crate::crash_analysis::analyse_server(server.server_path.into(), console).await
+        {
+            return format!(
+                "**{}**
+{}",
+                found.cause, found.fix
+            );
+        }
+    }
     let mut errors: Vec<&str> = logs
         .iter()
         .rev()

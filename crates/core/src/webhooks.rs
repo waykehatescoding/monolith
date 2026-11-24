@@ -25,8 +25,12 @@ static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
         .unwrap_or_default()
 });
 static PLAYER: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\]: ([A-Za-z0-9_]{1,16}) (joined|left) the game").expect("static regex")
+    Regex::new(r"^\[[^\]]*\](?: \[[^\]]*/INFO\])?: ([A-Za-z0-9_]{1,16}) (joined|left) the game$")
+        .expect("static regex")
 });
+static ANSI: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\x1b\[[0-9;]*[A-Za-z]").expect("static regex"));
+static CHAT: Lazy<Regex> = Lazy::new(|| Regex::new(r"\]: <[^>]+> ").expect("static regex"));
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -219,16 +223,20 @@ fn transition(previous: Option<ServerRuntimeStatus>, now: ServerRuntimeStatus) -
     }
 }
 
-fn player_change(line: &str) -> Option<(Kind, &str)> {
-    let captures = PLAYER.captures(line)?;
+fn player_change(line: &str) -> Option<(Kind, String)> {
+    let line = ANSI.replace_all(line, "");
+    let captures = PLAYER.captures(line.trim_end())?;
     let kind = match &captures[2] {
         "joined" => Kind::Joined,
         _ => Kind::Left,
     };
-    Some((kind, captures.get(1)?.as_str()))
+    Some((kind, captures[1].to_string()))
 }
 
 fn is_error_line(kind: ConsoleLineType, text: &str) -> bool {
+    if CHAT.is_match(text) {
+        return false;
+    }
     kind == ConsoleLineType::Stderr
         || ["ERROR", "FATAL", "SEVERE", "Exception"]
             .iter()
@@ -400,16 +408,44 @@ mod tests {
     fn player_lines_are_parsed_and_chat_is_ignored() {
         assert_eq!(
             player_change("[12:00:00 INFO]: Steve joined the game"),
-            Some((Kind::Joined, "Steve"))
+            Some((Kind::Joined, "Steve".to_string()))
         );
         assert_eq!(
             player_change("[12:00:00] [Server thread/INFO]: Alex_2 left the game"),
-            Some((Kind::Left, "Alex_2"))
+            Some((Kind::Left, "Alex_2".to_string()))
+        );
+        assert_eq!(
+            player_change("\x1b[0m[12:00:00 INFO]: Steve joined the game\x1b[0m\r"),
+            Some((Kind::Joined, "Steve".to_string()))
         );
         assert_eq!(
             player_change("[12:00:00 INFO]: <Steve> Bob joined the game"),
             None
         );
+        assert_eq!(
+            player_change("[12:00:00 INFO]: <Bob> x]: Steve joined the game"),
+            None
+        );
+        assert_eq!(
+            player_change("[12:00:00 INFO]: Steve joined the game, then left"),
+            None
+        );
+    }
+
+    #[test]
+    fn crash_summary_skips_player_chat() {
+        assert!(is_error_line(
+            ConsoleLineType::Stdout,
+            "[12:00:00 ERROR]: Exception in server tick loop"
+        ));
+        assert!(!is_error_line(
+            ConsoleLineType::Stdout,
+            "[12:00:00 INFO]: <Bob> fake ERROR Exception"
+        ));
+        assert!(!is_error_line(
+            ConsoleLineType::Stderr,
+            "[12:00:00] [Server thread/INFO]: <Bob> hi"
+        ));
     }
 
     #[test]

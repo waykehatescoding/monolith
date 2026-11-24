@@ -327,9 +327,29 @@ pub async fn import_template(path: PathBuf) -> Result<ServerTemplate, String> {
     let raw = tokio::fs::read_to_string(&path)
         .await
         .map_err(|_| "This is not a Monolith template.".to_string())?;
-    let template = parse(&raw, uuid::Uuid::new_v4().to_string())?;
+    let template = untrusted(parse(&raw, uuid::Uuid::new_v4().to_string())?);
     write(&template).await?;
     Ok(template)
+}
+
+const UNTRUSTED_PROPERTIES: [&str; 8] = [
+    "enable-rcon",
+    "rcon.port",
+    "rcon.password",
+    "enable-query",
+    "query.port",
+    "enable-jmx-monitoring",
+    "server-ip",
+    "broadcast-rcon-to-ops",
+];
+
+fn untrusted(mut template: ServerTemplate) -> ServerTemplate {
+    template.jvm_args = None;
+    template.ops = None;
+    for key in UNTRUSTED_PROPERTIES {
+        template.properties.remove(key);
+    }
+    template
 }
 
 async fn apply_files(server: &Path, template: &ServerTemplate) -> Result<(), String> {
@@ -461,6 +481,21 @@ mod tests {
             title: "X".into(),
         });
         assert!(validate(template).is_err());
+    }
+
+    #[test]
+    fn imported_templates_cannot_run_code_or_grant_access() {
+        let mut template = sample();
+        template.jvm_args = Some("-javaagent:evil.jar".into());
+        template.ops = Some(Vec::new());
+        template
+            .properties
+            .insert("enable-rcon".into(), "true".into());
+        template.properties.insert("motd".into(), "hi".into());
+        let template = untrusted(template);
+        assert!(template.jvm_args.is_none() && template.ops.is_none());
+        assert!(!template.properties.contains_key("enable-rcon"));
+        assert_eq!(template.properties["motd"], "hi");
     }
 
     #[test]

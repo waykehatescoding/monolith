@@ -9,6 +9,7 @@ use monolith_core::crash_analysis::{self, CrashCause};
 use monolith_core::events::Event;
 use monolith_core::log_filter::{filter_logs, line_level, LogLevel, LogView};
 use monolith_core::safety::get_safe_external_url;
+use monolith_core::server_logs::LogFile;
 use monolith_core::types::{ConsoleLine, ConsoleLineType, ServerRuntimeStatus};
 use monolith_core::{server_logs, server_runner};
 use monolith_theme::style;
@@ -20,6 +21,7 @@ use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::widget::{sized, sized_icon};
 use monolith_theme::{icon_colored, Icon, MONO, UI_MEDIUM};
 
+use super::files::format_size;
 use crate::ctx::{Ctx, Route, Tab};
 
 const MAX_LINES: usize = 2000;
@@ -134,6 +136,14 @@ pub struct State {
     uploading: bool,
     upload_url: Option<String>,
     crash: Option<CrashCause>,
+    panel: Panel,
+}
+
+#[derive(Debug)]
+enum Panel {
+    Live,
+    Files(Option<Vec<LogFile>>),
+    File(LogFile, Option<Vec<ConsoleLine>>),
 }
 
 #[derive(Debug)]
@@ -161,6 +171,7 @@ impl Default for State {
             uploading: false,
             upload_url: None,
             crash: None,
+            panel: Panel::Live,
         }
     }
 }
@@ -188,6 +199,11 @@ pub enum Message {
     CloseUpload,
     CrashAnalysed(String, Option<CrashCause>),
     DismissCrash,
+    OpenLogs,
+    LogsListed(String, Vec<LogFile>),
+    OpenLog(LogFile),
+    LogRead(LogFile, Result<Vec<ConsoleLine>, String>),
+    BackToConsole,
 }
 
 pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
@@ -325,6 +341,53 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 state.crash = cause;
             }
             Task::none()
+        }
+        Message::OpenLogs => {
+            let Some(server) = state.server_id.as_deref().and_then(|id| ctx.server(id)) else {
+                return Task::none();
+            };
+            state.panel = Panel::Files(None);
+            let id = server.id.clone();
+            Task::perform(
+                server_logs::list_logs(server.server_path.clone().into()),
+                move |files| Message::LogsListed(id.clone(), files),
+            )
+        }
+        Message::LogsListed(id, files) => {
+            if state.server_id.as_deref() == Some(id.as_str())
+                && matches!(state.panel, Panel::Files(None))
+            {
+                state.panel = Panel::Files(Some(files));
+            }
+            Task::none()
+        }
+        Message::OpenLog(file) => {
+            state.panel = Panel::File(file.clone(), None);
+            state.at_bottom = true;
+            Task::perform(server_logs::read_log(file.path.clone()), move |result| {
+                Message::LogRead(file.clone(), result)
+            })
+        }
+        Message::LogRead(read, result) => {
+            let Panel::File(file, lines @ None) = &mut state.panel else {
+                return Task::none();
+            };
+            if file.path != read.path {
+                return Task::none();
+            }
+            match result {
+                Ok(read) => *lines = Some(read),
+                Err(reason) => {
+                    ctx.error(format!("{} could not be opened. {reason}", file.name));
+                    return update(state, Message::OpenLogs, ctx);
+                }
+            }
+            Task::none()
+        }
+        Message::BackToConsole => {
+            state.panel = Panel::Live;
+            state.at_bottom = true;
+            jump_to_latest()
         }
         Message::DismissCrash => {
             state.crash = None;
@@ -483,9 +546,23 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             .center(Length::Fill)
             .into();
     };
-    let mut layout = column![toolbar(state)]
-        .spacing(SPACE_3)
-        .height(Length::Fill);
+    let top = match &state.panel {
+        Panel::Live => toolbar(state),
+        Panel::Files(_) => row![back("Console", Message::BackToConsole)].into(),
+        Panel::File(file, _) => row![
+            back("Logs", Message::OpenLogs),
+            text(&file.name)
+                .size(TEXT_MD)
+                .font(UI_MEDIUM)
+                .width(Length::Fill),
+            views(state),
+            tool(Icon::Search, "Find (Ctrl+F)", Some(Message::Find)),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center)
+        .into(),
+    };
+    let mut layout = column![top].spacing(SPACE_3).height(Length::Fill);
     if let Some(crash) = &state.crash {
         layout = layout.push(crash_notice(crash));
     }
@@ -495,10 +572,89 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     if let Some(query) = &state.search {
         layout = layout.push(search_bar(state, query));
     }
-    layout
-        .push(log_area(state))
-        .push(command_bar(state, ctx, id))
+    let body = match &state.panel {
+        Panel::Files(files) => files_view(files.as_deref()),
+        _ => log_area(state),
+    };
+    layout.push(body).push(command_bar(state, ctx, id)).into()
+}
+
+fn back(label: &str, message: Message) -> Element<'_, Message> {
+    sized(
+        row![
+            icon_colored(Icon::ChevronLeft, 14.0, INK_SECONDARY),
+            text(label).size(TEXT_SM).font(UI_MEDIUM)
+        ]
+        .spacing(SPACE_1)
+        .align_y(Alignment::Center),
+        BUTTON_SM,
+    )
+    .style(style::ghost)
+    .on_press(message)
+    .into()
+}
+
+fn files_view(files: Option<&[LogFile]>) -> Element<'_, Message> {
+    let body: Element<'_, Message> = match files {
+        None => centered("Loading logs"),
+        Some([]) => centered("This server has no logs or crash reports yet."),
+        Some(files) => {
+            let mut list = column![].spacing(SPACE_3);
+            for (title, crash) in [("Crash reports", true), ("Logs", false)] {
+                let mut section = column![text(title).size(TEXT_SM).style(style::muted)];
+                let mut any = false;
+                for file in files.iter().filter(|file| file.crash_report == crash) {
+                    section = section.push(file_row(file));
+                    any = true;
+                }
+                if any {
+                    list = list.push(section.spacing(SPACE_1));
+                }
+            }
+            scrollable(container(list).padding([SPACE_3, SPACE_4]))
+                .style(style::scroll)
+                .height(Length::Fill)
+                .into()
+        }
+    };
+    container(body)
+        .style(style::console)
+        .width(Length::Fill)
+        .height(Length::Fill)
         .into()
+}
+
+fn centered<'a>(note: &'a str) -> Element<'a, Message> {
+    container(text(note).size(TEXT_MD).style(style::muted))
+        .center(Length::Fill)
+        .into()
+}
+
+fn file_row(file: &LogFile) -> Element<'_, Message> {
+    button(
+        row![
+            icon_colored(Icon::File, 16.0, INK_SECONDARY),
+            text(&file.name)
+                .size(TEXT_MD)
+                .color(INK)
+                .width(Length::Fill),
+            text(format_size(file.size))
+                .size(TEXT_SM)
+                .style(style::muted),
+            text(file.modified.format("%d %b %Y, %H:%M").to_string())
+                .size(TEXT_SM)
+                .style(style::muted)
+                .width(Length::Fixed(132.0))
+                .align_x(iced::alignment::Horizontal::Right),
+        ]
+        .spacing(SPACE_3)
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .padding([6, 8])
+    .style(style::ghost)
+    .on_press(Message::OpenLog(file.clone()))
+    .into()
 }
 
 const VIEWS: [(LogView, &str); 4] = [
@@ -508,8 +664,8 @@ const VIEWS: [(LogView, &str); 4] = [
     (LogView::Chat, "Chat"),
 ];
 
-fn toolbar(state: &State) -> Element<'_, Message> {
-    let views = VIEWS
+fn views(state: &State) -> Element<'_, Message> {
+    VIEWS
         .iter()
         .fold(row![].spacing(SPACE_1), |bar, &(view, label)| {
             bar.push(
@@ -518,11 +674,20 @@ fn toolbar(state: &State) -> Element<'_, Message> {
                     .style(style::tab(state.view == view))
                     .on_press(Message::View(view)),
             )
-        });
+        })
+        .into()
+}
+
+fn toolbar(state: &State) -> Element<'_, Message> {
     row![
-        views,
+        views(state),
         Space::new().width(Length::Fill),
         tool(Icon::Search, "Find (Ctrl+F)", Some(Message::Find)),
+        tool(
+            Icon::File,
+            "Logs and crash reports",
+            Some(Message::OpenLogs)
+        ),
         if state.uploading {
             tool(Icon::Restart, "Uploading", None)
         } else {
@@ -547,6 +712,12 @@ fn crash_notice(crash: &CrashCause) -> Element<'_, Message> {
             ]
             .spacing(SPACE_1)
             .width(Length::Fill),
+            sized(
+                text("Crash reports").size(TEXT_SM).font(UI_MEDIUM),
+                BUTTON_SM
+            )
+            .style(style::secondary)
+            .on_press(Message::OpenLogs),
             sized_icon(icon_colored(Icon::Close, 14.0, INK_SECONDARY), BUTTON_SM)
                 .style(style::ghost)
                 .on_press(Message::DismissCrash),
@@ -602,7 +773,7 @@ fn search_bar<'a>(state: &'a State, query_text: &'a str) -> Element<'a, Message>
     let count = if q.is_empty() {
         String::new()
     } else {
-        match filter_logs(&state.lines, q, state.view).len() {
+        match filter_logs(source(state), q, state.view).len() {
             1 => "1 line".to_string(),
             n => format!("{n} lines"),
         }
@@ -629,17 +800,30 @@ fn search_bar<'a>(state: &'a State, query_text: &'a str) -> Element<'a, Message>
     .into()
 }
 
+fn source(state: &State) -> &[ConsoleLine] {
+    match &state.panel {
+        Panel::File(_, Some(lines)) => lines,
+        _ => &state.lines,
+    }
+}
+
 fn log_area(state: &State) -> Element<'_, Message> {
     let q = query(state);
     let matches;
     let lines = if q.is_empty() && state.view == LogView::All {
-        &state.lines
+        source(state)
     } else {
-        matches = filter_logs(&state.lines, q, state.view);
+        matches = filter_logs(source(state), q, state.view);
         &matches
     };
+    let (live, from_top) = match &state.panel {
+        Panel::File(file, _) => (false, file.crash_report),
+        _ => (true, false),
+    };
     let body: Element<'_, Message> = if lines.is_empty() {
-        let note = if state.loading {
+        let note = if matches!(state.panel, Panel::File(_, None)) {
+            "Opening log"
+        } else if state.loading {
             "Loading console output"
         } else if !q.is_empty() {
             "No lines match your search."
@@ -647,6 +831,8 @@ fn log_area(state: &State) -> Element<'_, Message> {
             "No chat messages yet."
         } else if state.view != LogView::All {
             "No lines at this level."
+        } else if !live {
+            "This log is empty."
         } else {
             "No output yet. Start the server and its log will appear here."
         };
@@ -654,31 +840,36 @@ fn log_area(state: &State) -> Element<'_, Message> {
             .center(Length::Fill)
             .into()
     } else {
-        let skip = lines.len().saturating_sub(RENDER_LIMIT);
+        let skip = if from_top {
+            0
+        } else {
+            lines.len().saturating_sub(RENDER_LIMIT)
+        };
         let list = lines
             .iter()
             .skip(skip)
+            .take(RENDER_LIMIT)
             .fold(column![].spacing(2), |list, line| {
                 list.push(line_view(line, q))
             });
-        scrollable(
+        let log = scrollable(
             container(list)
                 .padding([SPACE_3, SPACE_4])
                 .width(Length::Fill),
         )
-        .id(LOG_ID)
-        .anchor_bottom()
-        .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
-        .style(style::scroll)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .into()
+        .id(LOG_ID);
+        let log = if from_top { log } else { log.anchor_bottom() };
+        log.on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
+            .style(style::scroll)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into()
     };
     let surface = container(body)
         .style(style::console)
         .width(Length::Fill)
         .height(Length::Fill);
-    if state.at_bottom {
+    if state.at_bottom || !live {
         return stack![surface].into();
     }
     let pill = container(

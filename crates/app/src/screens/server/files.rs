@@ -192,7 +192,7 @@ fn copy_name(name: &str) -> String {
     }
 }
 
-fn format_size(bytes: u64) -> String {
+pub fn format_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     let value = bytes as f64;
     if value < KB {

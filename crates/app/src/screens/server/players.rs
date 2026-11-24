@@ -1,3 +1,4 @@
+use std::net::IpAddr;
 use std::time::Duration;
 
 use chrono::TimeDelta;
@@ -7,7 +8,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
-use monolith_core::server_props::{self, ListEntry, BANNED_PLAYERS, OPS, WHITELIST};
+use monolith_core::server_props::{self, ListEntry, BANNED_IPS, BANNED_PLAYERS, OPS, WHITELIST};
 use monolith_core::server_runner;
 use monolith_core::types::{ServerProperty, ServerRuntimeStatus, SuccessResult};
 use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
@@ -114,7 +115,10 @@ pub struct State {
     whitelist: Vec<ListEntry>,
     banned: Vec<ListEntry>,
     ops: Vec<ListEntry>,
+    banned_ips: Vec<ListEntry>,
     whitelist_input: String,
+    ip_input: String,
+    ip_reason: String,
     op_input: String,
     ban_input: String,
     ban_reason: String,
@@ -129,6 +133,7 @@ pub struct Lists {
     whitelist: Vec<ListEntry>,
     banned: Vec<ListEntry>,
     ops: Vec<ListEntry>,
+    banned_ips: Vec<ListEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +145,10 @@ pub enum Message {
     RemoveOp(String),
     OpLevel(String, u8),
     OpBypass(String, bool),
+    IpInput(String),
+    IpReason(String),
+    AddIpBan,
+    UnbanIp(String),
     BanInput(String),
     BanReason(String),
     BanLength(BanLength),
@@ -184,6 +193,7 @@ async fn load(id: String) -> Message {
         whitelist: server_props::get_list(id.clone(), WHITELIST).await,
         banned: server_props::get_list(id.clone(), BANNED_PLAYERS).await,
         ops: server_props::get_list(id.clone(), OPS).await,
+        banned_ips: server_props::get_list(id.clone(), BANNED_IPS).await,
     };
     Message::Loaded(id, on, lists)
 }
@@ -374,6 +384,49 @@ async fn edit_op(
     outcome(server_props::save_list(id, OPS, list).await, done)
 }
 
+fn parse_ip(text: &str) -> Option<String> {
+    text.trim().parse::<IpAddr>().ok().map(|ip| ip.to_string())
+}
+
+fn ip_of(entry: &ListEntry) -> &str {
+    entry.ip.as_deref().unwrap_or_default()
+}
+
+async fn ban_ip(id: String, live: bool, ip: String, reason: String) -> Result<String, String> {
+    let done = format!("{ip} is banned.");
+    if live {
+        let line = format!("ban-ip {ip} {reason}");
+        return command(id, line.trim_end().to_string(), done).await;
+    }
+    let now = server_props::minecraft_time(chrono::Utc::now());
+    let entry = ListEntry {
+        ip: Some(ip.clone()),
+        created: Some(now),
+        source: Some("Monolith".into()),
+        expires: Some("forever".into()),
+        reason: Some(if reason.is_empty() {
+            "Banned by an operator.".into()
+        } else {
+            reason
+        }),
+        ..ListEntry::default()
+    };
+    let mut list = server_props::get_list(id.clone(), BANNED_IPS).await;
+    list.retain(|e| ip_of(e) != ip);
+    list.push(entry);
+    outcome(server_props::save_list(id, BANNED_IPS, list).await, done)
+}
+
+async fn unban_ip(id: String, live: bool, ip: String) -> Result<String, String> {
+    let done = format!("{ip} is no longer banned.");
+    if live {
+        return command(id, format!("pardon-ip {ip}"), done).await;
+    }
+    let mut list = server_props::get_list(id.clone(), BANNED_IPS).await;
+    list.retain(|e| ip_of(e) != ip);
+    outcome(server_props::save_list(id, BANNED_IPS, list).await, done)
+}
+
 fn op_detail(entry: &ListEntry) -> String {
     let level = format!("Level {}", entry.level.unwrap_or(4));
     if entry.bypasses_player_limit == Some(true) {
@@ -397,6 +450,8 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 | Message::RemoveOp(_)
                 | Message::OpLevel(..)
                 | Message::OpBypass(..)
+                | Message::AddIpBan
+                | Message::UnbanIp(_)
                 | Message::AddBan
                 | Message::Unban(_)
                 | Message::ToggleWhitelist(_)
@@ -412,7 +467,15 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                     whitelist,
                     banned,
                     ops,
+                    banned_ips,
                 } = lists;
+                if parse_ip(&state.ip_input)
+                    .is_some_and(|ip| banned_ips.iter().any(|e| ip_of(e) == ip))
+                {
+                    state.ip_input.clear();
+                    state.ip_reason.clear();
+                }
+                state.banned_ips = banned_ips;
                 state.whitelist_on = on;
                 state.whitelist = whitelist;
                 state.ops = ops;
@@ -478,6 +541,35 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             state.busy = true;
             Task::perform(edit_op(id, name, None, Some(bypass)), Message::Done)
+        }
+        Message::IpInput(value) => {
+            state.ip_input = value;
+            Task::none()
+        }
+        Message::IpReason(value) => {
+            state.ip_reason = value;
+            Task::none()
+        }
+        Message::AddIpBan => {
+            let Some(ip) = parse_ip(&state.ip_input) else {
+                ctx.error("Enter a valid IPv4 or IPv6 address.");
+                return Task::none();
+            };
+            let reason = state.ip_reason.trim().to_string();
+            let title = format!("Ban {ip}?");
+            let body = "Anyone connecting from this address will be turned away.";
+            ctx.confirm(
+                Confirm::new(title, body, "Ban address", true, move || {
+                    ban_ip(id.clone(), live, ip.clone(), reason.clone())
+                })
+                .busy_label("Banning"),
+            );
+            state.refresh_ticks = 20;
+            Task::none()
+        }
+        Message::UnbanIp(ip) => {
+            state.busy = true;
+            Task::perform(unban_ip(id, live, ip), Message::Done)
         }
         Message::BanInput(value) => {
             state.ban_input = value;
@@ -960,6 +1052,57 @@ fn ban_section(state: &State, live: bool) -> Element<'_, Message> {
     )
 }
 
+fn ip_section(state: &State) -> Element<'_, Message> {
+    let add = row![
+        text_input("IP address", &state.ip_input)
+            .on_input_maybe((!state.busy).then_some(Message::IpInput))
+            .on_submit_maybe((!state.busy).then_some(Message::AddIpBan))
+            .padding([6, 12])
+            .width(Length::Fill)
+            .style(style::input),
+        text_input("Reason (optional)", &state.ip_reason)
+            .on_input_maybe((!state.busy).then_some(Message::IpReason))
+            .on_submit_maybe((!state.busy).then_some(Message::AddIpBan))
+            .padding([6, 12])
+            .width(Length::Fill)
+            .style(style::input),
+        sized(text("Ban address").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
+            .style(style::danger)
+            .on_press_maybe((!state.busy).then_some(Message::AddIpBan)),
+    ]
+    .spacing(SPACE_2);
+
+    let list: Element<'_, Message> = if state.banned_ips.is_empty() {
+        empty(
+            "No addresses are banned",
+            "Ban an address to block every account connecting from it.",
+        )
+    } else {
+        state
+            .banned_ips
+            .iter()
+            .fold(column![].spacing(SPACE_1), |list, entry| {
+                list.push(detail_row(
+                    ip_of(entry),
+                    Some(ban_detail(entry)),
+                    vec![action(
+                        "Unban",
+                        Message::UnbanIp(ip_of(entry).to_string()),
+                        style::ghost,
+                        !state.busy,
+                    )],
+                ))
+            })
+            .into()
+    };
+
+    section(
+        "Banned addresses",
+        "Blocks connections from an IP address, whatever account is used.",
+        column![add, list].spacing(SPACE_4).into(),
+    )
+}
+
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(id) = ctx.selected.as_deref() else {
         return Space::new().into();
@@ -976,6 +1119,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             whitelist_section(state),
             ops_section(state, is_online(ctx, id)),
             ban_section(state, is_online(ctx, id)),
+            ip_section(state),
             Space::new().height(SPACE_6),
         ]
         .spacing(SPACE_5)
@@ -1031,6 +1175,14 @@ mod tests {
         assert_eq!(parse_length("d"), None);
         assert_eq!(parse_length("5y"), None);
         assert_eq!(parse_length(""), None);
+    }
+
+    #[test]
+    fn validates_ips() {
+        assert_eq!(parse_ip(" 192.168.1.20 "), Some("192.168.1.20".into()));
+        assert_eq!(parse_ip("2001:DB8::1"), Some("2001:db8::1".into()));
+        assert_eq!(parse_ip("300.1.1.1"), None);
+        assert_eq!(parse_ip("Steve"), None);
     }
 
     #[test]

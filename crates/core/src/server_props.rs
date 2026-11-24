@@ -59,6 +59,7 @@ pub async fn write_properties(server_path: &Path, properties: &[ServerProperty])
 pub const WHITELIST: &str = "whitelist.json";
 pub const BANNED_PLAYERS: &str = "banned-players.json";
 pub const OPS: &str = "ops.json";
+pub const BANNED_IPS: &str = "banned-ips.json";
 
 const PROFILE_API: &str = "https://api.mojang.com/users/profiles/minecraft/";
 
@@ -68,6 +69,8 @@ pub struct ListEntry {
     pub uuid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ip: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

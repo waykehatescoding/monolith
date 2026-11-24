@@ -5,6 +5,7 @@ use iced::widget::{
     Space,
 };
 use iced::{clipboard, event, keyboard, Alignment, Color, Element, Length, Subscription, Task};
+use monolith_core::crash_analysis::{self, CrashCause};
 use monolith_core::events::Event;
 use monolith_core::log_filter::{filter_logs, line_level, LogLevel, LogView};
 use monolith_core::safety::get_safe_external_url;
@@ -132,6 +133,7 @@ pub struct State {
     completion: Option<Completion>,
     uploading: bool,
     upload_url: Option<String>,
+    crash: Option<CrashCause>,
 }
 
 #[derive(Debug)]
@@ -158,6 +160,7 @@ impl Default for State {
             completion: None,
             uploading: false,
             upload_url: None,
+            crash: None,
         }
     }
 }
@@ -183,6 +186,8 @@ pub enum Message {
     CopyLink(String),
     OpenLink(String),
     CloseUpload,
+    CrashAnalysed(String, Option<CrashCause>),
+    DismissCrash,
 }
 
 pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
@@ -315,6 +320,16 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             Task::none()
         }
+        Message::CrashAnalysed(id, cause) => {
+            if state.server_id.as_deref() == Some(id.as_str()) && cause.is_some() {
+                state.crash = cause;
+            }
+            Task::none()
+        }
+        Message::DismissCrash => {
+            state.crash = None;
+            Task::none()
+        }
         Message::CloseUpload => {
             state.upload_url = None;
             Task::none()
@@ -437,6 +452,18 @@ fn jump_to_latest() -> Task<Message> {
     )
 }
 
+fn analyse_crash(state: &State, ctx: &Ctx) -> Task<Message> {
+    let Some(server) = state.server_id.as_deref().and_then(|id| ctx.server(id)) else {
+        return Task::none();
+    };
+    let id = server.id.clone();
+    let console = state.lines.iter().map(|line| line.text.clone()).collect();
+    Task::perform(
+        crash_analysis::analyse_server(server.server_path.clone().into(), console),
+        move |cause| Message::CrashAnalysed(id.clone(), cause),
+    )
+}
+
 fn trim(lines: &mut Vec<ConsoleLine>) {
     if lines.len() > MAX_LINES {
         lines.drain(..lines.len() - MAX_LINES);
@@ -459,6 +486,9 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let mut layout = column![toolbar(state)]
         .spacing(SPACE_3)
         .height(Length::Fill);
+    if let Some(crash) = &state.crash {
+        layout = layout.push(crash_notice(crash));
+    }
     if let Some(url) = &state.upload_url {
         layout = layout.push(upload_bar(url));
     }
@@ -501,6 +531,32 @@ fn toolbar(state: &State) -> Element<'_, Message> {
     ]
     .spacing(SPACE_1)
     .align_y(Alignment::Center)
+    .into()
+}
+
+fn crash_notice(crash: &CrashCause) -> Element<'_, Message> {
+    container(
+        row![
+            icon_colored(Icon::Warning, 16.0, CORAL),
+            column![
+                text(&crash.cause)
+                    .size(TEXT_MD)
+                    .font(UI_MEDIUM)
+                    .style(style::colored(CORAL)),
+                text(&crash.fix).size(TEXT_SM).style(style::muted),
+            ]
+            .spacing(SPACE_1)
+            .width(Length::Fill),
+            sized_icon(icon_colored(Icon::Close, 14.0, INK_SECONDARY), BUTTON_SM)
+                .style(style::ghost)
+                .on_press(Message::DismissCrash),
+        ]
+        .spacing(SPACE_3)
+        .align_y(Alignment::Center),
+    )
+    .padding([SPACE_3, SPACE_4])
+    .width(Length::Fill)
+    .style(style::panel)
     .into()
 }
 
@@ -693,14 +749,23 @@ fn command_bar<'a>(state: &'a State, ctx: &'a Ctx, id: &str) -> Element<'a, Mess
         .into()
 }
 
-pub fn on_event(state: &mut State, event: &Event, _ctx: &Ctx) -> Task<Message> {
-    if let Event::ConsoleOutput { server_id, line } = event {
-        if state.server_id.as_deref() == Some(server_id.as_str()) {
+pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
+    match event {
+        Event::ConsoleOutput { server_id, line }
+            if state.server_id.as_deref() == Some(server_id.as_str()) =>
+        {
             state.lines.push(line.clone());
             trim(&mut state.lines);
+            Task::none()
         }
+        Event::ServerStatus(update)
+            if update.status == ServerRuntimeStatus::Crashed
+                && state.server_id.as_deref() == Some(update.server_id.as_str()) =>
+        {
+            analyse_crash(state, ctx)
+        }
+        _ => Task::none(),
     }
-    Task::none()
 }
 
 pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
@@ -715,9 +780,15 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
         loading: true,
         ..State::default()
     };
-    Task::perform(server_runner::get_server_logs(id.clone()), move |lines| {
+    let crashed = ctx.status(&id) == ServerRuntimeStatus::Crashed;
+    let load = Task::perform(server_runner::get_server_logs(id.clone()), move |lines| {
         Message::Loaded(id.clone(), lines)
-    })
+    });
+    if crashed {
+        Task::batch([load, analyse_crash(state, ctx)])
+    } else {
+        load
+    }
 }
 
 pub fn subscription(_state: &State) -> Subscription<Message> {

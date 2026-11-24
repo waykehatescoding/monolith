@@ -12,7 +12,7 @@ use monolith_core::server_framework::change_server_framework;
 use monolith_core::server_props::{get_server_properties, save_server_properties};
 use monolith_core::server_stats::get_system_info;
 use monolith_core::server_store::{delete_server, update_server_settings};
-use monolith_core::server_transfer::export_server;
+use monolith_core::server_transfer::{duplicate_server, export_server};
 use monolith_core::types::{
     MinecraftVersion, ServerProperty, ServerRecord, ServerRuntimeStatus, ServerSettingsUpdate,
     SuccessResult, SystemInfo,
@@ -66,6 +66,8 @@ pub struct State {
     platform_armed: bool,
     compat: Option<Result<Vec<String>, String>>,
     exporting: bool,
+    copy_name: Option<String>,
+    duplicating: Option<f64>,
 }
 
 impl Default for State {
@@ -104,6 +106,8 @@ impl Default for State {
             platform_armed: false,
             compat: None,
             exporting: false,
+            copy_name: None,
+            duplicating: None,
         }
     }
 }
@@ -155,6 +159,11 @@ pub enum Message {
     Compatibility(String, String, Result<Vec<String>, String>),
     Export,
     Exported(Result<Option<String>, String>),
+    StartDuplicate,
+    CopyName(String),
+    CancelDuplicate,
+    Duplicate,
+    Duplicated(Result<(String, String), String>),
     Delete,
 }
 
@@ -716,6 +725,48 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 Ok(Some(path)) => ctx.success(format!("Exported to {path}")),
                 Ok(None) => {}
                 Err(error) => ctx.error(format!("Could not export the server: {error}")),
+            }
+            Task::none()
+        }
+        Message::StartDuplicate => {
+            let name = ctx.server(&id).map(|s| s.name.clone()).unwrap_or_default();
+            state.copy_name = Some(format!("{name} copy"));
+            Task::none()
+        }
+        Message::CopyName(name) => {
+            state.copy_name = Some(name);
+            Task::none()
+        }
+        Message::CancelDuplicate => {
+            state.copy_name = None;
+            Task::none()
+        }
+        Message::Duplicate => {
+            let Some(name) = state.copy_name.clone().filter(|n| !n.trim().is_empty()) else {
+                return Task::none();
+            };
+            state.duplicating = Some(0.0);
+            Task::perform(
+                async move {
+                    let result = duplicate_server(id, name).await;
+                    match result.server {
+                        Some(server) if result.success => Ok((server.id, server.name)),
+                        _ => Err(result.error.unwrap_or_else(|| "Duplicate failed".into())),
+                    }
+                },
+                Message::Duplicated,
+            )
+        }
+        Message::Duplicated(result) => {
+            state.duplicating = None;
+            match result {
+                Ok((new_id, name)) => {
+                    state.copy_name = None;
+                    ctx.success(format!("Created {name}"));
+                    ctx.refresh_servers();
+                    ctx.select_server(new_id);
+                }
+                Err(error) => ctx.error(format!("Could not duplicate the server: {error}")),
             }
             Task::none()
         }
@@ -1334,6 +1385,71 @@ fn platform<'a>(state: &'a State, server: &'a ServerRecord, ctx: &'a Ctx) -> Ele
     section("Platform", rows)
 }
 
+fn duplicate<'a>(state: &'a State, ctx: &'a Ctx, server: &'a ServerRecord) -> Element<'a, Message> {
+    let idle = matches!(
+        ctx.status(&server.id),
+        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle | ServerRuntimeStatus::Crashed
+    );
+    let hint = if idle {
+        "Copy this server, its worlds and plugins into a new server with its own port. Logs, crash reports and backups are left out."
+    } else {
+        "Stop the server before duplicating it."
+    };
+    let mut rows = vec![setting(
+        "Duplicate server",
+        hint,
+        busy_button(
+            "Duplicate",
+            "Duplicating",
+            state.duplicating.is_some(),
+            (idle && state.copy_name.is_none()).then_some(Message::StartDuplicate),
+            style::secondary,
+            BUTTON_MD,
+        ),
+    )];
+    if let Some(percent) = state.duplicating {
+        rows.push(
+            column![
+                progress_bar(0.0..=100.0, percent as f32).style(style::progress),
+                text(format!("Copying files {percent:.0}%"))
+                    .size(TEXT_SM)
+                    .style(style::muted)
+            ]
+            .spacing(SPACE_2)
+            .into(),
+        );
+    } else if let Some(name) = &state.copy_name {
+        let ready = idle && !name.trim().is_empty();
+        rows.push(
+            row![
+                field(
+                    "Name of the copy",
+                    name,
+                    name.trim().is_empty(),
+                    Message::CopyName
+                )
+                .on_submit_maybe(ready.then_some(Message::Duplicate))
+                .width(Length::Fill),
+                sized(text("Cancel").size(TEXT_MD), BUTTON_MD)
+                    .style(style::ghost)
+                    .on_press(Message::CancelDuplicate),
+                busy_button(
+                    "Create copy",
+                    "Duplicating",
+                    false,
+                    ready.then_some(Message::Duplicate),
+                    style::primary,
+                    BUTTON_MD,
+                ),
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    }
+    section("Copy", rows)
+}
+
 fn danger<'a>(state: &'a State, ctx: &'a Ctx, server: &'a ServerRecord) -> Element<'a, Message> {
     let idle = matches!(
         ctx.status(&server.id),
@@ -1396,6 +1512,8 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         divider(),
         platform(state, server, ctx),
         divider(),
+        duplicate(state, ctx, server),
+        divider(),
         danger(state, ctx, server),
     ]
     .spacing(SPACE_7)
@@ -1415,6 +1533,11 @@ pub fn on_event(state: &mut State, event: &Event, _ctx: &Ctx) -> Task<Message> {
     if let Event::FrameworkChangeProgress(progress) = event {
         if state.changing.is_some() {
             state.changing = Some((progress.percent.clamp(0.0, 100.0), progress.message.clone()));
+        }
+    }
+    if let Event::DuplicateProgress { server_id, percent } = event {
+        if state.duplicating.is_some() && state.server_id.as_ref() == Some(server_id) {
+            state.duplicating = Some(percent.clamp(0.0, 100.0));
         }
     }
     Task::none()

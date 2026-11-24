@@ -7,14 +7,22 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
+use crate::events::{emit, Event};
 use crate::paths::servers_dir;
-use crate::types::{ExportServerResult, ImportServerResult, ServerRecord, ServerRuntimeStatus};
+use crate::port_check::{bindable, configured_port, suggest_free_port};
+use crate::server_props::{read_properties, write_properties};
+use crate::server_store::{load_server_list, sanitize_server_name, save_server_list};
+use crate::types::{
+    BackupConfig, ExportServerResult, ImportServerResult, ServerProperty, ServerRecord,
+    ServerRuntimeStatus,
+};
 
 pub(crate) const MAX_IMPORT_ENTRIES: usize = 20000;
 pub(crate) const MAX_IMPORT_UNCOMPRESSED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_IMPORT_METADATA_BYTES: u64 = 64 * 1024;
 const MAX_IMPORT_JAR_SCAN_BYTES: u64 = 256 * 1024 * 1024;
 const SKIPPED_EXPORT_PREFIXES: [&str; 3] = ["logs/", "backups/", "cache/"];
+const SKIPPED_DUPLICATE_DIRS: [&str; 3] = ["logs", "crash-reports", "backups"];
 
 struct ImportedServer {
     platform: String,
@@ -424,6 +432,157 @@ pub async fn import_server(zip_path: String, custom_name: String) -> ImportServe
     }
 }
 
+fn copy_server_files(from: &Path, to: &Path, progress: impl Fn(f64)) -> Result<(), String> {
+    let entries: Vec<walkdir::DirEntry> = WalkDir::new(from)
+        .min_depth(1)
+        .into_iter()
+        .filter_entry(|entry| {
+            !(entry.depth() == 1
+                && entry.file_type().is_dir()
+                && SKIPPED_DUPLICATE_DIRS
+                    .iter()
+                    .any(|dir| entry.file_name().eq_ignore_ascii_case(dir)))
+        })
+        .collect::<Result<_, _>>()
+        .map_err(|e| e.to_string())?;
+    let size = |entry: &walkdir::DirEntry| entry.metadata().map(|m| m.len()).unwrap_or(0);
+    let total: u64 = entries
+        .iter()
+        .filter(|e| !e.file_type().is_dir())
+        .map(size)
+        .sum();
+    let mut copied = 0u64;
+    let mut reported = 0.0;
+    fs::create_dir_all(to).map_err(|e| e.to_string())?;
+    for entry in &entries {
+        let relative = entry.path().strip_prefix(from).map_err(|e| e.to_string())?;
+        let target = to.join(relative);
+        if entry.file_type().is_dir() {
+            fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+            continue;
+        }
+        fs::copy(entry.path(), &target).map_err(|e| e.to_string())?;
+        copied += size(entry);
+        let percent = if total > 0 {
+            copied as f64 / total as f64 * 100.0
+        } else {
+            100.0
+        };
+        if percent - reported >= 1.0 {
+            reported = percent;
+            progress(percent);
+        }
+    }
+    Ok(())
+}
+
+async fn give_free_port(server_path: &Path, others: &[ServerRecord]) -> Result<(), String> {
+    let mut taken = Vec::new();
+    for other in others {
+        taken.push(configured_port(Path::new(&other.server_path)).await);
+    }
+    let port = configured_port(server_path).await;
+    if !taken.contains(&port) {
+        return Ok(());
+    }
+    let free = suggest_free_port(port, |p| taken.contains(&p) || !bindable(p))
+        .ok_or("No free port found for the copy")?;
+    let mut properties = read_properties(server_path).await;
+    match properties.iter_mut().find(|p| p.key == "server-port") {
+        Some(existing) => existing.value = free.to_string(),
+        None => properties.push(ServerProperty {
+            key: "server-port".to_string(),
+            value: free.to_string(),
+            comment: None,
+        }),
+    }
+    let written = write_properties(server_path, &properties).await;
+    if written.success {
+        Ok(())
+    } else {
+        Err(written.error.unwrap_or_default())
+    }
+}
+
+async fn duplicate_into(
+    source: &ServerRecord,
+    name: &str,
+    target: &Path,
+) -> Result<ServerRecord, String> {
+    let from = PathBuf::from(&source.server_path);
+    let to = target.to_path_buf();
+    let server_id = source.id.clone();
+    tokio::task::spawn_blocking(move || {
+        copy_server_files(&from, &to, |percent| {
+            emit(Event::DuplicateProgress {
+                server_id: server_id.clone(),
+                percent,
+            })
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())??;
+
+    let mut servers = load_server_list().await;
+    give_free_port(target, &servers).await?;
+    let record = ServerRecord {
+        id: uuid::Uuid::new_v4().to_string(),
+        name: name.to_string(),
+        server_path: target.to_string_lossy().into_owned(),
+        status: ServerRuntimeStatus::Offline,
+        players: "0/20".to_string(),
+        created_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        backup_config: source.backup_config.clone().map(|config| BackupConfig {
+            last_backup_at: None,
+            ..config
+        }),
+        ngrok_url: None,
+        start_on_launch: false,
+        ..source.clone()
+    };
+    servers.push(record.clone());
+    save_server_list(&servers).await?;
+    Ok(record)
+}
+
+pub async fn duplicate_server(id: String, name: String) -> ImportServerResult {
+    let failure = |error: &str| ImportServerResult {
+        success: false,
+        server: None,
+        error: Some(error.to_string()),
+    };
+    let name = name.trim();
+    if name.is_empty() {
+        return failure("Enter a name for the copy");
+    }
+    let Some(source) = crate::server_store::get_server(id.clone()).await else {
+        return failure("Server not found");
+    };
+    if crate::server_runner::is_running(&id) {
+        return failure("Stop the server before duplicating it");
+    }
+
+    let folder = sanitize_server_name(name);
+    let mut target = servers_dir().join(&folder);
+    let mut suffix = 1;
+    while target.exists() {
+        target = servers_dir().join(format!("{folder}-{suffix}"));
+        suffix += 1;
+    }
+
+    match duplicate_into(&source, name, &target).await {
+        Ok(server) => ImportServerResult {
+            success: true,
+            server: Some(server),
+            error: None,
+        },
+        Err(error) => {
+            let _ = tokio::fs::remove_dir_all(&target).await;
+            failure(&error)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -518,6 +677,32 @@ mod tests {
     fn rejects_archives_without_a_manifest_or_jar() {
         let zip = write_zip(&[("readme.txt", b"hi")]);
         assert!(run(&zip, "x").is_err());
+    }
+
+    #[test]
+    fn duplicate_copy_skips_logs_crash_reports_and_backups() {
+        let root = std::env::temp_dir().join(format!("monolith-dup-{}", uuid::Uuid::new_v4()));
+        let from = root.join("from");
+        let to = root.join("to");
+        for dir in ["logs", "crash-reports", "backups", "world", "plugins/logs"] {
+            fs::create_dir_all(from.join(dir)).unwrap();
+        }
+        fs::write(from.join("logs/latest.log"), "log").unwrap();
+        fs::write(from.join("crash-reports/c.txt"), "crash").unwrap();
+        fs::write(from.join("backups/b.zip"), "zip").unwrap();
+        fs::write(from.join("world/level.dat"), "level").unwrap();
+        fs::write(from.join("plugins/logs/keep.txt"), "keep").unwrap();
+        fs::write(from.join("server.properties"), "server-port=25565").unwrap();
+
+        copy_server_files(&from, &to, |_| {}).unwrap();
+
+        assert!(to.join("world/level.dat").exists());
+        assert!(to.join("server.properties").exists());
+        assert!(to.join("plugins/logs/keep.txt").exists());
+        assert!(!to.join("logs").exists());
+        assert!(!to.join("crash-reports").exists());
+        assert!(!to.join("backups").exists());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

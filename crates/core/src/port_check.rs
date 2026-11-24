@@ -15,11 +15,11 @@ pub fn suggest_free_port(start: u16, is_taken: impl Fn(u16) -> bool) -> Option<u
         .find(|p| !is_taken(*p))
 }
 
-fn bindable(port: u16) -> bool {
+pub(crate) fn bindable(port: u16) -> bool {
     TcpListener::bind(("0.0.0.0", port)).is_ok()
 }
 
-async fn configured_port(server_path: &Path) -> u16 {
+pub(crate) async fn configured_port(server_path: &Path) -> u16 {
     read_properties(server_path)
         .await
         .iter()

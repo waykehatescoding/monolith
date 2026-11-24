@@ -25,6 +25,10 @@ pub enum Event {
     },
     NgrokInstallProgress(NgrokInstallProgress),
     UpdateDownloadProgress(DownloadUpdateProgress),
+    DuplicateProgress {
+        server_id: String,
+        percent: f64,
+    },
 }
 
 static BUS: Lazy<broadcast::Sender<Event>> = Lazy::new(|| broadcast::channel(1024).0);

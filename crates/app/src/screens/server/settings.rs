@@ -1,6 +1,7 @@
+use iced::widget::image::Handle;
 use iced::widget::{
-    column, container, pick_list, progress_bar, rich_text, row, rule, scrollable, slider, text,
-    text_editor, text_input, toggler, Space,
+    column, container, image, pick_list, progress_bar, rich_text, row, rule, scrollable, slider,
+    text, text_editor, text_input, toggler, Space,
 };
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
@@ -30,6 +31,7 @@ use super::console::legacy_spans;
 use super::properties::{self, Kind, CATALOG};
 use crate::ctx::{Confirm, Ctx};
 use crate::ui::busy_button;
+use std::path::PathBuf;
 
 const FRAMEWORKS: [&str; 7] = [
     "Paper", "Purpur", "Fabric", "Quilt", "Forge", "NeoForge", "Vanilla",
@@ -48,6 +50,8 @@ pub struct State {
     jvm_preset: String,
     jvm_args: String,
     saving_general: bool,
+    icon: Option<Handle>,
+    icon_busy: bool,
     loaded: bool,
     props: Vec<ServerProperty>,
     saved_props: Vec<ServerProperty>,
@@ -90,6 +94,8 @@ impl Default for State {
             jvm_preset: String::new(),
             jvm_args: String::new(),
             saving_general: false,
+            icon: None,
+            icon_busy: false,
             loaded: false,
             props: Vec::new(),
             saved_props: Vec::new(),
@@ -142,6 +148,10 @@ pub enum Message {
     JvmArgs(String),
     SaveGeneral,
     GeneralSaved(Result<(), String>),
+    IconLoaded(String, Option<Vec<u8>>),
+    PickIcon,
+    RemoveIcon,
+    IconSaved(Result<Option<Vec<u8>>, String>),
     Prop(String, String),
     PropToggle(String, bool),
     PropFilter(String),
@@ -258,6 +268,45 @@ fn safe_file_name(name: &str) -> String {
         "server".into()
     } else {
         cleaned.into()
+    }
+}
+
+fn make_icon(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let picture = ::image::load_from_memory(bytes)
+        .map_err(|_| "That file is not a PNG or JPEG image.".to_string())?;
+    let mut png = Vec::new();
+    picture
+        .resize_to_fill(64, 64, ::image::imageops::FilterType::Lanczos3)
+        .write_to(
+            &mut std::io::Cursor::new(&mut png),
+            ::image::ImageFormat::Png,
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(png)
+}
+
+async fn pick_icon(target: PathBuf) -> Result<Option<Vec<u8>>, String> {
+    let Some(file) = rfd::AsyncFileDialog::new()
+        .add_filter("Image", &["png", "jpg", "jpeg"])
+        .pick_file()
+        .await
+    else {
+        return Err(String::new());
+    };
+    let bytes = file.read().await;
+    let png = tokio::task::spawn_blocking(move || make_icon(&bytes))
+        .await
+        .map_err(|e| e.to_string())??;
+    tokio::fs::write(&target, &png)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(Some(png))
+}
+
+async fn remove_icon(target: PathBuf) -> Result<Option<Vec<u8>>, String> {
+    match tokio::fs::remove_file(&target).await {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(None),
     }
 }
 
@@ -483,6 +532,41 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                     ctx.refresh_servers();
                 }
                 Err(error) => ctx.error(format!("Could not save settings: {error}")),
+            }
+            Task::none()
+        }
+        Message::IconLoaded(loaded_id, bytes) => {
+            if loaded_id == id {
+                state.icon = bytes.map(Handle::from_bytes);
+            }
+            Task::none()
+        }
+        Message::PickIcon | Message::RemoveIcon => {
+            let Some(server) = ctx.server(&id) else {
+                return Task::none();
+            };
+            let target = PathBuf::from(&server.server_path).join("server-icon.png");
+            state.icon_busy = true;
+            if matches!(message, Message::PickIcon) {
+                Task::perform(pick_icon(target), Message::IconSaved)
+            } else {
+                Task::perform(remove_icon(target), Message::IconSaved)
+            }
+        }
+        Message::IconSaved(result) => {
+            state.icon_busy = false;
+            match result {
+                Ok(bytes) => {
+                    ctx.success(if bytes.is_some() {
+                        "Server icon saved."
+                    } else {
+                        "Server icon removed."
+                    });
+                    state.icon = bytes.map(Handle::from_bytes);
+                    ctx.changed_while_running(&id);
+                }
+                Err(error) if error.is_empty() => {}
+                Err(error) => ctx.error(format!("Could not update the server icon: {error}")),
             }
             Task::none()
         }
@@ -1036,6 +1120,11 @@ fn general<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Messag
                 "More RAM helps with many players or plugins.",
                 ram,
             ),
+            setting(
+                "Server icon",
+                "Shown next to the server in the multiplayer list. Any PNG or JPEG works, it is cropped to a square and scaled to 64 by 64.",
+                icon_control(state),
+            ),
             setting("Custom Java", java_hint, java),
             setting(
                 "Java flags",
@@ -1055,6 +1144,31 @@ fn general<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Messag
             ),
         ],
     )
+}
+
+fn icon_control(state: &State) -> Element<'_, Message> {
+    let preview: Element<'_, Message> = match &state.icon {
+        Some(handle) => image(handle.clone()).width(32).height(32).into(),
+        None => text("None").size(TEXT_SM).style(style::muted).into(),
+    };
+    let mut controls = row![preview].spacing(SPACE_2).align_y(Alignment::Center);
+    if state.icon.is_some() && !state.icon_busy {
+        controls = controls.push(
+            sized(text("Remove").size(TEXT_MD), BUTTON_MD)
+                .style(style::ghost)
+                .on_press(Message::RemoveIcon),
+        );
+    }
+    controls
+        .push(busy_button(
+            "Choose image",
+            "Saving",
+            state.icon_busy,
+            Some(Message::PickIcon),
+            style::secondary,
+            BUTTON_MD,
+        ))
+        .into()
 }
 
 fn raw_editor(state: &State) -> Element<'_, Message> {
@@ -1617,6 +1731,14 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
         tasks.push(state.fetch_versions(&framework));
     }
     let id = server.id.clone();
+    let icon = PathBuf::from(&server.server_path).join("server-icon.png");
+    tasks.push(Task::perform(
+        {
+            let id = id.clone();
+            async move { (id, tokio::fs::read(icon).await.ok()) }
+        },
+        |(id, bytes)| Message::IconLoaded(id, bytes),
+    ));
     tasks.push(Task::perform(
         async move {
             let props = get_server_properties(id.clone()).await;
@@ -1637,4 +1759,24 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
 
 pub fn subscription(_state: &State) -> Subscription<Message> {
     Subscription::none()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn icon_is_cropped_to_64_square_png() {
+        let wide = ::image::RgbaImage::from_pixel(200, 100, ::image::Rgba([10, 20, 30, 255]));
+        let mut source = Vec::new();
+        ::image::DynamicImage::ImageRgba8(wide)
+            .write_to(
+                &mut std::io::Cursor::new(&mut source),
+                ::image::ImageFormat::Jpeg,
+            )
+            .unwrap();
+        let icon = ::image::load_from_memory(&make_icon(&source).unwrap()).unwrap();
+        assert_eq!((icon.width(), icon.height()), (64, 64));
+        assert!(make_icon(b"not an image").is_err());
+    }
 }

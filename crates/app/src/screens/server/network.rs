@@ -2,23 +2,26 @@ use iced::widget::{column, row, rule, scrollable, text, Space};
 use iced::{clipboard, Alignment, Element, Length, Subscription, Task};
 use monolith_core::crossplay::{self, Crossplay};
 use monolith_core::events::Event;
-use monolith_core::types::ServerRecord;
+use monolith_core::reachability::{self, Reachability};
+use monolith_core::types::{ServerRecord, ServerRuntimeStatus};
 use monolith_core::upnp::{self, UpnpState};
 use monolith_core::{ngrok_manager, port_check};
 use monolith_theme::token::{
-    AMBER, BUTTON_MD, BUTTON_SM, CORAL, SPACE_2, SPACE_3, SPACE_4, SPACE_7, TEXT_MD, TEXT_SM,
+    AMBER, BUTTON_MD, BUTTON_SM, CORAL, MOSS, SPACE_2, SPACE_3, SPACE_4, SPACE_7, TEXT_MD, TEXT_SM,
 };
-use monolith_theme::widget::sized_icon;
-use monolith_theme::{icon, style, Icon, MONO};
+use monolith_theme::widget::{sized, sized_icon};
+use monolith_theme::{icon, style, Icon, MONO, UI_MEDIUM};
 
 use super::settings::{section, setting, switch};
-use crate::ctx::Ctx;
+use crate::ctx::{Ctx, Route, SettingsPage};
 use crate::ui::busy_button;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Busy {
     Crossplay,
     Upnp,
+    Check,
+    Firewall,
 }
 
 #[derive(Debug, Default)]
@@ -28,6 +31,7 @@ pub struct State {
     port: u16,
     crossplay: Option<Crossplay>,
     upnp: Option<UpnpState>,
+    reach: Option<Reachability>,
     busy: Option<Busy>,
     error: Option<String>,
 }
@@ -45,6 +49,10 @@ pub struct Loaded {
 pub enum Message {
     Loaded(Loaded),
     Upnp(bool),
+    Check,
+    Checked(Result<Reachability, String>),
+    AddFirewallRule,
+    OpenSharing,
     EnableCrossplay,
     DisableCrossplay,
     Done(Busy, Result<(), String>),
@@ -80,6 +88,32 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             Task::none()
         }
+        Message::Check => {
+            state.busy = Some(Busy::Check);
+            state.error = None;
+            state.reach = None;
+            Task::perform(reachability::check(server), Message::Checked)
+        }
+        Message::Checked(result) => {
+            state.busy = None;
+            match result {
+                Ok(reach) => state.reach = Some(reach),
+                Err(error) => state.error = Some(error),
+            }
+            Task::none()
+        }
+        Message::AddFirewallRule => {
+            state.busy = Some(Busy::Firewall);
+            state.error = None;
+            Task::perform(
+                reachability::add_firewall_rule(state.port, bedrock_port(state)),
+                |result| Message::Done(Busy::Firewall, result),
+            )
+        }
+        Message::OpenSharing => {
+            ctx.navigate(Route::Settings(SettingsPage::Sharing));
+            Task::none()
+        }
         Message::Upnp(enabled) => {
             state.busy = Some(Busy::Upnp);
             state.error = None;
@@ -108,6 +142,8 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                     match busy {
                         Busy::Crossplay => ctx.changed_while_running(&server.id),
                         Busy::Upnp => ctx.refresh_servers(),
+                        Busy::Firewall => ctx.success("Windows Firewall now allows the server."),
+                        Busy::Check => {}
                     }
                     load(server)
                 }
@@ -122,6 +158,14 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             clipboard::write(value)
         }
     }
+}
+
+fn bedrock_port(state: &State) -> Option<u16> {
+    state
+        .crossplay
+        .as_ref()
+        .filter(|c| c.installed)
+        .map(|c| c.bedrock_port)
 }
 
 fn note<'a>(value: impl text::IntoFragment<'a>) -> Element<'a, Message> {
@@ -202,11 +246,8 @@ fn crossplay_section<'a>(state: &'a State, server: &'a ServerRecord) -> Element<
 
 fn router_section<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Message> {
     let enabled = upnp::is_enabled_for(&server.extra);
-    let bedrock = state
-        .crossplay
-        .as_ref()
-        .filter(|c| c.installed)
-        .map(|c| format!(" and UDP {}", c.bedrock_port))
+    let bedrock = bedrock_port(state)
+        .map(|port| format!(" and UDP {port}"))
         .unwrap_or_default();
     let hint = format!(
         "When the server starts, Monolith asks your router to forward TCP {}{bedrock} to this PC. The rule lasts an hour, renews while the server runs and is removed when it stops.",
@@ -246,6 +287,94 @@ fn router_section<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a,
     section("Router", rows)
 }
 
+fn reach_section<'a>(
+    state: &'a State,
+    ctx: &'a Ctx,
+    server: &'a ServerRecord,
+) -> Element<'a, Message> {
+    let online = ctx.status(&server.id) == ServerRuntimeStatus::Online;
+    let idle = state.busy.is_none();
+    let mut rows = vec![
+        note("Checks whether players outside your network can reach this server. It sends your public IP address and server port to ipify.org and mcsrvstat.us, which test the connection from the internet. Results can be up to 5 minutes old."),
+        busy_button(
+            "Check if friends can join",
+            "Checking",
+            state.busy == Some(Busy::Check),
+            (idle && online).then_some(Message::Check),
+            style::primary,
+            BUTTON_MD,
+        ),
+    ];
+    if !online {
+        rows.push(note("Start the server first."));
+    }
+    let Some(reach) = &state.reach else {
+        return section("Can friends join?", rows);
+    };
+    if reach.reachable {
+        rows.push(
+            text(format!("Friends can join at {}.", reach.address))
+                .size(TEXT_MD)
+                .style(style::colored(MOSS))
+                .into(),
+        );
+        return section("Can friends join?", rows);
+    }
+    rows.push(
+        text(format!(
+            "Players outside your network cannot reach {}.",
+            reach.address
+        ))
+        .size(TEXT_MD)
+        .style(style::colored(CORAL))
+        .into(),
+    );
+    let sharing = sized(
+        text("Open Sharing settings").size(TEXT_MD).font(UI_MEDIUM),
+        BUTTON_MD,
+    )
+    .style(style::secondary)
+    .on_press(Message::OpenSharing);
+    if reach.cgnat {
+        rows.push(note("Your router's internet address differs from your public address, so your provider most likely shares one address between customers (CGNAT) or there is a second router in front of yours. Port forwarding cannot work here. Use ngrok or playit.gg instead."));
+        rows.push(sharing.into());
+        return section("Can friends join?", rows);
+    }
+    rows.push(note(format!(
+        "The port may not be forwarded. Turn on UPnP above, or forward TCP {} to {} in your router's settings.",
+        state.port, state.local_ip
+    )));
+    rows.push(note("Windows Firewall may be blocking the server. Adding an inbound rule needs administrator permission, so Windows will ask first. Monolith runs:"));
+    rows.push(
+        text(reachability::firewall_command(
+            state.port,
+            bedrock_port(state),
+        ))
+        .size(TEXT_SM)
+        .font(MONO)
+        .into(),
+    );
+    rows.push(
+        row![
+            busy_button(
+                "Add firewall rule",
+                "Waiting for Windows",
+                state.busy == Some(Busy::Firewall),
+                idle.then_some(Message::AddFirewallRule),
+                style::secondary,
+                BUTTON_MD,
+            ),
+            sharing,
+        ]
+        .spacing(SPACE_3)
+        .into(),
+    );
+    rows.push(note(
+        "You can also skip port forwarding with ngrok or playit.gg.",
+    ));
+    section("Can friends join?", rows)
+}
+
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(server) = ctx.selected_server() else {
         return Space::new().into();
@@ -268,6 +397,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let sections = [
         crossplay_section(state, server),
         router_section(state, server),
+        reach_section(state, ctx, server),
     ];
     for (index, part) in sections.into_iter().enumerate() {
         if index > 0 {

@@ -135,6 +135,7 @@ pub struct State {
     view: LogView,
     completion: Option<Completion>,
     uploading: bool,
+    confirm_upload: bool,
     upload_url: Option<String>,
     crash: Option<CrashCause>,
     panel: Panel,
@@ -170,6 +171,7 @@ impl Default for State {
             view: LogView::All,
             completion: None,
             uploading: false,
+            confirm_upload: false,
             upload_url: None,
             crash: None,
             panel: Panel::Live,
@@ -193,6 +195,7 @@ pub enum Message {
     Search(String),
     CloseSearch,
     View(LogView),
+    AskUpload,
     Upload,
     Uploaded(String, Result<String, String>),
     CopyLink(String),
@@ -304,7 +307,13 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.at_bottom = true;
             Task::batch([operation::focus(INPUT_ID), jump_to_latest()])
         }
+        Message::AskUpload => {
+            state.confirm_upload = true;
+            state.upload_url = None;
+            Task::none()
+        }
         Message::Upload => {
+            state.confirm_upload = false;
             let Some(server) = state.server_id.as_deref().and_then(|id| ctx.server(id)) else {
                 return Task::none();
             };
@@ -435,6 +444,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::CloseUpload => {
             state.upload_url = None;
+            state.confirm_upload = false;
             Task::none()
         }
         Message::View(view) => {
@@ -606,6 +616,9 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     if let Some(crash) = &state.crash {
         layout = layout.push(crash_notice(crash));
     }
+    if state.confirm_upload {
+        layout = layout.push(upload_prompt());
+    }
     if let Some(url) = &state.upload_url {
         layout = layout.push(upload_bar(url));
     }
@@ -736,7 +749,11 @@ fn toolbar(state: &State) -> Element<'_, Message> {
         if state.uploading {
             tool(Icon::Restart, "Uploading", None)
         } else {
-            tool(Icon::Share, "Upload log to mclo.gs", Some(Message::Upload))
+            tool(
+                Icon::Share,
+                "Upload log to mclo.gs",
+                Some(Message::AskUpload),
+            )
         },
     ]
     .spacing(SPACE_1)
@@ -773,6 +790,24 @@ fn crash_notice(crash: &CrashCause) -> Element<'_, Message> {
     .padding([SPACE_3, SPACE_4])
     .width(Length::Fill)
     .style(style::panel)
+    .into()
+}
+
+fn upload_prompt<'a>() -> Element<'a, Message> {
+    row![
+        icon_colored(Icon::Share, 16.0, INK_SECONDARY),
+        text("Upload this log to mclo.gs? Anyone with the link can read it, including player names and IP addresses.")
+            .size(TEXT_SM)
+            .width(Length::Fill),
+        sized(text("Upload").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
+            .style(style::primary)
+            .on_press(Message::Upload),
+        sized(text("Cancel").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
+            .style(style::ghost)
+            .on_press(Message::CloseUpload),
+    ]
+    .spacing(SPACE_2)
+    .align_y(Alignment::Center)
     .into()
 }
 

@@ -7,6 +7,7 @@ use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
 use monolith_core::java_manager::discover_installed_javas;
 use monolith_core::modrinth_installs::incompatible_installs;
+use monolith_core::resource_pack::{link_warning, pack_sha1};
 use monolith_core::schedule::parse_times;
 use monolith_core::server_create::get_minecraft_versions;
 use monolith_core::server_framework::change_server_framework;
@@ -19,11 +20,11 @@ use monolith_core::types::{
     MinecraftVersion, ServerProperty, ServerRecord, ServerRuntimeStatus, ServerSettingsUpdate,
     SuccessResult, SystemInfo,
 };
-use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::token::{
-    CORAL, INK, INK_SECONDARY, INK_TERTIARY, LAYER_2, MOSS, RADIUS_CONTROL, SPACE_1, SPACE_2,
-    SPACE_3, SPACE_4, SPACE_5, SPACE_6, SPACE_7, TEXT_MD, TEXT_SM, TEXT_XL,
+    AMBER, CORAL, INK, INK_SECONDARY, INK_TERTIARY, LAYER_2, MOSS, RADIUS_CONTROL, SPACE_1,
+    SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, SPACE_7, TEXT_MD, TEXT_SM, TEXT_XL,
 };
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::widget::sized;
 use monolith_theme::{style, MONO, UI_SEMIBOLD};
 
@@ -79,6 +80,7 @@ pub struct State {
     platform_armed: bool,
     compat: Option<Result<Vec<String>, String>>,
     exporting: bool,
+    hashing: bool,
     copy_name: Option<String>,
     duplicating: Option<f64>,
     configs: configs::State,
@@ -129,6 +131,7 @@ impl Default for State {
             platform_armed: false,
             compat: None,
             exporting: false,
+            hashing: false,
             copy_name: None,
             duplicating: None,
             configs: configs::State::default(),
@@ -176,6 +179,8 @@ pub enum Message {
     RawAction(text_editor::Action),
     SaveProps,
     PropsSaved(Result<(), String>),
+    HashPack,
+    PackHashed(Result<String, String>),
     AutoRestart(bool),
     StartOnLaunch(bool),
     ReliabilitySaved(Result<(), String>),
@@ -639,6 +644,25 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 },
                 Message::PropsSaved,
             )
+        }
+        Message::HashPack => {
+            let url = prop(&state.props, "resource-pack", "").trim().to_string();
+            if url.is_empty() || state.hashing {
+                return Task::none();
+            }
+            state.hashing = true;
+            Task::perform(pack_sha1(url), Message::PackHashed)
+        }
+        Message::PackHashed(result) => {
+            state.hashing = false;
+            match result {
+                Ok(hash) => {
+                    set_prop(&mut state.props, "resource-pack-sha1", hash);
+                    ctx.success("SHA-1 filled in. Save properties to apply it.");
+                }
+                Err(error) => ctx.error(error),
+            }
+            Task::none()
         }
         Message::PropsSaved(result) => {
             state.saving_props = false;
@@ -1294,6 +1318,33 @@ fn gameplay(state: &State) -> Element<'_, Message> {
             rows.push(subheading(group));
         }
         rows.push(setting(spec.label, spec.hint, prop_control(state, spec)));
+        if spec.key == "resource-pack" {
+            if let Some(warning) = link_warning(prop(&state.props, "resource-pack", "")) {
+                rows.push(text(warning).size(TEXT_SM).color(AMBER).into());
+            }
+        }
+        if spec.key == "resource-pack-sha1" {
+            let url = prop(&state.props, "resource-pack", "").trim();
+            rows.push(
+                row![
+                    text("Downloads the pack once, up to 250 MB, and fills in its hash.")
+                        .size(TEXT_SM)
+                        .style(style::muted)
+                        .width(Length::Fill),
+                    busy_button(
+                        "Calculate SHA-1",
+                        "Downloading pack",
+                        state.hashing,
+                        (!url.is_empty()).then_some(Message::HashPack),
+                        style::secondary,
+                        BUTTON_MD,
+                    ),
+                ]
+                .spacing(SPACE_3)
+                .align_y(Alignment::Center)
+                .into(),
+            );
+        }
         if spec.key == "motd" {
             rows.push(motd_preview(prop(
                 &state.props,

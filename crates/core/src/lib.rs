@@ -42,3 +42,4 @@ pub mod worlds;
 pub mod datapacks;
 pub mod chunky;
 pub mod region;
+pub mod resource_pack;

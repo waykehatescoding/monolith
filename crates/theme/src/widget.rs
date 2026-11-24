@@ -1,7 +1,10 @@
 use crate::icon::{icon_colored, Icon};
 use crate::style;
 use crate::token::{ButtonSize, INK, SPACE_2, TEXT_XS, TITLE_BAR_HEIGHT};
-use iced::widget::{button, column, container, mouse_area, row, svg, text, tooltip, Button, MouseArea, Row, Space, Tooltip};
+use iced::widget::{
+    button, column, container, mouse_area, row, svg, text, tooltip, Button, MouseArea, Row, Space,
+    Tooltip,
+};
 use iced::window::Direction;
 use iced::{mouse, Color, Element, Length, Theme};
 
@@ -38,10 +41,19 @@ fn window_button<'a, M: Clone + 'a>(
         .on_press(message)
 }
 
-pub fn window_controls<'a, M: Clone + 'a>(maximized: bool, minimize: M, toggle: M, close: M) -> Row<'a, M, Theme> {
+pub fn window_controls<'a, M: Clone + 'a>(
+    maximized: bool,
+    minimize: M,
+    toggle: M,
+    close: M,
+) -> Row<'a, M, Theme> {
     row![
         window_button(MINIMIZE, minimize, style::window_control),
-        window_button(if maximized { RESTORE } else { MAXIMIZE }, toggle, style::window_control),
+        window_button(
+            if maximized { RESTORE } else { MAXIMIZE },
+            toggle,
+            style::window_control
+        ),
         window_button(CLOSE, close, style::window_close),
     ]
 }
@@ -72,7 +84,9 @@ fn grip<'a, M: Clone + 'a>(
         .into()
 }
 
-pub fn resize_grips<'a, M: Clone + 'a>(on_resize: impl Fn(Direction) -> M) -> Element<'a, M, Theme> {
+pub fn resize_grips<'a, M: Clone + 'a>(
+    on_resize: impl Fn(Direction) -> M,
+) -> Element<'a, M, Theme> {
     let edge = Length::Fixed(5.0);
     let corner = Length::Fixed(10.0);
     column![
@@ -96,13 +110,19 @@ pub fn resize_grips<'a, M: Clone + 'a>(on_resize: impl Fn(Direction) -> M) -> El
     .into()
 }
 
-pub fn sized<'a, M: 'a>(content: impl Into<Element<'a, M, Theme>>, size: ButtonSize) -> Button<'a, M, Theme> {
+pub fn sized<'a, M: 'a>(
+    content: impl Into<Element<'a, M, Theme>>,
+    size: ButtonSize,
+) -> Button<'a, M, Theme> {
     button(container(content).center_y(Length::Fill))
         .height(Length::Fixed(size.height))
         .padding(size.padding)
 }
 
-pub fn sized_icon<'a, M: 'a>(content: impl Into<Element<'a, M, Theme>>, size: ButtonSize) -> Button<'a, M, Theme> {
+pub fn sized_icon<'a, M: 'a>(
+    content: impl Into<Element<'a, M, Theme>>,
+    size: ButtonSize,
+) -> Button<'a, M, Theme> {
     button(container(content).center(Length::Fill))
         .width(Length::Fixed(size.height))
         .height(Length::Fixed(size.height))

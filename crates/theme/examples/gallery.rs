@@ -9,8 +9,7 @@ use iced::{window, Alignment, Color, Element, Length, Size, Task, Theme};
 use monolith_theme::token::*;
 use monolith_theme::widget::{drag_region, resize_grips, server_icon, window_controls};
 use monolith_theme::{
-    app_icon, icon, icon_colored, style, theme, Icon, FONT_BYTES, MONO, UI, UI_MEDIUM,
-    UI_SEMIBOLD,
+    app_icon, icon, icon_colored, style, theme, Icon, FONT_BYTES, MONO, UI, UI_MEDIUM, UI_SEMIBOLD,
 };
 
 const TABS: [&str; 7] = [
@@ -252,13 +251,38 @@ fn log<'a>(time: &'a str, level: &'a str, color: Color, body: &'a str) -> Elemen
 fn console<'a>() -> Element<'a, Message> {
     container(
         column![
-            log("14:02:11", "INFO ", LOG_INFO, "Done (4.812s)! For help, type \"help\""),
+            log(
+                "14:02:11",
+                "INFO ",
+                LOG_INFO,
+                "Done (4.812s)! For help, type \"help\""
+            ),
             log("14:02:36", "INFO ", LOG_INFO, "Steve joined the game"),
             log("14:02:41", "INFO ", LOG_INFO, "Alex joined the game"),
-            log("14:03:07", "INFO ", MOSS, "Steve has made the advancement [Stone Age]"),
-            log("14:04:52", "WARN ", AMBER, "Can't keep up! Is the server overloaded? Running 2341ms behind"),
-            log("14:05:18", "ERROR", CORAL, "Could not pass event PlayerMoveEvent to WorldGuard v7.0.12"),
-            log("14:05:44", "INFO ", LOG_INFO, "Alex lost connection: Disconnected"),
+            log(
+                "14:03:07",
+                "INFO ",
+                MOSS,
+                "Steve has made the advancement [Stone Age]"
+            ),
+            log(
+                "14:04:52",
+                "WARN ",
+                AMBER,
+                "Can't keep up! Is the server overloaded? Running 2341ms behind"
+            ),
+            log(
+                "14:05:18",
+                "ERROR",
+                CORAL,
+                "Could not pass event PlayerMoveEvent to WorldGuard v7.0.12"
+            ),
+            log(
+                "14:05:44",
+                "INFO ",
+                LOG_INFO,
+                "Alex lost connection: Disconnected"
+            ),
         ]
         .spacing(SPACE_2),
     )
@@ -318,14 +342,24 @@ fn states(state: &Gallery) -> Element<'_, Message> {
     .spacing(SPACE_2);
 
     let inputs = row![
-        field("Survival", text_input::Status::Active, false, "Shown in the sidebar"),
+        field(
+            "Survival",
+            text_input::Status::Active,
+            false,
+            "Shown in the sidebar"
+        ),
         field(
             "Surviv",
             text_input::Status::Focused { is_hovered: false },
             false,
             "Letters, numbers and spaces"
         ),
-        field("Survival/", text_input::Status::Active, true, "Remove the slash and try again"),
+        field(
+            "Survival/",
+            text_input::Status::Active,
+            true,
+            "Remove the slash and try again"
+        ),
     ]
     .spacing(SPACE_3)
     .width(640);
@@ -481,7 +515,12 @@ fn main_pane(state: &Gallery) -> Element<'_, Message> {
     .max_width(1000);
 
     container(body)
-        .padding(iced::Padding { top: SPACE_2, right: 40.0, bottom: SPACE_6, left: 40.0 })
+        .padding(iced::Padding {
+            top: SPACE_2,
+            right: 40.0,
+            bottom: SPACE_6,
+            left: 40.0,
+        })
         .width(Length::Fill)
         .height(Length::Fill)
         .style(style::surface)
@@ -491,7 +530,9 @@ fn main_pane(state: &Gallery) -> Element<'_, Message> {
 fn title_bar(state: &Gallery) -> Element<'_, Message> {
     row![
         drag_region(
-            Space::new().width(Length::Fill).height(Length::Fixed(TITLE_BAR_HEIGHT)),
+            Space::new()
+                .width(Length::Fill)
+                .height(Length::Fixed(TITLE_BAR_HEIGHT)),
             Message::Drag,
             Message::ToggleMaximize,
         ),

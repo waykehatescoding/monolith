@@ -1,7 +1,5 @@
 use std::path::Path;
 
-use monolith_theme::token::{BUTTON_MD};
-use monolith_theme::widget::{sized, sized_icon};
 use chrono::{DateTime, Local};
 use iced::widget::{
     button, column, container, progress_bar, row, rule, scrollable, text, text_input, toggler,
@@ -15,7 +13,9 @@ use monolith_core::types::{
     BackupConfig, BackupEntry, BackupStage, BackupStatus, BackupType, ServerRuntimeStatus,
     ServerSettingsUpdate,
 };
+use monolith_theme::token::BUTTON_MD;
 use monolith_theme::token::*;
+use monolith_theme::widget::{sized, sized_icon};
 use monolith_theme::{icon, icon_colored, style, Icon, UI_MEDIUM, UI_SEMIBOLD};
 
 use crate::ctx::{Confirm, Ctx};
@@ -156,14 +156,17 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.cancelling = false;
             state.percent = 0.0;
             state.stage = Some(BackupStage::Calculating);
-            Task::perform(backup_manager::create_backup(id.clone(), None), move |result| {
-                let outcome = if result.success {
-                    Ok(())
-                } else {
-                    Err(result.error.unwrap_or_else(|| "The backup failed.".into()))
-                };
-                Message::Created(id.clone(), outcome)
-            })
+            Task::perform(
+                backup_manager::create_backup(id.clone(), None),
+                move |result| {
+                    let outcome = if result.success {
+                        Ok(())
+                    } else {
+                        Err(result.error.unwrap_or_else(|| "The backup failed.".into()))
+                    };
+                    Message::Created(id.clone(), outcome)
+                },
+            )
         }
         Message::Created(id, outcome) => {
             if state.server_id.as_deref() != Some(id.as_str()) {
@@ -281,7 +284,8 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
         Message::SaveSchedule => {
-            let (Some(id), Some(hours)) = (state.server_id.clone(), parse_interval(&state.interval))
+            let (Some(id), Some(hours)) =
+                (state.server_id.clone(), parse_interval(&state.interval))
             else {
                 return Task::none();
             };
@@ -405,7 +409,10 @@ fn progress_view(state: &State) -> Element<'_, Message> {
     container(
         column![
             row![
-                text(stage).size(TEXT_MD).font(UI_MEDIUM).width(Length::Fill),
+                text(stage)
+                    .size(TEXT_MD)
+                    .font(UI_MEDIUM)
+                    .width(Length::Fill),
                 text(format!("{:.0}%", state.percent.max(0.0)))
                     .size(TEXT_SM)
                     .style(style::muted),
@@ -449,7 +456,9 @@ fn list_view<'a>(state: &'a State, can_restore: bool) -> Element<'a, Message> {
         if index > 0 {
             rows = rows.push(rule::horizontal(1).style(style::hairline));
         }
-        rows = rows.push(container(entry_row(backup, can_restore, state.creating)).padding([SPACE_3, SPACE_4]));
+        rows = rows.push(
+            container(entry_row(backup, can_restore, state.creating)).padding([SPACE_3, SPACE_4]),
+        );
     }
     container(rows)
         .width(Length::Fill)
@@ -476,19 +485,25 @@ fn schedule_view(state: &State) -> Element<'_, Message> {
             }
         });
     let hint = if hours.is_none() {
-        text(format!("Enter a whole number from 1 to {MAX_INTERVAL_HOURS}."))
-            .size(TEXT_SM)
-            .color(CORAL)
+        text(format!(
+            "Enter a whole number from 1 to {MAX_INTERVAL_HOURS}."
+        ))
+        .size(TEXT_SM)
+        .color(CORAL)
     } else {
         text("Backups run while Monolith is open.")
             .size(TEXT_SM)
             .style(style::muted)
     };
     let save = action(
-        text(if state.saving { "Saving" } else { "Save schedule" })
-            .size(TEXT_MD)
-            .font(UI_MEDIUM)
-            .into(),
+        text(if state.saving {
+            "Saving"
+        } else {
+            "Save schedule"
+        })
+        .size(TEXT_MD)
+        .font(UI_MEDIUM)
+        .into(),
         style::secondary,
         can_save.then_some(Message::SaveSchedule),
     );
@@ -518,10 +533,12 @@ fn schedule_view(state: &State) -> Element<'_, Message> {
 }
 
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
-    let offline = state
-        .server_id
-        .as_deref()
-        .is_none_or(|id| matches!(ctx.status(id), ServerRuntimeStatus::Offline | ServerRuntimeStatus::Crashed));
+    let offline = state.server_id.as_deref().is_none_or(|id| {
+        matches!(
+            ctx.status(id),
+            ServerRuntimeStatus::Offline | ServerRuntimeStatus::Crashed
+        )
+    });
     let total: u64 = state.backups.iter().map(|backup| backup.size).sum();
     let summary = if state.backups.is_empty() {
         "Nothing saved yet".to_string()
@@ -556,7 +573,11 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
 
     header = header.push(action(
         label(
-            if state.creating { "Backing up" } else { "Create backup" },
+            if state.creating {
+                "Backing up"
+            } else {
+                "Create backup"
+            },
             Icon::Plus,
         ),
         style::primary,

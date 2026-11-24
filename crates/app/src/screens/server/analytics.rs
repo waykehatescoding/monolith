@@ -1,19 +1,22 @@
 use std::time::Duration;
 
-use monolith_theme::token::BUTTON_MD;
-use monolith_theme::widget::{sized, sized_icon};
 use chrono::{DateTime, Local, Utc};
 use iced::widget::canvas::{self, Canvas, Path, Stroke};
 use iced::widget::text::Alignment;
 use iced::widget::{column, container, row, scrollable, space, text};
-use iced::{alignment, mouse, Color, Element, Length, Pixels, Point, Rectangle, Renderer, Size, Subscription, Task, Theme};
+use iced::{
+    alignment, mouse, Color, Element, Length, Pixels, Point, Rectangle, Renderer, Size,
+    Subscription, Task, Theme,
+};
 use monolith_core::events::Event;
 use monolith_core::server_stats::get_analytics_data;
 use monolith_core::server_store::update_server_settings;
 use monolith_core::types::{AnalyticsDataResult, ServerRuntimeStatus, ServerSettingsUpdate};
-use monolith_theme::{icon, Icon, UI, UI_MEDIUM, UI_SEMIBOLD};
 use monolith_theme::style;
+use monolith_theme::token::BUTTON_MD;
 use monolith_theme::token::*;
+use monolith_theme::widget::{sized, sized_icon};
+use monolith_theme::{icon, Icon, UI, UI_MEDIUM, UI_SEMIBOLD};
 use serde::Deserialize;
 
 use crate::ctx::Ctx;
@@ -172,15 +175,26 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                         state.load = Load::Ready;
                     }
                     Err(_) if state.report.is_some() => {}
-                    Err(_) => state.load = Load::Failed("The analytics file is not in the expected format.".into()),
+                    Err(_) => {
+                        state.load =
+                            Load::Failed("The analytics file is not in the expected format.".into())
+                    }
                 },
                 _ => match result.error.as_deref() {
                     Some("no-data") => {
-                        state.load = if state.report.is_some() { Load::Ready } else { Load::NoData };
+                        state.load = if state.report.is_some() {
+                            Load::Ready
+                        } else {
+                            Load::NoData
+                        };
                     }
                     _ if state.report.is_some() => {}
                     other => {
-                        state.load = Load::Failed(other.unwrap_or("The analytics file could not be read.").to_string());
+                        state.load = Load::Failed(
+                            other
+                                .unwrap_or("The analytics file could not be read.")
+                                .to_string(),
+                        );
                     }
                 },
             }
@@ -199,7 +213,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 Message::Enabled(if result.success {
                     Ok(())
                 } else {
-                    Err(result.error.unwrap_or_else(|| "Something went wrong.".into()))
+                    Err(result
+                        .error
+                        .unwrap_or_else(|| "Something went wrong.".into()))
                 })
             })
         }
@@ -221,10 +237,15 @@ fn fetch(state: &State, ctx: &Ctx) -> Task<Message> {
     let Some(id) = state.server_id.clone() else {
         return Task::none();
     };
-    if !ctx.server(&id).is_some_and(|server| server.analytics_enabled == Some(true)) {
+    if !ctx
+        .server(&id)
+        .is_some_and(|server| server.analytics_enabled == Some(true))
+    {
         return Task::none();
     }
-    Task::perform(get_analytics_data(id.clone()), move |result| Message::Loaded(id.clone(), result))
+    Task::perform(get_analytics_data(id.clone()), move |result| {
+        Message::Loaded(id.clone(), result)
+    })
 }
 
 pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
@@ -241,7 +262,11 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
 
 pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
     match event {
-        Event::ServerStatus(update) if state.server_id.as_deref() == Some(update.server_id.as_str()) => fetch(state, ctx),
+        Event::ServerStatus(update)
+            if state.server_id.as_deref() == Some(update.server_id.as_str()) =>
+        {
+            fetch(state, ctx)
+        }
         _ => Task::none(),
     }
 }
@@ -252,7 +277,11 @@ pub fn subscription(_state: &State) -> Subscription<Message> {
 
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(server) = ctx.selected_server() else {
-        return notice("No server selected", "Pick a server from the sidebar to see its analytics.", None);
+        return notice(
+            "No server selected",
+            "Pick a server from the sidebar to see its analytics.",
+            None,
+        );
     };
 
     if server.framework != "Paper" && server.framework != "Purpur" {
@@ -267,7 +296,11 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     }
 
     if server.analytics_enabled != Some(true) {
-        let label = if state.enabling { "Enabling" } else { "Enable analytics" };
+        let label = if state.enabling {
+            "Enabling"
+        } else {
+            "Enable analytics"
+        };
         let enable = sized(text(label).size(TEXT_MD), BUTTON_MD)
             .style(style::primary)
             .on_press_maybe((!state.enabling).then_some(Message::Enable))
@@ -287,9 +320,13 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
                 .into();
             notice("Could not read analytics data", error.clone(), Some(retry))
         }
-        (Load::Loading, None) => container(text("Loading analytics...").size(TEXT_MD).style(style::muted))
-            .center(Length::Fill)
-            .into(),
+        (Load::Loading, None) => container(
+            text("Loading analytics...")
+                .size(TEXT_MD)
+                .style(style::muted),
+        )
+        .center(Length::Fill)
+        .into(),
         (Load::NoData, _) | (_, None) => {
             let running = ctx.status(&server.id) == ServerRuntimeStatus::Online;
             let body = if running {
@@ -303,10 +340,17 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     }
 }
 
-fn notice<'a>(title: &'a str, body: impl text::IntoFragment<'a>, action: Option<Element<'a, Message>>) -> Element<'a, Message> {
+fn notice<'a>(
+    title: &'a str,
+    body: impl text::IntoFragment<'a>,
+    action: Option<Element<'a, Message>>,
+) -> Element<'a, Message> {
     let mut content = column![
         text(title).size(TEXT_XL).font(UI_SEMIBOLD),
-        text(body).size(TEXT_MD).style(style::muted).align_x(alignment::Horizontal::Center),
+        text(body)
+            .size(TEXT_MD)
+            .style(style::muted)
+            .align_x(alignment::Horizontal::Center),
     ]
     .spacing(SPACE_2)
     .align_x(alignment::Horizontal::Center)
@@ -321,11 +365,17 @@ fn report_view<'a>(state: &'a State, report: &'a Report) -> Element<'a, Message>
     let range = state.range;
     let now = Utc::now().timestamp() as f64;
     let cutoff = now - range.seconds();
-    let windowed = |points: Vec<(f64, f64)>| -> Vec<(f64, f64)> { points.into_iter().filter(|(t, _)| *t >= cutoff).collect() };
+    let windowed = |points: Vec<(f64, f64)>| -> Vec<(f64, f64)> {
+        points.into_iter().filter(|(t, _)| *t >= cutoff).collect()
+    };
 
     let tps = windowed(series(report.tps.iter().map(|s| (&s.timestamp, s.tps))));
-    let memory = windowed(series(report.memory.iter().map(|s| (&s.timestamp, s.used_mb))));
-    let players = windowed(series(report.timeline.iter().map(|s| (&s.timestamp, s.players))));
+    let memory = windowed(series(
+        report.memory.iter().map(|s| (&s.timestamp, s.used_mb)),
+    ));
+    let players = windowed(series(
+        report.timeline.iter().map(|s| (&s.timestamp, s.players)),
+    ));
 
     let overview = &report.overview;
     let tps_now = overview.current_tps.or_else(|| tps.last().map(|p| p.1));
@@ -334,11 +384,21 @@ fn report_view<'a>(state: &'a State, report: &'a Report) -> Element<'a, Message>
     } else {
         memory.iter().map(|p| p.1).fold(0.0, f64::max) * 1.1
     };
-    let player_max = players.iter().map(|p| p.1).fold(overview.peak_online as f64, f64::max).max(4.0);
+    let player_max = players
+        .iter()
+        .map(|p| p.1)
+        .fold(overview.peak_online as f64, f64::max)
+        .max(4.0);
 
     let header = row![
         space().width(Length::Fill),
-        text(if state.refreshing { "Refreshing..." } else { "" }).size(TEXT_SM).style(style::muted),
+        text(if state.refreshing {
+            "Refreshing..."
+        } else {
+            ""
+        })
+        .size(TEXT_SM)
+        .style(style::muted),
         row(Range::ALL.map(|option| {
             sized(text(option.label()).size(TEXT_MD), BUTTON_MD)
                 .style(style::tab(state.range == option))
@@ -356,17 +416,34 @@ fn report_view<'a>(state: &'a State, report: &'a Report) -> Element<'a, Message>
     let charts = column![
         chart_panel(
             "Server speed (TPS)",
-            tps_now.map(|v| format!("{v:.1} of 20")).unwrap_or_else(|| "-".into()),
+            tps_now
+                .map(|v| format!("{v:.1} of 20"))
+                .unwrap_or_else(|| "-".into()),
             Chart::new(tps, 20.0, MOSS, range, cutoff, now, format_tps),
         ),
         chart_panel(
             "Memory",
-            format!("{} of {}", format_mb(overview.memory_used_mb), format_mb(memory_max)),
-            Chart::new(memory, memory_max, INK_SECONDARY, range, cutoff, now, format_mb),
+            format!(
+                "{} of {}",
+                format_mb(overview.memory_used_mb),
+                format_mb(memory_max)
+            ),
+            Chart::new(
+                memory,
+                memory_max,
+                INK_SECONDARY,
+                range,
+                cutoff,
+                now,
+                format_mb
+            ),
         ),
         chart_panel(
             "Players online",
-            format!("{} now, peak {}", overview.current_online, overview.peak_online),
+            format!(
+                "{} now, peak {}",
+                overview.current_online, overview.peak_online
+            ),
             Chart::new(players, player_max, MOSS, range, cutoff, now, format_count),
         ),
     ]
@@ -374,7 +451,11 @@ fn report_view<'a>(state: &'a State, report: &'a Report) -> Element<'a, Message>
 
     let totals = text(format!(
         "{} joins from {} players, {} chat messages, {} commands, {} deaths",
-        overview.total_joins, overview.unique_players, overview.total_chat_messages, overview.total_commands_executed, overview.total_deaths
+        overview.total_joins,
+        overview.unique_players,
+        overview.total_chat_messages,
+        overview.total_commands_executed,
+        overview.total_deaths
     ))
     .size(TEXT_SM)
     .style(style::muted);
@@ -402,13 +483,20 @@ fn series<'a>(samples: impl Iterator<Item = (&'a String, f64)>) -> Vec<(f64, f64
 
 fn chart_panel<'a>(title: &'a str, value: String, chart: Chart) -> Element<'a, Message> {
     let body: Element<'a, Message> = if chart.points.is_empty() {
-        container(text(chart.empty_message()).size(TEXT_SM).style(style::muted))
+        container(
+            text(chart.empty_message())
+                .size(TEXT_SM)
+                .style(style::muted),
+        )
+        .width(Length::Fill)
+        .height(CHART_HEIGHT)
+        .center(Length::Fill)
+        .into()
+    } else {
+        Canvas::new(chart)
             .width(Length::Fill)
             .height(CHART_HEIGHT)
-            .center(Length::Fill)
             .into()
-    } else {
-        Canvas::new(chart).width(Length::Fill).height(CHART_HEIGHT).into()
     };
     column![
         row![
@@ -424,18 +512,35 @@ fn chart_panel<'a>(title: &'a str, value: String, chart: Chart) -> Element<'a, M
 
 fn top_players<'a>(players: &'a [PlayerRow]) -> Element<'a, Message> {
     let mut ranked: Vec<&PlayerRow> = players.iter().collect();
-    ranked.sort_by(|a, b| b.total_play_time_seconds.total_cmp(&a.total_play_time_seconds));
+    ranked.sort_by(|a, b| {
+        b.total_play_time_seconds
+            .total_cmp(&a.total_play_time_seconds)
+    });
 
     let mut list = column![text("Most playtime").size(TEXT_MD).font(UI_MEDIUM)].spacing(SPACE_3);
     if ranked.is_empty() {
-        list = list.push(text("Nobody has joined yet. Share the server address to get started.").size(TEXT_SM).style(style::muted));
+        list = list.push(
+            text("Nobody has joined yet. Share the server address to get started.")
+                .size(TEXT_SM)
+                .style(style::muted),
+        );
     }
     for player in ranked.into_iter().take(TOP_PLAYERS) {
         list = list.push(
             row![
                 text(&player.name).size(TEXT_MD),
                 space().width(Length::Fill),
-                text(format!("{} {}", player.join_count, if player.join_count == 1 { "join" } else { "joins" })).size(TEXT_SM).style(style::muted),
+                text(format!(
+                    "{} {}",
+                    player.join_count,
+                    if player.join_count == 1 {
+                        "join"
+                    } else {
+                        "joins"
+                    }
+                ))
+                .size(TEXT_SM)
+                .style(style::muted),
                 text(format_playtime(player.total_play_time_seconds))
                     .size(TEXT_MD)
                     .width(72)
@@ -488,7 +593,15 @@ struct Chart {
 }
 
 impl Chart {
-    fn new(points: Vec<(f64, f64)>, y_max: f64, color: Color, range: Range, x_start: f64, x_end: f64, format: fn(f64) -> String) -> Self {
+    fn new(
+        points: Vec<(f64, f64)>,
+        y_max: f64,
+        color: Color,
+        range: Range,
+        x_start: f64,
+        x_end: f64,
+        format: fn(f64) -> String,
+    ) -> Self {
         let peak = points.iter().map(|p| p.1).fold(0.0, f64::max);
         Self {
             points,
@@ -513,19 +626,28 @@ impl Chart {
     fn project(&self, plot: Rectangle, point: (f64, f64)) -> Point {
         let x = ((point.0 - self.x_start) / (self.x_end - self.x_start)).clamp(0.0, 1.0);
         let y = (point.1 / self.y_max).clamp(0.0, 1.0);
-        Point::new(plot.x + plot.width * x as f32, plot.y + plot.height * (1.0 - y as f32))
+        Point::new(
+            plot.x + plot.width * x as f32,
+            plot.y + plot.height * (1.0 - y as f32),
+        )
     }
 
     fn empty_message(&self) -> &'static str {
         match self.range {
-            Range::Week => "No samples in the last 7 days. The plugin records while the server is running.",
+            Range::Week => {
+                "No samples in the last 7 days. The plugin records while the server is running."
+            }
             _ => "No samples in this range. Try a longer range.",
         }
     }
 
     fn clock(&self, seconds: f64) -> String {
         DateTime::from_timestamp(seconds as i64, 0)
-            .map(|time| time.with_timezone(&Local).format(self.range.time_format()).to_string())
+            .map(|time| {
+                time.with_timezone(&Local)
+                    .format(self.range.time_format())
+                    .to_string()
+            })
             .unwrap_or_default()
     }
 }
@@ -546,7 +668,14 @@ fn label(content: String, position: Point, align: Alignment, color: Color) -> ca
 impl canvas::Program<Message> for Chart {
     type State = ();
 
-    fn draw(&self, _: &(), renderer: &Renderer, _: &Theme, bounds: Rectangle, cursor: mouse::Cursor) -> Vec<canvas::Geometry> {
+    fn draw(
+        &self,
+        _: &(),
+        renderer: &Renderer,
+        _: &Theme,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let plot = self.plot(bounds);
 
@@ -597,21 +726,37 @@ impl canvas::Program<Message> for Chart {
         }
 
         let label_y = baseline + PLOT_BOTTOM / 2.0 + 2.0;
-        frame.fill_text(label(self.clock(self.x_start), Point::new(plot.x, label_y), Alignment::Left, INK_TERTIARY));
-        frame.fill_text(label(self.clock(self.x_end), Point::new(plot.x + plot.width, label_y), Alignment::Right, INK_TERTIARY));
+        frame.fill_text(label(
+            self.clock(self.x_start),
+            Point::new(plot.x, label_y),
+            Alignment::Left,
+            INK_TERTIARY,
+        ));
+        frame.fill_text(label(
+            self.clock(self.x_end),
+            Point::new(plot.x + plot.width, label_y),
+            Alignment::Right,
+            INK_TERTIARY,
+        ));
 
         if let Some(position) = cursor.position_in(bounds) {
-            let nearest = projected
-                .iter()
-                .zip(&self.points)
-                .min_by(|a, b| (a.0.x - position.x).abs().total_cmp(&(b.0.x - position.x).abs()));
+            let nearest = projected.iter().zip(&self.points).min_by(|a, b| {
+                (a.0.x - position.x)
+                    .abs()
+                    .total_cmp(&(b.0.x - position.x).abs())
+            });
             if let Some((point, sample)) = nearest {
                 frame.stroke(
                     &Path::line(Point::new(point.x, plot.y), Point::new(point.x, baseline)),
-                    Stroke::default().with_color(HAIRLINE_STRONG).with_width(1.0),
+                    Stroke::default()
+                        .with_color(HAIRLINE_STRONG)
+                        .with_width(1.0),
                 );
                 frame.fill(&Path::circle(*point, 4.0), self.color);
-                frame.stroke(&Path::circle(*point, 4.0), Stroke::default().with_color(LAYER_2).with_width(2.0));
+                frame.stroke(
+                    &Path::circle(*point, 4.0),
+                    Stroke::default().with_color(LAYER_2).with_width(2.0),
+                );
 
                 let size = Size::new(128.0, 40.0);
                 let x = if point.x + size.width + SPACE_3 > bounds.width {
@@ -620,9 +765,22 @@ impl canvas::Program<Message> for Chart {
                     point.x + SPACE_3
                 };
                 let y = (point.y - size.height / 2.0).clamp(0.0, (baseline - size.height).max(0.0));
-                frame.fill(&Path::rounded_rectangle(Point::new(x, y), size, RADIUS_CONTROL.into()), LAYER_3);
-                frame.fill_text(label((self.format)(sample.1), Point::new(x + SPACE_3, y + 13.0), Alignment::Left, INK));
-                frame.fill_text(label(self.clock(sample.0), Point::new(x + SPACE_3, y + 29.0), Alignment::Left, INK_SECONDARY));
+                frame.fill(
+                    &Path::rounded_rectangle(Point::new(x, y), size, RADIUS_CONTROL.into()),
+                    LAYER_3,
+                );
+                frame.fill_text(label(
+                    (self.format)(sample.1),
+                    Point::new(x + SPACE_3, y + 13.0),
+                    Alignment::Left,
+                    INK,
+                ));
+                frame.fill_text(label(
+                    self.clock(sample.0),
+                    Point::new(x + SPACE_3, y + 29.0),
+                    Alignment::Left,
+                    INK_SECONDARY,
+                ));
             }
         }
 

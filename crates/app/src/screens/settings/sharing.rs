@@ -1,15 +1,16 @@
-use iced::widget::{button, column, container, progress_bar, row, scrollable, text, text_input, toggler};
-use monolith_theme::token::BUTTON_MD;
-use monolith_theme::widget::{sized, sized_icon};
+use iced::widget::{
+    button, column, container, progress_bar, row, scrollable, text, text_input, toggler,
+};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
 use monolith_core::types::{NgrokAuthtokenValidation, SuccessResult};
 use monolith_core::{ngrok_manager, safety};
 use monolith_theme::style;
+use monolith_theme::token::BUTTON_MD;
 use monolith_theme::token::{
-    CORAL, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, TEXT_LG, TEXT_MD, TEXT_SM,
-    TEXT_XL,
+    CORAL, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, TEXT_LG, TEXT_MD, TEXT_SM, TEXT_XL,
 };
+use monolith_theme::widget::{sized, sized_icon};
 use monolith_theme::{icon, Icon, MONO, UI_MEDIUM, UI_SEMIBOLD};
 
 use crate::ctx::Ctx;
@@ -54,7 +55,9 @@ pub enum Message {
 fn load() -> Task<Message> {
     Task::perform(
         async {
-            let installed = ngrok_manager::get_ngrok_status(String::new()).await.installed;
+            let installed = ngrok_manager::get_ngrok_status(String::new())
+                .await
+                .installed;
             let enabled = ngrok_manager::is_ngrok_enabled().await;
             let token = ngrok_manager::get_ngrok_authtoken_censored().await;
             let ip = ngrok_manager::get_local_ip().await;
@@ -314,7 +317,10 @@ fn token_section(state: &State) -> Element<'_, Message> {
     if let Some(saved) = &state.saved_token {
         section = section.push(
             row![
-                text(saved.as_str()).size(TEXT_MD).font(MONO).width(Length::Fill),
+                text(saved.as_str())
+                    .size(TEXT_MD)
+                    .font(MONO)
+                    .width(Length::Fill),
                 remove_controls(state)
             ]
             .spacing(SPACE_4)

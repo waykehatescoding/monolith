@@ -1,19 +1,17 @@
-use std::path::Path;
 use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::widget::{sized, sized_icon};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use iced::widget::{column, container, row, text, Space};
 use iced::{clipboard, Alignment, Color, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
 use monolith_core::types::{
-    ServerProperty, ServerRecord, ServerRuntimeStatus,
-    ServerSettingsUpdate, SuccessResult,
+    ServerProperty, ServerRecord, ServerRuntimeStatus, ServerSettingsUpdate, SuccessResult,
 };
 use monolith_core::{ngrok_manager, server_props, server_runner, server_store};
 use monolith_theme::token::{
-    AMBER, CORAL, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, TEXT_MD,
-    TEXT_SM, TEXT_XL, TEXT_2XL,
+    AMBER, CORAL, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, TEXT_2XL, TEXT_MD, TEXT_SM, TEXT_XL,
 };
 use monolith_theme::{icon, icon_colored, style, Icon, MONO, UI_MEDIUM, UI_SEMIBOLD};
 
@@ -200,7 +198,11 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::Start => run(state, Busy::Start, server_runner::start_server(server.id)),
         Message::Stop => run(state, Busy::Stop, server_runner::stop_server(server.id)),
-        Message::Restart => run(state, Busy::Restart, server_runner::restart_server(server.id)),
+        Message::Restart => run(
+            state,
+            Busy::Restart,
+            server_runner::restart_server(server.id),
+        ),
         Message::Share => {
             let enable = server.use_ngrok != Some(true);
             let port = state.port;
@@ -302,7 +304,9 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             "Stopping",
             state.busy == Some(Busy::Stop),
             Some(Message::Stop).filter(|_| idle),
-            style::secondary, BUTTON_MD),
+            style::secondary,
+            BUTTON_MD,
+        ),
         ServerRuntimeStatus::Stopping => {
             busy_button("Stop", "Stopping", true, None, style::secondary, BUTTON_MD)
         }
@@ -310,20 +314,27 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             busy_button("Start", "Starting", true, None, style::primary, BUTTON_MD)
         }
         ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle | ServerRuntimeStatus::Crashed
-            if !state.eula_accepted => {
+            if !state.eula_accepted =>
+        {
             busy_button(
                 "Accept EULA",
                 "Accepting",
                 state.busy == Some(Busy::Eula),
                 Some(Message::AcceptEula).filter(|_| idle),
-                style::primary, BUTTON_MD)
+                style::primary,
+                BUTTON_MD,
+            )
         }
-        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle | ServerRuntimeStatus::Crashed => busy_button(
-            "Start",
-            "Starting",
-            state.busy == Some(Busy::Start),
-            Some(Message::Start).filter(|_| idle && state.eula_accepted),
-            style::primary, BUTTON_MD),
+        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle | ServerRuntimeStatus::Crashed => {
+            busy_button(
+                "Start",
+                "Starting",
+                state.busy == Some(Busy::Start),
+                Some(Message::Start).filter(|_| idle && state.eula_accepted),
+                style::primary,
+                BUTTON_MD,
+            )
+        }
     };
 
     let actions = row![
@@ -333,13 +344,21 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             "Restarting",
             state.busy == Some(Busy::Restart),
             Some(Message::Restart).filter(|_| idle && online),
-            style::secondary, BUTTON_MD),
+            style::secondary,
+            BUTTON_MD
+        ),
         busy_button(
-            if sharing { "Stop sharing" } else { "Share online" },
+            if sharing {
+                "Stop sharing"
+            } else {
+                "Share online"
+            },
             "Working",
             state.busy == Some(Busy::Share),
             Some(Message::Share).filter(|_| idle),
-            style::secondary, BUTTON_MD),
+            style::secondary,
+            BUTTON_MD
+        ),
     ]
     .spacing(SPACE_2);
 
@@ -469,8 +488,8 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             } else {
                 format!("Use port {port}")
             };
-            let fix = sized(text(label).size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
-                .style(style::secondary);
+            let fix =
+                sized(text(label).size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD).style(style::secondary);
             let fix: Element<'a, Message> = match idle {
                 true => fix.on_press(Message::UsePort(port)).into(),
                 false => fix.into(),
@@ -480,10 +499,13 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         let action = match fix {
             Some(fix) => Some(fix),
             None if error == NO_TOKEN => Some(
-                sized(text("Open Sharing settings").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
-                    .style(style::secondary)
-                    .on_press(Message::OpenSharing)
-                    .into(),
+                sized(
+                    text("Open Sharing settings").size(TEXT_MD).font(UI_MEDIUM),
+                    BUTTON_MD,
+                )
+                .style(style::secondary)
+                .on_press(Message::OpenSharing)
+                .into(),
             ),
             None => Some(dismiss()),
         };
@@ -524,7 +546,12 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             ]
             .spacing(SPACE_4),
         );
-    } else if state.eula_accepted && !matches!(status, ServerRuntimeStatus::Starting | ServerRuntimeStatus::Stopping) {
+    } else if state.eula_accepted
+        && !matches!(
+            status,
+            ServerRuntimeStatus::Starting | ServerRuntimeStatus::Stopping
+        )
+    {
         page = page.push(
             text("This server is offline. Start it to see players, TPS, memory and uptime.")
                 .size(TEXT_MD)
@@ -540,21 +567,19 @@ pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
         return Task::none();
     };
     match event {
-        Event::ServerStatus(update) if update.server_id == id => {
-            match update.status {
-                ServerRuntimeStatus::Starting => {
-                    state.error = None;
-                    state.port_fix = None;
-                    state.started_at = Some(Instant::now());
-                    state.tunnel_error = None;
-                }
-                ServerRuntimeStatus::Offline | ServerRuntimeStatus::Crashed => {
-                    state.started_at = None;
-                    state.tunnel_url = None;
-                }
-                _ => {}
+        Event::ServerStatus(update) if update.server_id == id => match update.status {
+            ServerRuntimeStatus::Starting => {
+                state.error = None;
+                state.port_fix = None;
+                state.started_at = Some(Instant::now());
+                state.tunnel_error = None;
             }
-        }
+            ServerRuntimeStatus::Offline | ServerRuntimeStatus::Crashed => {
+                state.started_at = None;
+                state.tunnel_url = None;
+            }
+            _ => {}
+        },
         Event::NgrokUrlChanged(info) if info.server_id == id => {
             state.tunnel_url = Some(info.public_url.clone());
             state.tunnel_error = None;

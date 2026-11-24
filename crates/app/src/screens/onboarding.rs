@@ -1,14 +1,16 @@
 use std::path::PathBuf;
 
-use monolith_theme::token::BUTTON_LG;
-use monolith_theme::widget::sized;
 use iced::widget::{column, container, row, text};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
 use monolith_core::java_manager::{discover_installed_javas, InstalledJava};
 use monolith_core::server_transfer::import_server;
 use monolith_core::types::CreateServerResult;
-use monolith_theme::token::{CORAL, GROUND, SPACE_2, SPACE_3, SPACE_5, TEXT_2XL, TEXT_MD, TEXT_SM, SPACE_6};
+use monolith_theme::token::BUTTON_LG;
+use monolith_theme::token::{
+    CORAL, GROUND, SPACE_2, SPACE_3, SPACE_5, SPACE_6, TEXT_2XL, TEXT_MD, TEXT_SM,
+};
+use monolith_theme::widget::sized;
 use monolith_theme::{icon_colored, style, Icon, UI_MEDIUM, UI_SEMIBOLD};
 
 use crate::ctx::{Ctx, Route};
@@ -92,7 +94,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
                 .font(UI_SEMIBOLD)
         ]
         .spacing(SPACE_2)
-        .align_y(Alignment::Center), BUTTON_LG)
+        .align_y(Alignment::Center),
+        BUTTON_LG,
+    )
     .style(style::primary)
     .on_press_maybe((!state.importing).then_some(Message::Create));
 
@@ -101,7 +105,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
         "Importing",
         state.importing,
         Some(Message::Import),
-        style::secondary, BUTTON_LG);
+        style::secondary,
+        BUTTON_LG,
+    );
 
     let mut content = column![
         column![
@@ -123,11 +129,8 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     }
     let hint = java_hint(state).unwrap_or_else(|| "Checking for Java on this PC".into());
     content = content.push(
-        container(text(hint)
-            .size(TEXT_SM)
-            .font(UI_MEDIUM)
-            .style(style::faint))
-        .padding(iced::Padding::ZERO.top(SPACE_6 - SPACE_5)),
+        container(text(hint).size(TEXT_SM).font(UI_MEDIUM).style(style::faint))
+            .padding(iced::Padding::ZERO.top(SPACE_6 - SPACE_5)),
     );
 
     container(content).center(Length::Fill).into()
@@ -139,7 +142,11 @@ fn unique_name(ctx: &Ctx, path: &std::path::Path) -> String {
         .map(|stem| stem.to_string_lossy().trim().to_string())
         .filter(|stem| !stem.is_empty())
         .unwrap_or_else(|| "Imported server".into());
-    let taken = |name: &str| ctx.servers.iter().any(|s| s.name.eq_ignore_ascii_case(name));
+    let taken = |name: &str| {
+        ctx.servers
+            .iter()
+            .any(|s| s.name.eq_ignore_ascii_case(name))
+    };
     if !taken(&stem) {
         return stem;
     }

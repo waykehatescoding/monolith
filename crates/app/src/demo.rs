@@ -320,7 +320,11 @@ fn seed_survival(path: &Path) -> io::Result<()> {
     ] {
         let at = ago(seconds_ago);
         let stamp = DateTime::<Utc>::from(at).format("%Y-%m-%dT%H-%M-%S-000Z");
-        backup(&backups.join(format!("backup-{stamp}-{label}.zip")), at, megabytes)?;
+        backup(
+            &backups.join(format!("backup-{stamp}-{label}.zip")),
+            at,
+            megabytes,
+        )?;
     }
 
     seed_analytics(path, 12, 7)
@@ -340,7 +344,9 @@ fn seed_analytics(path: &Path, peak: u32, current: u32) -> io::Result<()> {
     let mut timeline = Vec::new();
     for index in (0..samples).rev() {
         let at: DateTime<Local> = ago(u64::from(index) * 600).into();
-        let stamp = at.with_timezone(&Utc).to_rfc3339_opts(SecondsFormat::Millis, true);
+        let stamp = at
+            .with_timezone(&Utc)
+            .to_rfc3339_opts(SecondsFormat::Millis, true);
         let step = f64::from(samples - index);
         let hour = f64::from(at.hour()) + f64::from(at.minute()) / 60.0;
         let daily = 0.5 + 0.5 * ((hour - 15.0) / 24.0 * std::f64::consts::TAU).cos();
@@ -449,7 +455,10 @@ fn console_line(seconds_ago: u64, level: &str, message: &str) -> ConsoleLine {
             format!("\x1b[31m[{clock} ERROR]: {message}\x1b[m"),
             ConsoleLineType::Stderr,
         ),
-        _ => (format!("[{clock} {level}]: {message}"), ConsoleLineType::Stdout),
+        _ => (
+            format!("[{clock} {level}]: {message}"),
+            ConsoleLineType::Stdout,
+        ),
     };
     ConsoleLine {
         timestamp: iso(at),
@@ -511,11 +520,17 @@ const SURVIVAL_LIVE: &[(&str, &str)] = &[
     ("INFO", "<BuilderBee> the bridge needs more lanterns"),
     ("INFO", "RedstoneRob was slain by Zombie"),
     ("INFO", "<RedstoneRob> ok that one was my fault"),
-    ("INFO", "Notch_fan has made the advancement [Cover Me with Diamonds]"),
+    (
+        "INFO",
+        "Notch_fan has made the advancement [Cover Me with Diamonds]",
+    ),
     ("INFO", "<CreeperSlayer> who wants to raid the stronghold"),
     ("INFO", "Saving the game (this may take a moment!)"),
     ("INFO", "Saved the game"),
-    ("WARN", "Can't keep up! Is the server overloaded? Running 1840ms or 36 ticks behind"),
+    (
+        "WARN",
+        "Can't keep up! Is the server overloaded? Running 1840ms or 36 ticks behind",
+    ),
 ];
 
 const CREATIVE_LOG: &[(u64, &str, &str)] = &[
@@ -536,7 +551,11 @@ const CREATIVE_LIVE: &[(&str, &str)] = &[
 ];
 
 const MODDED_LOG: &[(u64, &str, &str)] = &[
-    (13, "INFO", "Loading Minecraft 1.21.1 with Fabric Loader 0.16.9"),
+    (
+        13,
+        "INFO",
+        "Loading Minecraft 1.21.1 with Fabric Loader 0.16.9",
+    ),
     (12, "INFO", "Loading 41 mods:"),
     (11, "INFO", "\t- fabric-api 0.105.0+1.21.1"),
     (11, "INFO", "\t- lithium 0.13.1"),
@@ -550,20 +569,47 @@ const MODDED_LIVE: &[(&str, &str)] = &[
     ("INFO", "Reloading ResourceManager: vanilla, fabric"),
     ("INFO", "Loaded 1290 recipes"),
     ("INFO", "Preparing level \"world\""),
-    ("INFO", "Preparing start region for dimension minecraft:overworld"),
+    (
+        "INFO",
+        "Preparing start region for dimension minecraft:overworld",
+    ),
 ];
 
 const SKYBLOCK_LOG: &[(u64, &str, &str)] = &[
     (2700, "INFO", "Starting minecraft server version 1.21.4"),
-    (2690, "INFO", "This server is running Purpur version 1.21.4-2306-HEAD@d4e5f6a"),
+    (
+        2690,
+        "INFO",
+        "This server is running Purpur version 1.21.4-2306-HEAD@d4e5f6a",
+    ),
     (2682, "INFO", "Done (7.318s)! For help, type \"help\""),
-    (1805, "WARN", "Can't keep up! Is the server overloaded? Running 5120ms or 102 ticks behind"),
-    (1790, "WARN", "Can't keep up! Is the server overloaded? Running 8344ms or 166 ticks behind"),
+    (
+        1805,
+        "WARN",
+        "Can't keep up! Is the server overloaded? Running 5120ms or 102 ticks behind",
+    ),
+    (
+        1790,
+        "WARN",
+        "Can't keep up! Is the server overloaded? Running 8344ms or 166 ticks behind",
+    ),
     (1783, "ERROR", "Encountered an unexpected exception"),
     (1783, "RAW", "java.lang.OutOfMemoryError: Java heap space"),
-    (1783, "RAW", "\tat java.base/java.util.Arrays.copyOf(Arrays.java:3481)"),
-    (1783, "RAW", "\tat net.minecraft.world.level.chunk.storage.RegionFile.read(RegionFile.java:204)"),
-    (1783, "RAW", "\tat net.minecraft.server.level.ChunkMap.lambda$scheduleChunkLoad$22(ChunkMap.java:611)"),
+    (
+        1783,
+        "RAW",
+        "\tat java.base/java.util.Arrays.copyOf(Arrays.java:3481)",
+    ),
+    (
+        1783,
+        "RAW",
+        "\tat net.minecraft.world.level.chunk.storage.RegionFile.read(RegionFile.java:204)",
+    ),
+    (
+        1783,
+        "RAW",
+        "\tat net.minecraft.server.level.ChunkMap.lambda$scheduleChunkLoad$22(ChunkMap.java:611)",
+    ),
     (1782, "INFO", "Stopping server"),
     (1781, "INFO", "Saving players"),
 ];

@@ -13,9 +13,12 @@ fn root() -> PathBuf {
 }
 
 fn load(name: &str) -> Result<Tree> {
-    let data = fs::read(root().join("assets/brand").join(name)).with_context(|| name.to_string())?;
+    let data =
+        fs::read(root().join("assets/brand").join(name)).with_context(|| name.to_string())?;
     let mut options = Options::default();
-    options.fontdb_mut().load_fonts_dir(root().join("assets/fonts"));
+    options
+        .fontdb_mut()
+        .load_fonts_dir(root().join("assets/fonts"));
     Ok(Tree::from_data(&data, &options)?)
 }
 
@@ -52,7 +55,9 @@ fn assets() -> Result<()> {
     let mut dir = ico::IconDir::new(ico::ResourceType::Icon);
     for size in [16, 24, 32, 48, 64, 128, 256] {
         let rgba = icon(&mark, size)?.take();
-        dir.add_entry(ico::IconDirEntry::encode(&ico::IconImage::from_rgba_data(size, size, rgba))?);
+        dir.add_entry(ico::IconDirEntry::encode(&ico::IconImage::from_rgba_data(
+            size, size, rgba,
+        ))?);
     }
     dir.write(File::create(root().join("assets/brand/icon.ico"))?)?;
 

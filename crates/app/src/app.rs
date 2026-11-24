@@ -11,13 +11,15 @@ use monolith_theme::token::*;
 use monolith_theme::widget::{drag_region, resize_grips, server_icon, window_controls};
 use monolith_theme::{app_icon, icon, style, Icon, UI_MEDIUM, UI_SEMIBOLD};
 
-use crate::ctx::{status_color, Action, Confirm, Ctx, Route, SettingsPage, Tab, ToastKind, WindowAction};
+use crate::ctx::{
+    status_color, Action, Confirm, Ctx, Route, SettingsPage, Tab, ToastKind, WindowAction,
+};
+use crate::demo;
 use crate::screens::server::{
     analytics, backups, console, content, files, overview, players, settings as server_settings,
 };
 use crate::screens::settings::{defaults, general, sharing};
 use crate::screens::{self, assistant, create, onboarding, palette};
-use crate::demo;
 use crate::ui::confirm;
 use crate::ui::overlay::modal;
 use crate::ui::shortcuts::{self, Shortcut};
@@ -157,7 +159,9 @@ impl App {
 
     fn handle(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Screen(message) => self.screens.update(message, &self.ctx).map(Message::Screen),
+            Message::Screen(message) => {
+                self.screens.update(message, &self.ctx).map(Message::Screen)
+            }
             Message::Core(event) => self.on_core_event(event),
             Message::ServersLoaded(servers) => self.on_servers_loaded(servers),
             Message::PreferencesLoaded(preferences) => {
@@ -192,7 +196,11 @@ impl App {
                 self.confirm_busy = false;
                 match result {
                     Ok(text) => {
-                        let text = if text.is_empty() { "Done".to_string() } else { text };
+                        let text = if text.is_empty() {
+                            "Done".to_string()
+                        } else {
+                            text
+                        };
                         self.ctx.success(text);
                         self.ctx.refresh_servers();
                     }
@@ -370,8 +378,12 @@ impl App {
             || matches!(
                 (previous, route),
                 (
-                    Route::Settings(SettingsPage::General | SettingsPage::Updates | SettingsPage::About),
-                    Route::Settings(SettingsPage::General | SettingsPage::Updates | SettingsPage::About)
+                    Route::Settings(
+                        SettingsPage::General | SettingsPage::Updates | SettingsPage::About
+                    ),
+                    Route::Settings(
+                        SettingsPage::General | SettingsPage::Updates | SettingsPage::About
+                    )
                 )
             );
         if same_page {
@@ -454,11 +466,15 @@ impl App {
                 }
             }
             Event::ServerStats(stats) => {
-                self.ctx.stats.insert(stats.server_id.clone(), stats.clone());
+                self.ctx
+                    .stats
+                    .insert(stats.server_id.clone(), stats.clone());
             }
             _ => {}
         }
-        self.screens.on_event(&event, &self.ctx).map(Message::Screen)
+        self.screens
+            .on_event(&event, &self.ctx)
+            .map(Message::Screen)
     }
 
     fn on_servers_loaded(&mut self, servers: Vec<ServerRecord>) -> Task<Message> {
@@ -521,9 +537,9 @@ impl App {
                 Task::batch([header, body])
             }
             Route::Create => create::on_show(&mut screens.create, ctx).map(S::Create),
-            Route::Settings(SettingsPage::General | SettingsPage::Updates | SettingsPage::About) => {
-                general::on_show(&mut screens.general, ctx).map(S::General)
-            }
+            Route::Settings(
+                SettingsPage::General | SettingsPage::Updates | SettingsPage::About,
+            ) => general::on_show(&mut screens.general, ctx).map(S::General),
             Route::Settings(SettingsPage::Defaults) => {
                 defaults::on_show(&mut screens.defaults, ctx).map(S::Defaults)
             }

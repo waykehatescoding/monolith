@@ -52,11 +52,8 @@ fn main() -> iced::Result {
         decorations: false,
         exit_on_close_request: false,
         position: window::Position::Centered,
-        icon: window::icon::from_file_data(
-            include_bytes!("../../../assets/brand/icon.png"),
-            None,
-        )
-        .ok(),
+        icon: window::icon::from_file_data(include_bytes!("../../../assets/brand/icon.png"), None)
+            .ok(),
         ..window::Settings::default()
     };
 

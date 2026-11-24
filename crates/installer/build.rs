@@ -29,7 +29,9 @@ fn main() {
     println!("cargo:rerun-if-changed=setup.rc");
     println!("cargo:rerun-if-changed=setup.manifest");
     if icon.exists() {
-        if let Err(error) = embed_resource::compile("setup.rc", embed_resource::NONE).manifest_required() {
+        if let Err(error) =
+            embed_resource::compile("setup.rc", embed_resource::NONE).manifest_required()
+        {
             panic!("failed to embed setup resources: {error}");
         }
     }

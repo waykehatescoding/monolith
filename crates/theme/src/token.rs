@@ -57,16 +57,31 @@ pub struct ButtonSize {
 
 pub const BUTTON_SM: ButtonSize = ButtonSize {
     height: 28.0,
-    padding: Padding { top: 4.0, right: 10.0, bottom: 4.0, left: 10.0 },
+    padding: Padding {
+        top: 4.0,
+        right: 10.0,
+        bottom: 4.0,
+        left: 10.0,
+    },
     icon: 14.0,
 };
 pub const BUTTON_MD: ButtonSize = ButtonSize {
     height: 34.0,
-    padding: Padding { top: 8.0, right: 16.0, bottom: 8.0, left: 16.0 },
+    padding: Padding {
+        top: 8.0,
+        right: 16.0,
+        bottom: 8.0,
+        left: 16.0,
+    },
     icon: 16.0,
 };
 pub const BUTTON_LG: ButtonSize = ButtonSize {
     height: 40.0,
-    padding: Padding { top: 10.0, right: 20.0, bottom: 10.0, left: 20.0 },
+    padding: Padding {
+        top: 10.0,
+        right: 20.0,
+        bottom: 10.0,
+        left: 20.0,
+    },
     icon: 16.0,
 };

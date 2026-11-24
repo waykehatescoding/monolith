@@ -1,18 +1,19 @@
-use iced::widget::{button, column, container, progress_bar, row, scrollable, text, toggler, Space};
-use monolith_theme::token::{BUTTON_MD};
-use monolith_theme::widget::{sized};
+use iced::widget::{
+    button, column, container, progress_bar, row, scrollable, text, toggler, Space,
+};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
 use monolith_core::types::{
     AppPreferencesUpdate, DownloadUpdateResult, SuccessResult, UpdateCheckResult,
 };
 use monolith_core::{app_preferences, paths, update_checker};
-use monolith_theme::{icon, Icon, UI_MEDIUM, UI_SEMIBOLD};
 use monolith_theme::style;
+use monolith_theme::token::BUTTON_MD;
 use monolith_theme::token::{
-    CORAL, SPACE_1, SPACE_2, SPACE_3, SPACE_5, SPACE_7, TEXT_LG, TEXT_MD, TEXT_SM,
-    TEXT_XL,
+    CORAL, SPACE_1, SPACE_2, SPACE_3, SPACE_5, SPACE_7, TEXT_LG, TEXT_MD, TEXT_SM, TEXT_XL,
 };
+use monolith_theme::widget::sized;
+use monolith_theme::{icon, Icon, UI_MEDIUM, UI_SEMIBOLD};
 use serde::{Deserialize, Serialize};
 use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
@@ -72,7 +73,9 @@ async fn save_local(local: Local) -> Result<(), String> {
 }
 
 fn run_key() -> std::io::Result<RegKey> {
-    RegKey::predef(HKEY_CURRENT_USER).create_subkey(RUN_KEY).map(|(key, _)| key)
+    RegKey::predef(HKEY_CURRENT_USER)
+        .create_subkey(RUN_KEY)
+        .map(|(key, _)| key)
 }
 
 async fn read_autostart() -> bool {
@@ -251,7 +254,8 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             if !result.success {
                 state.phase = Phase::Ready;
                 state.error = Some(result.error.unwrap_or_else(|| {
-                    "The installer could not start. Try again, or download the update again.".to_string()
+                    "The installer could not start. Try again, or download the update again."
+                        .to_string()
                 }));
             }
             Task::none()
@@ -280,7 +284,11 @@ fn subheading(label: &str) -> Element<'_, Message> {
 }
 
 fn group_label(label: &str) -> Element<'_, Message> {
-    text(label).size(TEXT_SM).font(UI_SEMIBOLD).style(style::muted).into()
+    text(label)
+        .size(TEXT_SM)
+        .font(UI_SEMIBOLD)
+        .style(style::muted)
+        .into()
 }
 
 fn setting<'a>(

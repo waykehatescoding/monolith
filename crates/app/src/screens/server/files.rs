@@ -1,6 +1,6 @@
-use std::path::{Path, PathBuf};
 use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::widget::{sized, sized_icon};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use iced::widget::{
@@ -12,8 +12,8 @@ use monolith_core::safety::{resolve_safe_server_path, sanitize_download_file_nam
 use monolith_core::server_files;
 use monolith_core::types::{FileEntry, SuccessResult};
 use monolith_theme::token::{
-    AMBER, CORAL, FOCUS_WIDTH, GROUND, INK, INK_SECONDARY, INK_TERTIARY, MOSS, RADIUS_PANEL, SPACE_1, SPACE_2,
-    SPACE_3, SPACE_4, SPACE_5, SPACE_6, TEXT_LG, TEXT_MD, TEXT_SM, TEXT_XS,
+    AMBER, CORAL, FOCUS_WIDTH, GROUND, INK, INK_SECONDARY, INK_TERTIARY, MOSS, RADIUS_PANEL,
+    SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, TEXT_LG, TEXT_MD, TEXT_SM, TEXT_XS,
 };
 use monolith_theme::{icon_colored, style, Icon, MONO, UI_MEDIUM};
 
@@ -147,8 +147,27 @@ fn is_binary_name(name: &str) -> bool {
     };
     matches!(
         ext.to_ascii_lowercase().as_str(),
-        "jar" | "zip" | "gz" | "7z" | "rar" | "png" | "jpg" | "jpeg" | "gif" | "ico" | "dat"
-            | "dat_old" | "mca" | "mcr" | "nbt" | "db" | "sqlite" | "exe" | "dll" | "class" | "bin"
+        "jar"
+            | "zip"
+            | "gz"
+            | "7z"
+            | "rar"
+            | "png"
+            | "jpg"
+            | "jpeg"
+            | "gif"
+            | "ico"
+            | "dat"
+            | "dat_old"
+            | "mca"
+            | "mcr"
+            | "nbt"
+            | "db"
+            | "sqlite"
+            | "exe"
+            | "dll"
+            | "class"
+            | "bin"
     )
 }
 
@@ -483,16 +502,16 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Message> {
         Ok(name) => name,
         Err(_) => {
             if let Some(prompt) = &mut state.prompt {
-                prompt.error = Some(
-                    "That name can't be used. Enter a name without slashes.".into(),
-                );
+                prompt.error =
+                    Some("That name can't be used. Enter a name without slashes.".into());
             }
             return Task::none();
         }
     };
     if name.ends_with(['.', ' ']) || name.contains(['<', '>', ':', '"', '|', '?', '*']) {
         if let Some(prompt) = &mut state.prompt {
-            prompt.error = Some("Names can't contain < > : \" | ? * or end with a dot or space.".into());
+            prompt.error =
+                Some("Names can't contain < > : \" | ? * or end with a dot or space.".into());
         }
         return Task::none();
     }
@@ -507,7 +526,9 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Message> {
         .any(|entry| entry.name.eq_ignore_ascii_case(&name));
     if exists {
         if let Some(prompt) = &mut state.prompt {
-            prompt.error = Some(format!("{name} already exists here. Choose a different name."));
+            prompt.error = Some(format!(
+                "{name} already exists here. Choose a different name."
+            ));
         }
         return Task::none();
     }
@@ -545,10 +566,10 @@ fn submit(state: &mut State, ctx: &Ctx) -> Task<Message> {
                         .map(|()| format!("Created folder {name}"))
                         .map_err(|e| format!("Couldn't create {name}. {e}"))
                 }
-                PromptKind::Rename(_) => check(
-                    server_files::rename_server_file(id, source, name.clone()).await,
-                )
-                .map(|()| format!("Renamed to {name}")),
+                PromptKind::Rename(_) => {
+                    check(server_files::rename_server_file(id, source, name.clone()).await)
+                        .map(|()| format!("Renamed to {name}"))
+                }
                 PromptKind::Duplicate(_) => {
                     check(server_files::copy_server_file(id, source, name.clone()).await)
                         .map(|()| format!("Created {name}"))
@@ -636,10 +657,7 @@ fn notice_view<'a>(message: &'a str) -> Element<'a, Message> {
         .into()
 }
 
-fn hint<'a>(
-    content: impl Into<Element<'a, Message>>,
-    label: &'a str,
-) -> Element<'a, Message> {
+fn hint<'a>(content: impl Into<Element<'a, Message>>, label: &'a str) -> Element<'a, Message> {
     tooltip(
         content,
         container(text(label).size(TEXT_XS).color(INK))
@@ -782,7 +800,9 @@ fn prompt_view<'a>(prompt: &'a Prompt, busy: bool) -> Element<'a, Message> {
                 "Working",
                 busy,
                 Some(Message::PromptSubmit),
-                style::primary, BUTTON_MD),
+                style::primary,
+                BUTTON_MD
+            ),
             sized(text("Cancel").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                 .style(style::ghost)
                 .on_press_maybe((!busy).then_some(Message::PromptCancel)),
@@ -810,9 +830,16 @@ fn list_view<'a>(state: &'a State) -> Element<'a, Message> {
     if let Some(error) = &state.failure {
         return container(
             column![
-                text("Couldn't read this folder").size(TEXT_LG).font(UI_MEDIUM),
+                text("Couldn't read this folder")
+                    .size(TEXT_LG)
+                    .font(UI_MEDIUM),
                 text(error).size(TEXT_MD).color(CORAL),
-                labeled(Icon::Restart, "Try again", Some(Message::Retry), style::primary),
+                labeled(
+                    Icon::Restart,
+                    "Try again",
+                    Some(Message::Retry),
+                    style::primary
+                ),
             ]
             .spacing(SPACE_3)
             .align_x(Alignment::Center),
@@ -845,7 +872,9 @@ fn list_view<'a>(state: &'a State) -> Element<'a, Message> {
     let rows = state
         .entries
         .iter()
-        .fold(column![].spacing(2), |list, entry| list.push(entry_row(entry)));
+        .fold(column![].spacing(2), |list, entry| {
+            list.push(entry_row(entry))
+        });
     scrollable(rows)
         .style(style::scroll)
         .height(Length::Fill)
@@ -855,7 +884,11 @@ fn list_view<'a>(state: &'a State) -> Element<'a, Message> {
 fn entry_row<'a>(entry: &'a FileEntry) -> Element<'a, Message> {
     let name = entry.name.as_str();
     let (glyph, opens, size) = if entry.is_directory {
-        (Icon::Folder, Message::Enter(entry.name.clone()), String::new())
+        (
+            Icon::Folder,
+            Message::Enter(entry.name.clone()),
+            String::new(),
+        )
     } else {
         (
             Icon::File,
@@ -868,7 +901,11 @@ fn entry_row<'a>(entry: &'a FileEntry) -> Element<'a, Message> {
             icon_colored(
                 glyph,
                 16.0,
-                if entry.is_directory { MOSS } else { INK_SECONDARY }
+                if entry.is_directory {
+                    MOSS
+                } else {
+                    INK_SECONDARY
+                }
             ),
             text(name).size(TEXT_MD).color(INK).width(Length::Fill),
             text(size)
@@ -926,7 +963,12 @@ fn editor_view<'a>(editor: &'a Editor) -> Element<'a, Message> {
     };
 
     let mut header = row![
-        icon_action(Icon::ChevronLeft, "Back to files", Message::Close, style::icon_button),
+        icon_action(
+            Icon::ChevronLeft,
+            "Back to files",
+            Message::Close,
+            style::icon_button
+        ),
         text(editor.name.as_str()).size(TEXT_LG).font(UI_MEDIUM),
         status,
         Space::new().width(Length::Fill),
@@ -936,23 +978,32 @@ fn editor_view<'a>(editor: &'a Editor) -> Element<'a, Message> {
 
     if editor.leaving {
         header = header
-            .push(text("Save before leaving?").size(TEXT_MD).style(style::muted))
+            .push(
+                text("Save before leaving?")
+                    .size(TEXT_MD)
+                    .style(style::muted),
+            )
             .push(
                 sized(text("Discard").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
                     .style(style::danger)
                     .on_press(Message::Discard),
             )
             .push(
-                sized(text("Keep editing").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
-                    .style(style::secondary)
-                    .on_press(Message::KeepEditing),
+                sized(
+                    text("Keep editing").size(TEXT_MD).font(UI_MEDIUM),
+                    BUTTON_MD,
+                )
+                .style(style::secondary)
+                .on_press(Message::KeepEditing),
             )
             .push(crate::ui::busy_button(
                 "Save and close",
                 "Saving",
                 editor.saving,
                 Some(Message::Save),
-                style::primary, BUTTON_MD));
+                style::primary,
+                BUTTON_MD,
+            ));
     } else {
         header = header
             .push(labeled(
@@ -966,7 +1017,9 @@ fn editor_view<'a>(editor: &'a Editor) -> Element<'a, Message> {
                 "Saving",
                 editor.saving,
                 editor.dirty.then_some(Message::Save),
-                style::primary, BUTTON_MD));
+                style::primary,
+                BUTTON_MD,
+            ));
     }
 
     let area = text_editor(&editor.content)

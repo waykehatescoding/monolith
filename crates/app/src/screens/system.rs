@@ -155,9 +155,7 @@ fn toggle(ctx: &Ctx, server_id: &str) -> Task<Message> {
         ServerRuntimeStatus::Online | ServerRuntimeStatus::Starting => {
             Task::perform(stop_server(id), Message::Toggled)
         }
-        ServerRuntimeStatus::Offline
-            | ServerRuntimeStatus::Idle
-            | ServerRuntimeStatus::Crashed => {
+        ServerRuntimeStatus::Offline | ServerRuntimeStatus::Idle | ServerRuntimeStatus::Crashed => {
             Task::perform(start_server(id), Message::Toggled)
         }
         ServerRuntimeStatus::Stopping => Task::none(),
@@ -187,7 +185,13 @@ fn refresh_menu(state: &mut State, ctx: &Ctx) {
     let current: Vec<MenuEntry> = ctx
         .servers
         .iter()
-        .map(|server| (server.id.clone(), server.name.clone(), ctx.status(&server.id)))
+        .map(|server| {
+            (
+                server.id.clone(),
+                server.name.clone(),
+                ctx.status(&server.id),
+            )
+        })
         .collect();
     if current == state.shown {
         return;
@@ -219,9 +223,7 @@ fn build_menu(servers: &[MenuEntry]) -> Result<Menu, tray_icon::menu::Error> {
             ServerRuntimeStatus::Stopping => (format!("Stopping {name}"), false),
             ServerRuntimeStatus::Offline
             | ServerRuntimeStatus::Idle
-            | ServerRuntimeStatus::Crashed => {
-                (format!("Start {name}"), true)
-            }
+            | ServerRuntimeStatus::Crashed => (format!("Start {name}"), true),
         };
         menu.append(&MenuItem::with_id(
             format!("toggle:{id}"),

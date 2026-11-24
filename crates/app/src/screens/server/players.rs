@@ -1,15 +1,15 @@
 use std::time::Duration;
 
-use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
-use monolith_theme::widget::sized;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, toggler, Space};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
 use monolith_core::types::{ServerProperty, ServerRuntimeStatus, SuccessResult};
 use monolith_core::{server_props, server_runner};
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::token::{
     SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, TEXT_LG, TEXT_MD, TEXT_SM,
 };
+use monolith_theme::widget::sized;
 use monolith_theme::{style, UI_MEDIUM, UI_SEMIBOLD};
 
 use crate::ctx::{Confirm, Ctx};
@@ -208,7 +208,11 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 ctx.error("Player names are 3 to 16 letters, numbers or underscores.");
                 return Task::none();
             }
-            if state.whitelist.iter().any(|n| n.eq_ignore_ascii_case(&name)) {
+            if state
+                .whitelist
+                .iter()
+                .any(|n| n.eq_ignore_ascii_case(&name))
+            {
                 ctx.info(format!("{name} is already on the whitelist."));
                 return Task::none();
             }
@@ -376,7 +380,8 @@ fn online_section<'a>(ctx: &'a Ctx, id: &str, busy: bool) -> Element<'a, Message
         names
             .iter()
             .fold(column![].spacing(SPACE_1), |list, name| {
-                let op = Message::Command(format!("op {name}"), format!("{name} is now an operator."));
+                let op =
+                    Message::Command(format!("op {name}"), format!("{name} is now an operator."));
                 let deop = Message::Command(
                     format!("deop {name}"),
                     format!("{name} is no longer an operator."),
@@ -386,7 +391,12 @@ fn online_section<'a>(ctx: &'a Ctx, id: &str, busy: bool) -> Element<'a, Message
                     vec![
                         action("Make operator", op, style::ghost, !busy),
                         action("Remove operator", deop, style::ghost, !busy),
-                        action("Kick", Message::ConfirmKick(name.clone()), style::ghost, true),
+                        action(
+                            "Kick",
+                            Message::ConfirmKick(name.clone()),
+                            style::ghost,
+                            true,
+                        ),
                         action(
                             "Ban",
                             Message::ConfirmBan(name.clone(), String::new()),
@@ -526,7 +536,10 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         return Space::new().into();
     };
     if !state.loaded {
-        return text("Loading players").size(TEXT_MD).style(style::muted).into();
+        return text("Loading players")
+            .size(TEXT_MD)
+            .style(style::muted)
+            .into();
     }
     scrollable(
         column![

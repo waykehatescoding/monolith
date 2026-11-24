@@ -148,7 +148,10 @@ mod tests {
         let base = scratch("empty");
         let root = base.join("Monolith");
         install_files(&root, &PAYLOAD).unwrap();
-        let empty = Payload { exe: b"", plugin: b"" };
+        let empty = Payload {
+            exe: b"",
+            plugin: b"",
+        };
 
         assert!(install_files(&root, &empty).is_err());
 

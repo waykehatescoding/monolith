@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
-use monolith_theme::widget::{sized, sized_icon};
 use iced::widget::{
     button, column, container, row, scrollable, text, text_input, toggler, tooltip,
 };
@@ -14,10 +12,12 @@ use monolith_core::types::{
     AiAssistantAction, AiAssistantActionKind, AiAssistantActionResult, AiAssistantChatResult,
     AiAssistantProvider, PublicAiAssistantSettings,
 };
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::token::{
     CORAL, MOSS, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, TEXT_LG, TEXT_MD, TEXT_SM, TEXT_XL,
     TEXT_XS,
 };
+use monolith_theme::widget::{sized, sized_icon};
 use monolith_theme::{icon, icon_colored, style, Icon, MONO, UI_MEDIUM, UI_SEMIBOLD};
 use serde_json::json;
 
@@ -63,7 +63,9 @@ fn valid_base_url(url: &str) -> Result<(), &'static str> {
     };
     match rest.split(['/', ':']).next().unwrap_or_default() {
         "localhost" | "127.0.0.1" | "[::1]" => Ok(()),
-        _ => Err("Plain http:// is only allowed for localhost. Use https:// so your key is encrypted."),
+        _ => Err(
+            "Plain http:// is only allowed for localhost. Use https:// so your key is encrypted.",
+        ),
     }
 }
 
@@ -478,7 +480,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(settings) = &state.settings else {
         return column![
             title,
-            text("Loading assistant settings").size(TEXT_MD).style(style::muted),
+            text("Loading assistant settings")
+                .size(TEXT_MD)
+                .style(style::muted),
         ]
         .spacing(SPACE_3)
         .into();
@@ -541,7 +545,9 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
         "Saving",
         state.saving,
         Some(Message::Save),
-        style::primary, BUTTON_MD));
+        style::primary,
+        BUTTON_MD,
+    ));
 
     let usable = settings.has_api_key || !needs_key(settings.provider);
     let mut switch = toggler(settings.enabled).size(20).style(style::switch);
@@ -584,9 +590,12 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     }
     body = body.push(toggle);
 
-    scrollable(body.max_width(520).padding(Padding::default().bottom(SPACE_5)))
-        .style(style::scroll)
-        .into()
+    scrollable(
+        body.max_width(520)
+            .padding(Padding::default().bottom(SPACE_5)),
+    )
+    .style(style::scroll)
+    .into()
 }
 
 fn diff_summary(current: &FileState, new: &str) -> String {
@@ -638,15 +647,17 @@ fn describe(card: &Card) -> (String, Element<'_, Message>) {
             content,
         } => (
             format!("Overwrite {relative_path} in the server folder"),
-            container(column![
-                text(diff_summary(&card.current, content))
-                    .size(TEXT_SM)
-                    .style(style::muted),
-                scrollable(text(content.as_str()).size(TEXT_SM).font(MONO))
-                    .style(style::scroll)
-                    .height(Length::Shrink),
-            ]
-            .spacing(SPACE_2))
+            container(
+                column![
+                    text(diff_summary(&card.current, content))
+                        .size(TEXT_SM)
+                        .style(style::muted),
+                    scrollable(text(content.as_str()).size(TEXT_SM).font(MONO))
+                        .style(style::scroll)
+                        .height(Length::Shrink),
+                ]
+                .spacing(SPACE_2),
+            )
             .max_height(240)
             .into(),
         ),
@@ -835,7 +846,8 @@ pub fn panel<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             .spacing(SPACE_2)
             .into()
         } else {
-            let mut entries = column(state.entries.iter().map(|entry| bubble(entry, ctx))).spacing(SPACE_4);
+            let mut entries =
+                column(state.entries.iter().map(|entry| bubble(entry, ctx))).spacing(SPACE_4);
             if state.sending {
                 entries = entries.push(text("Thinking").size(TEXT_MD).style(style::muted));
             }

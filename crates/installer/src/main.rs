@@ -318,7 +318,11 @@ impl Setup {
             }
             Message::Picked(Some(folder)) => {
                 let named = folder.file_name().is_some_and(|name| name == "Monolith");
-                let target = if named { folder } else { folder.join("Monolith") };
+                let target = if named {
+                    folder
+                } else {
+                    folder.join("Monolith")
+                };
                 self.root = target.display().to_string();
             }
             Message::Picked(None) => {}
@@ -459,9 +463,14 @@ impl Setup {
         let label = self.plan.get(self.current).map_or("", |step| step.label());
         let content = column![
             heading(title),
-            progress_bar(0.0..=1.0, value).girth(6).style(style::progress),
+            progress_bar(0.0..=1.0, value)
+                .girth(6)
+                .style(style::progress),
             text(label).size(TEXT_MD).style(style::muted),
-            text(self.root.trim()).size(TEXT_SM).font(MONO).style(style::muted),
+            text(self.root.trim())
+                .size(TEXT_SM)
+                .font(MONO)
+                .style(style::muted),
         ]
         .spacing(SPACE_3);
         page(content, Space::new().into())
@@ -474,7 +483,10 @@ impl Setup {
                 text("Find it in the Start menu, or open it now.")
                     .size(TEXT_LG)
                     .style(style::muted),
-                text(self.root.trim()).size(TEXT_SM).font(MONO).style(style::muted),
+                text(self.root.trim())
+                    .size(TEXT_SM)
+                    .font(MONO)
+                    .style(style::muted),
             ]
             .spacing(SPACE_3),
             actions(

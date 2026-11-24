@@ -117,10 +117,20 @@ fn items(query: &str, ctx: &Ctx) -> Vec<Item> {
             ServerRuntimeStatus::Offline
             | ServerRuntimeStatus::Idle
             | ServerRuntimeStatus::Crashed => {
-                all.push(action(Icon::Play, format!("Start {name}"), None, Command::Start));
+                all.push(action(
+                    Icon::Play,
+                    format!("Start {name}"),
+                    None,
+                    Command::Start,
+                ));
             }
             ServerRuntimeStatus::Online => {
-                all.push(action(Icon::Stop, format!("Stop {name}"), None, Command::Stop));
+                all.push(action(
+                    Icon::Stop,
+                    format!("Stop {name}"),
+                    None,
+                    Command::Stop,
+                ));
                 all.push(action(
                     Icon::Restart,
                     format!("Restart {name}"),
@@ -129,7 +139,12 @@ fn items(query: &str, ctx: &Ctx) -> Vec<Item> {
                 ));
             }
             ServerRuntimeStatus::Starting => {
-                all.push(action(Icon::Stop, format!("Stop {name}"), None, Command::Stop));
+                all.push(action(
+                    Icon::Stop,
+                    format!("Stop {name}"),
+                    None,
+                    Command::Stop,
+                ));
             }
             ServerRuntimeStatus::Stopping => {}
         }
@@ -397,8 +412,13 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
                     list = list.push(Space::new().height(SPACE_2));
                 }
                 list = list.push(
-                    container(text(group).size(TEXT_XS).font(UI_MEDIUM).style(style::muted))
-                        .padding([SPACE_1, SPACE_3]),
+                    container(
+                        text(group)
+                            .size(TEXT_XS)
+                            .font(UI_MEDIUM)
+                            .style(style::muted),
+                    )
+                    .padding([SPACE_1, SPACE_3]),
                 );
             }
             list = list.push(row_view(item, index, index == state.selected));
@@ -424,10 +444,10 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         rule::horizontal(1).style(style::hairline),
         footer
     ])
-        .width(560)
-        .height(440)
-        .style(style::overlay)
-        .into()
+    .width(560)
+    .height(440)
+    .style(style::overlay)
+    .into()
 }
 
 pub fn on_event(_state: &mut State, _event: &Event, _ctx: &Ctx) -> Task<Message> {

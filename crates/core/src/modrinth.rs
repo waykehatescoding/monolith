@@ -14,7 +14,7 @@ const MODRINTH_API_BASE: &str = "https://api.modrinth.com/v2";
 const USER_AGENT: &str = "Monolith/1.0 (Modrinth API)";
 const CACHE_TTL: Duration = Duration::from_secs(5 * 60);
 
-static CLIENT: Lazy<reqwest::Client> = Lazy::new(reqwest::Client::new);
+pub(crate) static CLIENT: Lazy<reqwest::Client> = Lazy::new(reqwest::Client::new);
 static VERSION_CACHE: Lazy<Mutex<HashMap<String, (Instant, Vec<Value>)>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
 static PROJECT_CACHE: Lazy<Mutex<HashMap<String, (Instant, ModrinthProjectDetails)>>> =
@@ -71,7 +71,7 @@ fn coerce_number(value: Option<&Value>, default: f64) -> f64 {
     }
 }
 
-fn published_millis(version: &Value) -> i64 {
+pub(crate) fn published_millis(version: &Value) -> i64 {
     version
         .get("date_published")
         .and_then(Value::as_str)
@@ -222,7 +222,7 @@ async fn fetch_modrinth_project(project_id: &str) -> Result<ModrinthProjectDetai
     Ok(detail)
 }
 
-fn version_option(version: &Value) -> ModrinthVersionOption {
+pub(crate) fn version_option(version: &Value) -> ModrinthVersionOption {
     let files = version.get("files").and_then(Value::as_array);
     let file = files.and_then(|files| {
         files
@@ -278,6 +278,7 @@ fn build_facets(
     let project_type = match params.project_type {
         crate::types::ModrinthProjectType::Plugin => "plugin",
         crate::types::ModrinthProjectType::Mod => "mod",
+        crate::types::ModrinthProjectType::Modpack => "modpack",
     };
     let mut facets = vec![vec![format!("project_type:{project_type}")]];
     if let Some(version) = params.game_version.as_deref().filter(|v| !v.is_empty()) {
@@ -412,6 +413,8 @@ pub async fn search_modrinth(mut params: Value) -> Result<ModrinthSearchResult, 
                 follows: hit.follows,
                 author: hit.author,
                 date_modified: hit.date_modified,
+                external: false,
+                page_url: None,
             })
             .collect(),
         total_hits: data.total_hits,

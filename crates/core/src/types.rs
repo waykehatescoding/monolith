@@ -515,6 +515,17 @@ pub struct MinecraftVersion {
 pub enum ModrinthProjectType {
     Plugin,
     Mod,
+    Modpack,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContentSource {
+    #[default]
+    Modrinth,
+    Hangar,
+    Spigot,
+    CurseForge,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -562,6 +573,10 @@ pub struct ModrinthSearchHit {
     pub follows: u64,
     pub author: String,
     pub date_modified: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub external: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -574,6 +589,8 @@ pub struct ModrinthSearchResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModrinthInstallRequest {
+    #[serde(default)]
+    pub source: ContentSource,
     pub project_id: String,
     pub project_type: ModrinthProjectType,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -616,6 +633,10 @@ pub struct ModrinthVersionOption {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModrinthInstallEntry {
+    #[serde(default)]
+    pub source: ContentSource,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disabled: bool,
     pub project_id: String,
     pub version_id: String,
     pub file_name: String,
@@ -638,6 +659,8 @@ pub struct ModrinthInstallResult {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub entry: Option<ModrinthInstallEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependencies: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

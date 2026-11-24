@@ -292,6 +292,8 @@ fn seed_survival(path: &Path) -> io::Result<()> {
     for plugin in &PLUGINS {
         fs::write(plugins.join(plugin.file), b"PK")?;
         manifest.push(ModrinthInstallEntry {
+            source: Default::default(),
+            disabled: false,
             project_id: plugin.project_id.into(),
             version_id: format!("demo-{}", plugin.slug),
             file_name: plugin.file.into(),

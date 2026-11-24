@@ -1,15 +1,16 @@
-use crate::modrinth::{fetch_modrinth_versions, get_modrinth_project};
+use crate::content_sources::versions;
+use crate::modrinth::get_modrinth_project;
 use crate::safety::{is_path_within, sanitize_download_file_name};
 use crate::server_store;
 use crate::types::{
-    ModrinthInstallEntry, ModrinthInstallRequest, ModrinthInstallResult, ModrinthProjectType,
-    ModrinthUpdateResult, SuccessResult,
+    ContentSource, ModrinthInstallEntry, ModrinthInstallRequest, ModrinthInstallResult,
+    ModrinthProjectType, ModrinthUpdateResult, SuccessResult,
 };
 use futures_util::{future::BoxFuture, StreamExt};
 use once_cell::sync::Lazy;
 use serde_json::Value;
 use sha1::{Digest, Sha1};
-use sha2::Sha512;
+use sha2::{Sha256, Sha512};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
@@ -66,8 +67,24 @@ async fn write_manifest(
 fn install_folder(project_type: ModrinthProjectType) -> &'static str {
     match project_type {
         ModrinthProjectType::Plugin => "plugins",
-        ModrinthProjectType::Mod => "mods",
+        ModrinthProjectType::Mod | ModrinthProjectType::Modpack => "mods",
     }
+}
+
+fn is_entry(entry: &ModrinthInstallEntry, source: ContentSource, project_id: &str) -> bool {
+    entry.source == source && entry.project_id == project_id
+}
+
+fn disabled_name(file_name: &str) -> String {
+    format!("{file_name}.disabled")
+}
+
+async fn remove_installed(install_dir: &Path, file_name: &str) -> Result<(), String> {
+    let (_, path) = safe_install_path(install_dir, file_name)?;
+    let (_, disabled) = safe_install_path(install_dir, &disabled_name(file_name))?;
+    let _ = tokio::fs::remove_file(path).await;
+    let _ = tokio::fs::remove_file(disabled).await;
+    Ok(())
 }
 
 fn safe_install_path(install_dir: &Path, file_name: &str) -> Result<(String, PathBuf), String> {
@@ -92,23 +109,28 @@ fn primary_file(version: &Value) -> Option<&Value> {
 }
 
 async fn latest_version(
+    source: ContentSource,
     project_id: &str,
     loader: Option<&str>,
     game_version: Option<&str>,
 ) -> Result<Value, String> {
-    fetch_modrinth_versions(project_id, loader, game_version)
+    versions(source, project_id, loader, game_version)
         .await?
         .into_iter()
         .next()
         .ok_or_else(|| "No compatible versions found".to_string())
 }
 
-async fn version_by_id(project_id: &str, version_id: &str) -> Result<Value, String> {
-    fetch_modrinth_versions(project_id, None, None)
+async fn version_by_id(
+    source: ContentSource,
+    project_id: &str,
+    version_id: &str,
+) -> Result<Value, String> {
+    versions(source, project_id, None, None)
         .await?
         .into_iter()
         .find(|v| str_field(v, "id") == Some(version_id))
-        .ok_or_else(|| "Selected version was not found on Modrinth".to_string())
+        .ok_or_else(|| format!("Selected version was not found on {}", source.label()))
 }
 
 fn hash_matches(actual: &str, expected: Option<&str>) -> bool {
@@ -121,7 +143,11 @@ fn hash_matches(actual: &str, expected: Option<&str>) -> bool {
     }
 }
 
-async fn download_file(url: &str, file_path: &Path, hashes: Option<&Value>) -> Result<(), String> {
+pub(crate) async fn download_file(
+    url: &str,
+    file_path: &Path,
+    hashes: Option<&Value>,
+) -> Result<(), String> {
     let parsed = url::Url::parse(url).map_err(|_| "Invalid URL".to_string())?;
     if parsed.scheme() != "https" {
         return Err("Downloads must use HTTPS".into());
@@ -134,7 +160,15 @@ async fn download_file(url: &str, file_path: &Path, hashes: Option<&Value>) -> R
 
     let expected_sha1 = hashes.and_then(|h| str_field(h, "sha1"));
     let expected_sha512 = hashes.and_then(|h| str_field(h, "sha512"));
-    let result = stream_to_file(res, file_path, expected_sha1, expected_sha512).await;
+    let expected_sha256 = hashes.and_then(|h| str_field(h, "sha256"));
+    let result = stream_to_file(
+        res,
+        file_path,
+        expected_sha1,
+        expected_sha512,
+        expected_sha256,
+    )
+    .await;
     if result.is_err() {
         let _ = tokio::fs::remove_file(file_path).await;
     }
@@ -146,12 +180,19 @@ async fn stream_to_file(
     file_path: &Path,
     expected_sha1: Option<&str>,
     expected_sha512: Option<&str>,
+    expected_sha256: Option<&str>,
 ) -> Result<(), String> {
+    if let Some(dir) = file_path.parent() {
+        tokio::fs::create_dir_all(dir)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     let mut file = tokio::fs::File::create(file_path)
         .await
         .map_err(|e| e.to_string())?;
     let mut sha1 = expected_sha1.map(|_| Sha1::new());
     let mut sha512 = expected_sha512.map(|_| Sha512::new());
+    let mut sha256 = expected_sha256.map(|_| Sha256::new());
 
     let mut stream = res.bytes_stream();
     while let Some(chunk) = stream.next().await {
@@ -160,6 +201,9 @@ async fn stream_to_file(
             h.update(&chunk);
         }
         if let Some(h) = sha512.as_mut() {
+            h.update(&chunk);
+        }
+        if let Some(h) = sha256.as_mut() {
             h.update(&chunk);
         }
         file.write_all(&chunk).await.map_err(|e| e.to_string())?;
@@ -171,7 +215,13 @@ async fn stream_to_file(
     let sha512_hex = sha512
         .map(|h| hex::encode(h.finalize()))
         .unwrap_or_default();
-    if !hash_matches(&sha1_hex, expected_sha1) || !hash_matches(&sha512_hex, expected_sha512) {
+    let sha256_hex = sha256
+        .map(|h| hex::encode(h.finalize()))
+        .unwrap_or_default();
+    if !hash_matches(&sha1_hex, expected_sha1)
+        || !hash_matches(&sha512_hex, expected_sha512)
+        || !hash_matches(&sha256_hex, expected_sha256)
+    {
         return Err("Download integrity check failed".into());
     }
     Ok(())
@@ -185,11 +235,15 @@ fn install_version<'a>(
     visited: &'a mut HashSet<String>,
 ) -> BoxFuture<'a, Result<ModrinthInstallEntry, String>> {
     Box::pin(async move {
+        let source = request.source;
         if visited.contains(&request.project_id) {
-            return match entries.iter().find(|e| e.project_id == request.project_id) {
+            return match entries
+                .iter()
+                .find(|e| is_entry(e, source, &request.project_id))
+            {
                 Some(existing) => Ok(existing.clone()),
                 None => Err(format!(
-                    "Circular Modrinth dependency detected for {}",
+                    "Circular dependency detected for {}",
                     request.project_id
                 )),
             };
@@ -211,15 +265,16 @@ fn install_version<'a>(
             else {
                 continue;
             };
-            if entries.iter().any(|e| e.project_id == dep_project_id) {
+            if entries.iter().any(|e| is_entry(e, source, dep_project_id)) {
                 continue;
             }
 
             let dep_version_id = str_field(&dependency, "version_id").filter(|s| !s.is_empty());
             let dep_version = match dep_version_id {
-                Some(id) => version_by_id(dep_project_id, id).await?,
+                Some(id) => version_by_id(source, dep_project_id, id).await?,
                 None => {
                     latest_version(
+                        source,
                         dep_project_id,
                         request.loader.as_deref(),
                         request.game_version.as_deref(),
@@ -227,9 +282,15 @@ fn install_version<'a>(
                     .await?
                 }
             };
-            let dep_project = get_modrinth_project(dep_project_id.to_string()).await.ok();
+            let dep_project = match source {
+                ContentSource::Modrinth => {
+                    get_modrinth_project(dep_project_id.to_string()).await.ok()
+                }
+                _ => None,
+            };
 
             let dep_request = ModrinthInstallRequest {
+                source,
                 project_id: dep_project_id.to_string(),
                 project_type: request.project_type,
                 loader: request.loader.clone(),
@@ -239,6 +300,7 @@ fn install_version<'a>(
                     dep_project
                         .as_ref()
                         .map(|p| p.title.clone())
+                        .or_else(|| str_field(&dependency, "title").map(String::from))
                         .unwrap_or_else(|| dep_project_id.to_string()),
                 ),
                 slug: dep_project.as_ref().map(|p| p.slug.clone()),
@@ -255,17 +317,29 @@ fn install_version<'a>(
             .await
             .map_err(|e| e.to_string())?;
 
-        if let Some(existing) = entries.iter().find(|e| e.project_id == request.project_id) {
-            let (_, existing_path) = safe_install_path(&install_dir, &existing.file_name)?;
-            let _ = tokio::fs::remove_file(existing_path).await;
+        let existing = entries
+            .iter()
+            .find(|e| is_entry(e, source, &request.project_id))
+            .cloned();
+        if let Some(existing) = &existing {
+            remove_installed(&install_dir, &existing.file_name).await?;
         }
 
         let file_name = str_field(file, "filename").unwrap_or_default();
         let (safe_name, file_path) = safe_install_path(&install_dir, file_name)?;
         let url = str_field(file, "url").unwrap_or_default();
         download_file(url, &file_path, file.get("hashes")).await?;
+        let disabled = existing.is_some_and(|e| e.disabled);
+        if disabled {
+            let (_, target) = safe_install_path(&install_dir, &disabled_name(&safe_name))?;
+            tokio::fs::rename(&file_path, target)
+                .await
+                .map_err(|e| e.to_string())?;
+        }
 
         let entry = ModrinthInstallEntry {
+            source,
+            disabled,
             project_id: request.project_id.clone(),
             version_id: str_field(&version, "id").unwrap_or_default().to_string(),
             file_name: safe_name,
@@ -283,7 +357,7 @@ fn install_version<'a>(
 
         match entries
             .iter()
-            .position(|e| e.project_id == request.project_id)
+            .position(|e| is_entry(e, source, &request.project_id))
         {
             Some(index) => entries[index] = entry.clone(),
             None => entries.push(entry.clone()),
@@ -304,11 +378,20 @@ pub async fn list_installs_at(
         let Ok(name) = sanitize_download_file_name(&entry.file_name) else {
             continue;
         };
-        let path = server_path
-            .join(install_folder(entry.project_type))
-            .join(name);
-        if tokio::fs::metadata(path).await.is_ok() {
-            filtered.push(entry);
+        let dir = server_path.join(install_folder(entry.project_type));
+        if tokio::fs::metadata(dir.join(&name)).await.is_ok() {
+            filtered.push(ModrinthInstallEntry {
+                disabled: false,
+                ..entry
+            });
+        } else if tokio::fs::metadata(dir.join(disabled_name(&name)))
+            .await
+            .is_ok()
+        {
+            filtered.push(ModrinthInstallEntry {
+                disabled: true,
+                ..entry
+            });
         }
     }
     filtered
@@ -317,11 +400,13 @@ pub async fn list_installs_at(
 async fn try_install(
     server_path: &Path,
     request: ModrinthInstallRequest,
-) -> Result<ModrinthInstallEntry, String> {
+) -> Result<(ModrinthInstallEntry, Vec<String>), String> {
+    let source = request.source;
     let version = match request.version_id.as_deref().filter(|s| !s.is_empty()) {
-        Some(id) => version_by_id(&request.project_id, id).await?,
+        Some(id) => version_by_id(source, &request.project_id, id).await?,
         None => {
             latest_version(
+                source,
                 &request.project_id,
                 request.loader.as_deref(),
                 request.game_version.as_deref(),
@@ -330,6 +415,8 @@ async fn try_install(
         }
     };
     let mut entries = read_manifest(server_path).await;
+    let before = entries.len();
+    let project_id = request.project_id.clone();
     let entry = install_version(
         server_path,
         request,
@@ -339,7 +426,12 @@ async fn try_install(
     )
     .await?;
     write_manifest(server_path, &entries).await?;
-    Ok(entry)
+    let dependencies = entries[before.min(entries.len())..]
+        .iter()
+        .filter(|e| !is_entry(e, source, &project_id))
+        .map(|e| e.title.clone())
+        .collect();
+    Ok((entry, dependencies))
 }
 
 pub async fn install_at(
@@ -347,15 +439,16 @@ pub async fn install_at(
     request: ModrinthInstallRequest,
 ) -> ModrinthInstallResult {
     match try_install(server_path, request).await {
-        Ok(entry) => ModrinthInstallResult {
+        Ok((entry, dependencies)) => ModrinthInstallResult {
             success: true,
             entry: Some(entry),
+            dependencies,
             error: None,
         },
         Err(error) => ModrinthInstallResult {
             success: false,
-            entry: None,
             error: Some(error),
+            ..Default::default()
         },
     }
 }
@@ -367,7 +460,7 @@ async fn try_update(
     let mut entries = read_manifest(server_path).await;
     let Some(existing) = entries
         .iter()
-        .find(|e| e.project_id == request.project_id)
+        .find(|e| is_entry(e, request.source, &request.project_id))
         .cloned()
     else {
         return Ok(ModrinthUpdateResult {
@@ -384,6 +477,7 @@ async fn try_update(
         .clone()
         .or_else(|| existing.game_version.clone());
     let version = latest_version(
+        request.source,
         &request.project_id,
         loader.as_deref(),
         game_version.as_deref(),
@@ -438,24 +532,31 @@ pub async fn update_at(
     }
 }
 
-async fn try_remove(server_path: &Path, project_id: &str) -> Result<(), String> {
+async fn try_remove(
+    server_path: &Path,
+    source: ContentSource,
+    project_id: &str,
+) -> Result<(), String> {
     let entries = read_manifest(server_path).await;
-    let Some(entry) = entries.iter().find(|e| e.project_id == project_id) else {
+    let Some(entry) = entries.iter().find(|e| is_entry(e, source, project_id)) else {
         return Ok(());
     };
     let install_dir = server_path.join(install_folder(entry.project_type));
-    let (_, file_path) = safe_install_path(&install_dir, &entry.file_name)?;
-    let _ = tokio::fs::remove_file(file_path).await;
+    remove_installed(&install_dir, &entry.file_name).await?;
 
     let remaining: Vec<_> = entries
         .into_iter()
-        .filter(|e| e.project_id != project_id)
+        .filter(|e| !is_entry(e, source, project_id))
         .collect();
     write_manifest(server_path, &remaining).await
 }
 
-pub async fn remove_at(server_path: &Path, project_id: &str) -> SuccessResult {
-    match try_remove(server_path, project_id).await {
+pub async fn remove_at(
+    server_path: &Path,
+    source: ContentSource,
+    project_id: &str,
+) -> SuccessResult {
+    match try_remove(server_path, source, project_id).await {
         Ok(()) => SuccessResult::ok(),
         Err(error) => SuccessResult::err(error),
     }
@@ -485,8 +586,8 @@ pub async fn install_modrinth_project(
         Some(path) => install_at(&path, request).await,
         None => ModrinthInstallResult {
             success: false,
-            entry: None,
             error: Some("Server not found".into()),
+            ..Default::default()
         },
     }
 }
@@ -506,9 +607,13 @@ pub async fn update_modrinth_install(
     }
 }
 
-pub async fn remove_modrinth_install(server_id: String, project_id: String) -> SuccessResult {
+pub async fn remove_modrinth_install(
+    server_id: String,
+    source: ContentSource,
+    project_id: String,
+) -> SuccessResult {
     match server_path_of(server_id).await {
-        Some(path) => remove_at(&path, &project_id).await,
+        Some(path) => remove_at(&path, source, &project_id).await,
         None => SuccessResult::err("Server not found"),
     }
 }

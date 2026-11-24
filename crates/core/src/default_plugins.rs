@@ -162,6 +162,7 @@ pub async fn install_default_plugins(
                 ..
             } => {
                 let request = ModrinthInstallRequest {
+                    source: Default::default(),
                     project_id,
                     project_type: ModrinthProjectType::Plugin,
                     loader: Some("paper".into()),

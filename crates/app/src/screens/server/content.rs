@@ -9,16 +9,19 @@ use iced::widget::{
     button, column, container, pick_list, row, rule, scrollable, text, text_input, Space,
 };
 use iced::{Alignment, Element, Length, Subscription, Task};
+use monolith_core::content_sources::{
+    curseforge_api_key, list_versions, loader_for, search as search_source, sources_for,
+};
 use monolith_core::events::Event;
-use monolith_core::modrinth::{get_modrinth_project, list_modrinth_versions, search_modrinth};
+use monolith_core::modrinth::get_modrinth_project;
 use monolith_core::modrinth_installs::{
     install_modrinth_project, list_modrinth_installs, remove_modrinth_install,
     update_modrinth_install,
 };
 use monolith_core::types::{
-    ModrinthInstallEntry, ModrinthInstallRequest, ModrinthProjectDetails, ModrinthProjectType,
-    ModrinthSearchHit, ModrinthSearchParams, ModrinthSearchResult, ModrinthSort,
-    ModrinthVersionOption, ModrinthVersionType,
+    ContentSource, ModrinthInstallEntry, ModrinthInstallRequest, ModrinthProjectDetails,
+    ModrinthProjectType, ModrinthSearchHit, ModrinthSearchParams, ModrinthSearchResult,
+    ModrinthSort, ModrinthVersionOption, ModrinthVersionType,
 };
 use monolith_theme::style;
 use monolith_theme::token::*;
@@ -29,7 +32,17 @@ use crate::demo;
 
 const PAGE_SIZE: u32 = 20;
 const DRAWER_WIDTH: f32 = 360.0;
-const ICON_HOST: &str = "https://cdn.modrinth.com/";
+const ICON_HOSTS: [&str; 3] = [
+    "https://cdn.modrinth.com/",
+    "https://hangarcdn.papermc.io/",
+    "https://media.forgecdn.net/",
+];
+const LINK_HOSTS: [&str; 4] = [
+    "https://modrinth.com/",
+    "https://hangar.papermc.io/",
+    "https://www.spigotmc.org/",
+    "https://www.curseforge.com/",
+];
 const MAX_ICON_BYTES: usize = 2 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -115,6 +128,8 @@ struct Detail {
 pub struct State {
     server_id: Option<String>,
     pane: Pane,
+    source: ContentSource,
+    curseforge: bool,
     installed: Option<Vec<ModrinthInstallEntry>>,
     latest: HashMap<String, String>,
     busy: HashSet<String>,
@@ -133,14 +148,16 @@ pub struct State {
 #[derive(Debug, Clone)]
 pub enum Message {
     ShowPane(Pane),
+    Source(ContentSource),
+    CurseForgeKey(bool),
     Loaded(String, Vec<ModrinthInstallEntry>),
     Latest(String, HashMap<String, String>),
-    Update(String),
+    Update(ContentSource, String),
     Updated(String, String, String, Result<bool, String>),
     UpdateAll,
     UpdatedAll(String, usize, Option<String>),
     AskRemove(Option<String>),
-    Remove(String, String),
+    Remove(ContentSource, String, String),
     Removed(String, String, String, Result<(), String>),
     Query(String),
     Sort(SortChoice),
@@ -154,7 +171,7 @@ pub enum Message {
     Versions(String, Result<Vec<VersionChoice>, String>),
     PickVersion(VersionChoice),
     Install(Box<ModrinthSearchHit>),
-    Installed(String, String, String, Result<(), String>),
+    Installed(String, String, String, Result<Vec<String>, String>),
     Icon(String, Option<Handle>),
     OpenLink(String),
 }
@@ -170,12 +187,13 @@ impl Target {
     fn noun(&self) -> &'static str {
         match self.project_type {
             ModrinthProjectType::Plugin => "plugins",
-            ModrinthProjectType::Mod => "mods",
+            ModrinthProjectType::Mod | ModrinthProjectType::Modpack => "mods",
         }
     }
 
-    fn request(&self, project_id: &str) -> ModrinthInstallRequest {
+    fn request(&self, source: ContentSource, project_id: &str) -> ModrinthInstallRequest {
         ModrinthInstallRequest {
+            source,
             project_id: project_id.to_string(),
             project_type: self.project_type,
             loader: Some(self.loader.to_string()),
@@ -190,14 +208,7 @@ impl Target {
 
 fn target(ctx: &Ctx) -> Option<Target> {
     let server = ctx.selected_server()?;
-    let (project_type, loader) = match server.framework.as_str() {
-        "Paper" | "Purpur" => (ModrinthProjectType::Plugin, "paper"),
-        "Fabric" => (ModrinthProjectType::Mod, "fabric"),
-        "Quilt" => (ModrinthProjectType::Mod, "quilt"),
-        "Forge" => (ModrinthProjectType::Mod, "forge"),
-        "NeoForge" => (ModrinthProjectType::Mod, "neoforge"),
-        _ => return None,
-    };
+    let (project_type, loader) = loader_for(&server.framework)?;
     Some(Target {
         server_id: server.id.clone(),
         project_type,
@@ -222,12 +233,15 @@ fn is_safe_path(path: &str) -> bool {
 
 fn icon_source(project_id: &str, icon_url: Option<&str>) -> Option<String> {
     let direct = icon_url.filter(|url| {
-        url.strip_prefix(ICON_HOST)
-            .is_some_and(|path| !path.is_empty() && is_safe_path(path))
+        let path = url.split('?').next().unwrap_or_default();
+        ICON_HOSTS.iter().any(|host| {
+            path.strip_prefix(host)
+                .is_some_and(|path| !path.is_empty() && is_safe_path(path))
+        })
     });
     match direct {
         Some(url) => Some(url.to_string()),
-        None => is_slug(project_id).then(|| format!("{ICON_HOST}data/{project_id}/icon.png")),
+        None => is_slug(project_id).then(|| format!("{}data/{project_id}/icon.png", ICON_HOSTS[0])),
     }
 }
 
@@ -255,8 +269,9 @@ async fn fetch_icon(url: String) -> Option<Handle> {
 }
 
 fn safe_link(url: &str) -> bool {
-    url.strip_prefix("https://modrinth.com/")
-        .is_some_and(is_safe_path)
+    LINK_HOSTS
+        .iter()
+        .any(|host| url.strip_prefix(host).is_some_and(is_safe_path))
 }
 
 fn load_icons(state: &mut State, sources: Vec<Option<String>>) -> Task<Message> {
@@ -298,6 +313,7 @@ fn check_latest(target: &Target, entries: &[ModrinthInstallEntry]) -> Task<Messa
         .iter()
         .map(|e| {
             (
+                e.source,
                 e.project_id.clone(),
                 e.loader.clone(),
                 e.game_version.clone(),
@@ -307,8 +323,9 @@ fn check_latest(target: &Target, entries: &[ModrinthInstallEntry]) -> Task<Messa
     Task::perform(
         async move {
             let mut latest = HashMap::new();
-            for (project_id, entry_loader, entry_version) in projects {
-                let versions = list_modrinth_versions(
+            for (source, project_id, entry_loader, entry_version) in projects {
+                let versions = list_versions(
+                    source,
                     project_id.clone(),
                     Some(entry_loader.unwrap_or_else(|| loader.clone())),
                     Some(entry_version.unwrap_or_else(|| game_version.clone())),
@@ -337,13 +354,9 @@ fn search(state: &mut State, target: &Target, page: u32) -> Task<Message> {
         offset: Some(page * PAGE_SIZE),
         sort: Some(state.sort.sort()),
     };
-    Task::perform(
-        async move {
-            let value = serde_json::to_value(params).map_err(|e| e.to_string())?;
-            search_modrinth(value).await
-        },
-        move |result| Message::Searched(seq, page, result),
-    )
+    Task::perform(search_source(state.source, params), move |result| {
+        Message::Searched(seq, page, result)
+    })
 }
 
 fn outdated(state: &State) -> Vec<&ModrinthInstallEntry> {
@@ -365,7 +378,7 @@ fn is_installed(state: &State, project_id: &str) -> bool {
         .installed
         .iter()
         .flatten()
-        .any(|e| e.project_id == project_id)
+        .any(|e| e.source == state.source && e.project_id == project_id)
 }
 
 fn installed_title(state: &State, project_id: &str) -> String {
@@ -397,6 +410,24 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             Task::none()
         }
+        Message::Source(source) => {
+            if state.source == source {
+                return Task::none();
+            }
+            state.source = source;
+            state.results = None;
+            state.detail = None;
+            search(state, &target, 0)
+        }
+        Message::CurseForgeKey(present) => {
+            state.curseforge = present;
+            if !present && state.source == ContentSource::CurseForge {
+                state.source = ContentSource::Modrinth;
+                state.results = None;
+                state.detail = None;
+            }
+            Task::none()
+        }
         Message::Loaded(id, entries) => {
             if id != target.server_id {
                 return Task::none();
@@ -416,12 +447,12 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             Task::none()
         }
-        Message::Update(project_id) => {
+        Message::Update(source, project_id) => {
             let title = installed_title(state, &project_id);
             state.busy.insert(project_id.clone());
             let id = target.server_id.clone();
             Task::perform(
-                update_modrinth_install(id.clone(), target.request(&project_id)),
+                update_modrinth_install(id.clone(), target.request(source, &project_id)),
                 move |result| {
                     let outcome = if result.success {
                         Ok(result.updated)
@@ -444,7 +475,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::UpdateAll => {
             let requests: Vec<_> = outdated(state)
                 .iter()
-                .map(|e| target.request(&e.project_id))
+                .map(|e| target.request(e.source, &e.project_id))
                 .collect();
             if requests.is_empty() {
                 return Task::none();
@@ -486,12 +517,12 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.confirming = project_id;
             Task::none()
         }
-        Message::Remove(project_id, title) => {
+        Message::Remove(source, project_id, title) => {
             state.confirming = None;
             state.busy.insert(project_id.clone());
             let id = target.server_id.clone();
             Task::perform(
-                remove_modrinth_install(id.clone(), project_id.clone()),
+                remove_modrinth_install(id.clone(), source, project_id.clone()),
                 move |result| {
                     let outcome = if result.success {
                         Ok(())
@@ -566,18 +597,28 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             let versions_id = project_id.clone();
             let loader = Some(target.loader.to_string());
             let game_version = Some(target.game_version.clone());
+            let source = state.source;
+            let external = hit.external;
             state.detail = Some(Detail {
                 hit: *hit,
                 project: None,
-                versions: None,
+                versions: external.then(|| Ok(Vec::new())),
                 selected: None,
             });
-            Task::batch([
+            let project = if source == ContentSource::Modrinth {
                 Task::perform(get_modrinth_project(project_id.clone()), move |result| {
                     Message::Project(project_id.clone(), result)
-                }),
+                })
+            } else {
+                Task::none()
+            };
+            if external {
+                return project;
+            }
+            Task::batch([
+                project,
                 Task::perform(
-                    list_modrinth_versions(versions_id.clone(), loader, game_version),
+                    list_versions(source, versions_id.clone(), loader, game_version),
                     move |result| {
                         Message::Versions(
                             versions_id.clone(),
@@ -634,13 +675,13 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 title: Some(hit.title.clone()),
                 slug: Some(hit.slug.clone()),
                 icon_url: hit.icon_url.clone(),
-                ..target.request(&hit.project_id)
+                ..target.request(state.source, &hit.project_id)
             };
             Task::perform(
                 install_modrinth_project(id.clone(), request),
                 move |result| {
                     let outcome = if result.success {
-                        Ok(())
+                        Ok(result.dependencies)
                     } else {
                         Err(result
                             .error
@@ -658,7 +699,13 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::Installed(id, project_id, title, result) => {
             state.busy.remove(&project_id);
             match result {
-                Ok(()) => ctx.success(format!("{title} installed. Restart the server to load it.")),
+                Ok(dependencies) if dependencies.is_empty() => {
+                    ctx.success(format!("{title} installed. Restart the server to load it."))
+                }
+                Ok(dependencies) => ctx.success(format!(
+                    "{title} installed with {}. Restart the server to load them.",
+                    dependencies.join(", ")
+                )),
                 Err(error) => ctx.error(format!("Couldn't install {title}. {error}")),
             }
             reload(&id)
@@ -765,7 +812,7 @@ fn tabs(state: &State) -> Element<'_, Message> {
     };
     let mut bar = row![
         pane(format!("Installed ({installed_count})"), Pane::Installed),
-        pane("Browse Modrinth".to_string(), Pane::Browse),
+        pane("Browse".to_string(), Pane::Browse),
     ]
     .spacing(SPACE_1)
     .align_y(Alignment::Center);
@@ -798,18 +845,15 @@ fn installed_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message>
                     .size(TEXT_LG)
                     .font(UI_SEMIBOLD),
                 text(format!(
-                    "Find {} on Modrinth. Restart the server after installing to load them.",
+                    "Browse to find {}. Restart the server after installing to load them.",
                     target.noun()
                 ))
                 .size(TEXT_MD)
                 .style(style::muted),
                 Space::new().height(SPACE_2),
-                sized(
-                    text("Browse Modrinth").size(TEXT_MD).font(UI_MEDIUM),
-                    BUTTON_MD
-                )
-                .style(style::primary)
-                .on_press(Message::ShowPane(Pane::Browse)),
+                sized(text("Browse").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
+                    .style(style::primary)
+                    .on_press(Message::ShowPane(Pane::Browse)),
             ]
             .spacing(SPACE_2)
             .align_x(Alignment::Center),
@@ -832,7 +876,12 @@ fn installed_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message>
             mod_icon(state, &entry.project_id, entry.icon_url.as_deref(), 36.0),
             column![
                 text(&entry.title).size(TEXT_MD).font(UI_MEDIUM),
-                text(&entry.file_name).size(TEXT_SM).style(style::muted),
+                text(match entry.source {
+                    ContentSource::Modrinth => entry.file_name.clone(),
+                    source => format!("{} from {}", entry.file_name, source.label()),
+                })
+                .size(TEXT_SM)
+                .style(style::muted),
             ]
             .spacing(2)
             .width(Length::Fill),
@@ -849,7 +898,10 @@ fn installed_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message>
                 .push(
                     sized(text("Update").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
                         .style(style::secondary)
-                        .on_press_maybe((!busy).then(|| Message::Update(entry.project_id.clone()))),
+                        .on_press_maybe(
+                            (!busy)
+                                .then(|| Message::Update(entry.source, entry.project_id.clone())),
+                        ),
                 );
         } else if busy {
             line = line.push(text("Working").size(TEXT_SM).style(style::muted));
@@ -865,7 +917,11 @@ fn installed_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message>
                     sized(text("Delete file").size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
                         .style(style::danger)
                         .on_press_maybe((!busy).then(|| {
-                            Message::Remove(entry.project_id.clone(), entry.title.clone())
+                            Message::Remove(
+                                entry.source,
+                                entry.project_id.clone(),
+                                entry.title.clone(),
+                            )
                         })),
                 );
         } else {
@@ -896,9 +952,7 @@ fn result_row<'a>(state: &'a State, hit: &'a ModrinthSearchHit) -> Element<'a, M
         column![
             row![
                 text(&hit.title).size(TEXT_MD).font(UI_MEDIUM),
-                text(format!("by {}", hit.author))
-                    .size(TEXT_SM)
-                    .style(style::muted),
+                text(by(hit)).size(TEXT_SM).style(style::muted),
             ]
             .spacing(SPACE_2)
             .align_y(Alignment::Center),
@@ -920,6 +974,19 @@ fn result_row<'a>(state: &'a State, hit: &'a ModrinthSearchHit) -> Element<'a, M
         container(text("Installed").size(TEXT_SM).style(style::muted))
             .center_x(Length::Fixed(84.0))
             .into()
+    } else if hit.external {
+        sized(
+            text("Open")
+                .size(TEXT_SM)
+                .font(UI_MEDIUM)
+                .width(Length::Fill)
+                .align_x(Alignment::Center),
+            BUTTON_SM,
+        )
+        .width(Length::Fixed(84.0))
+        .style(style::secondary)
+        .on_press_maybe(hit.page_url.clone().map(Message::OpenLink))
+        .into()
     } else {
         sized(
             text(if installing { "Installing" } else { "Install" })
@@ -946,6 +1013,30 @@ fn result_row<'a>(state: &'a State, hit: &'a ModrinthSearchHit) -> Element<'a, M
     .spacing(SPACE_2)
     .align_y(Alignment::Center)
     .into()
+}
+
+fn by(hit: &ModrinthSearchHit) -> String {
+    if hit.author.is_empty() {
+        String::new()
+    } else {
+        format!("by {}", hit.author)
+    }
+}
+
+fn source_tabs(state: &State, target: &Target) -> Option<Element<'static, Message>> {
+    let sources = sources_for(target.project_type, state.curseforge);
+    (sources.len() > 1).then(|| {
+        let mut bar = row![].spacing(SPACE_1);
+        for source in sources {
+            bar = bar.push(
+                button(text(source.label()).size(TEXT_SM).font(UI_MEDIUM))
+                    .padding([SPACE_1, SPACE_3])
+                    .style(style::tab(state.source == source))
+                    .on_press(Message::Source(source)),
+            );
+        }
+        bar.into()
+    })
 }
 
 fn browse_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message> {
@@ -977,7 +1068,12 @@ fn browse_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message> {
             .center(Length::Fill)
             .into(),
         Some(Err(error)) => centered_message(
-            "Couldn't reach Modrinth",
+            match state.source {
+                ContentSource::Modrinth => "Couldn't reach Modrinth",
+                ContentSource::Hangar => "Couldn't reach Hangar",
+                ContentSource::Spigot => "Couldn't reach Spigot",
+                ContentSource::CurseForge => "Couldn't reach CurseForge",
+            },
             if error.is_empty() {
                 "Check your internet connection, then try again."
             } else {
@@ -1027,7 +1123,10 @@ fn browse_view<'a>(state: &'a State, target: &Target) -> Element<'a, Message> {
         }
     };
 
-    let list_side = column![controls, body]
+    let list_side = column![]
+        .push(source_tabs(state, target))
+        .push(controls)
+        .push(body)
         .spacing(SPACE_4)
         .width(Length::Fill)
         .height(Length::Fill);
@@ -1046,9 +1145,7 @@ fn drawer<'a>(state: &'a State, detail: &'a Detail) -> Element<'a, Message> {
         mod_icon(state, &hit.project_id, hit.icon_url.as_deref(), 48.0),
         column![
             text(&hit.title).size(TEXT_LG).font(UI_SEMIBOLD),
-            text(format!("by {}", hit.author))
-                .size(TEXT_SM)
-                .style(style::muted),
+            text(by(hit)).size(TEXT_SM).style(style::muted),
         ]
         .spacing(2)
         .width(Length::Fill),
@@ -1068,9 +1165,9 @@ fn drawer<'a>(state: &'a State, detail: &'a Detail) -> Element<'a, Message> {
                 .categories
                 .clone()
                 .or_else(|| hit.categories.clone()),
-            project.project_url.clone(),
+            project.project_url.clone().or_else(|| hit.page_url.clone()),
         ),
-        _ => (None, hit.categories.clone(), None),
+        _ => (None, hit.categories.clone(), hit.page_url.clone()),
     };
     let mut facts = format!("{} downloads", compact(hit.downloads));
     if let Some(followers) = followers {
@@ -1102,6 +1199,12 @@ fn drawer<'a>(state: &'a State, detail: &'a Detail) -> Element<'a, Message> {
     }
 
     let version_picker: Element<'a, Message> = match &detail.versions {
+        _ if hit.external => text(
+            "This is hosted on an external site, so it can't be installed here. Open it in your browser to download it.",
+        )
+        .size(TEXT_SM)
+        .style(style::muted)
+        .into(),
         None => text("Finding versions")
             .size(TEXT_SM)
             .style(style::muted)
@@ -1139,32 +1242,43 @@ fn drawer<'a>(state: &'a State, detail: &'a Detail) -> Element<'a, Message> {
     } else {
         "Install"
     };
-    body = body.push(
-        sized(
-            text(label)
-                .size(TEXT_MD)
-                .font(UI_MEDIUM)
-                .width(Length::Fill)
-                .align_x(Alignment::Center),
-            BUTTON_MD,
-        )
-        .width(Length::Fill)
-        .padding([SPACE_2 + 2.0, SPACE_4])
-        .style(style::primary)
-        .on_press_maybe(
-            (detail.selected.is_some() && !installing)
-                .then(|| Message::Install(Box::new(hit.clone()))),
-        ),
-    );
-    if let Some(url) = link {
+    if !hit.external {
         body = body.push(
             sized(
-                ghost_label(Icon::ExternalLink, "View on Modrinth"),
+                text(label)
+                    .size(TEXT_MD)
+                    .font(UI_MEDIUM)
+                    .width(Length::Fill)
+                    .align_x(Alignment::Center),
                 BUTTON_MD,
             )
-            .style(style::ghost)
-            .on_press(Message::OpenLink(url)),
+            .width(Length::Fill)
+            .padding([SPACE_2 + 2.0, SPACE_4])
+            .style(style::primary)
+            .on_press_maybe(
+                (detail.selected.is_some() && !installing)
+                    .then(|| Message::Install(Box::new(hit.clone()))),
+            ),
         );
+    }
+    if let Some(url) = link {
+        let label = if hit.external {
+            "Open in browser"
+        } else {
+            match state.source {
+                ContentSource::Modrinth => "View on Modrinth",
+                ContentSource::Hangar => "View on Hangar",
+                ContentSource::Spigot => "View on Spigot",
+                ContentSource::CurseForge => "View on CurseForge",
+            }
+        };
+        let button = sized(ghost_label(Icon::ExternalLink, label), BUTTON_MD)
+            .on_press(Message::OpenLink(url));
+        body = body.push(if hit.external {
+            button.style(style::primary)
+        } else {
+            button.style(style::ghost)
+        });
     }
 
     container(
@@ -1213,7 +1327,12 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
             ..State::default()
         };
     }
-    load_installed(&target)
+    Task::batch([
+        load_installed(&target),
+        Task::perform(curseforge_api_key(), |key| {
+            Message::CurseForgeKey(key.is_some())
+        }),
+    ])
 }
 
 pub fn subscription(_state: &State) -> Subscription<Message> {

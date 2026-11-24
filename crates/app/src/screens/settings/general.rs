@@ -1,7 +1,8 @@
 use iced::widget::{
-    button, column, container, progress_bar, row, scrollable, text, toggler, Space,
+    button, column, container, progress_bar, row, scrollable, text, text_input, toggler, Space,
 };
 use iced::{Alignment, Element, Length, Subscription, Task};
+use monolith_core::content_sources::{curseforge_api_key, set_curseforge_api_key};
 use monolith_core::events::Event;
 use monolith_core::types::{
     AppPreferencesUpdate, DownloadUpdateResult, SuccessResult, UpdateCheckResult,
@@ -19,6 +20,7 @@ use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
 
 use crate::ctx::{Confirm, Ctx, Route, SettingsPage};
+use crate::ui::busy_button;
 
 const REPO_URL: &str = "https://github.com/waykehatescoding/monolith";
 const ISSUES_URL: &str = "https://github.com/waykehatescoding/monolith/issues";
@@ -117,6 +119,8 @@ pub struct State {
     result: Option<UpdateCheckResult>,
     percent: f32,
     error: Option<String>,
+    curseforge_key: String,
+    saving_key: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -139,6 +143,9 @@ pub enum Message {
     Installed(SuccessResult),
     OpenFolder,
     OpenLink(&'static str),
+    CurseForgeKey(String),
+    SaveCurseForgeKey,
+    CurseForgeKeySaved(Result<(), String>),
 }
 
 fn persist(state: &State) -> Task<Message> {
@@ -272,6 +279,28 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             Task::none()
         }
+        Message::CurseForgeKey(key) => {
+            state.curseforge_key = key;
+            Task::none()
+        }
+        Message::SaveCurseForgeKey => {
+            state.saving_key = true;
+            Task::perform(
+                set_curseforge_api_key(state.curseforge_key.clone()),
+                Message::CurseForgeKeySaved,
+            )
+        }
+        Message::CurseForgeKeySaved(result) => {
+            state.saving_key = false;
+            match result {
+                Ok(()) if state.curseforge_key.trim().is_empty() => {
+                    ctx.success("CurseForge key removed")
+                }
+                Ok(()) => ctx.success("CurseForge key saved"),
+                Err(e) => ctx.error(format!("Could not save the CurseForge key: {e}")),
+            }
+            Task::none()
+        }
     }
 }
 
@@ -383,6 +412,31 @@ fn general<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             ),
         ]
         .spacing(SPACE_5),
+        column![
+            group_label("CurseForge"),
+            text("Paste your own CurseForge API key to browse CurseForge and import CurseForge modpacks. Leave it empty to hide CurseForge.")
+                .size(TEXT_SM)
+                .style(style::muted),
+            row![
+                text_input("API key", &state.curseforge_key)
+                    .secure(true)
+                    .on_input(Message::CurseForgeKey)
+                    .on_submit(Message::SaveCurseForgeKey)
+                    .padding([SPACE_2, SPACE_3])
+                    .style(style::input),
+                busy_button(
+                    "Save",
+                    "Saving",
+                    state.saving_key,
+                    Some(Message::SaveCurseForgeKey),
+                    style::secondary,
+                    BUTTON_MD,
+                ),
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center),
+        ]
+        .spacing(SPACE_3),
     ]
     .spacing(SPACE_7)
     .max_width(600)
@@ -553,6 +607,9 @@ pub fn on_show(_state: &mut State, ctx: &Ctx) -> Task<Message> {
     Task::batch([
         Task::perform(load_local(), Message::LocalLoaded),
         Task::perform(read_autostart(), Message::AutostartRead),
+        Task::perform(curseforge_api_key(), |key| {
+            Message::CurseForgeKey(key.unwrap_or_default())
+        }),
     ])
 }
 

@@ -847,12 +847,15 @@ async fn start_server_core(server_id: String) -> SuccessResult {
         .clone()
         .filter(|j| !j.is_empty())
         .unwrap_or_else(|| "server.jar".to_string());
-    let args = build_java_args(
+    let mut args = build_java_args(
         server.ram_mb,
         &jar_file,
         server.jvm_preset(),
         server.jvm_args(),
     );
+    if server.framework == "Velocity" {
+        args.retain(|arg| arg != "nogui");
+    }
 
     let java_executable = match server.java_path.clone().filter(|p| !p.is_empty()) {
         Some(path) => {
@@ -864,7 +867,11 @@ async fn start_server_core(server_id: String) -> SuccessResult {
             path
         }
         None => {
-            let required = get_required_java_version(&server.version);
+            let required = server
+                .extra
+                .get("javaVersion")
+                .and_then(serde_json::Value::as_u64)
+                .map_or_else(|| get_required_java_version(&server.version), |v| v as u32);
             send_console_line(
                 &server_id,
                 &format!("Checking Java {required} runtime..."),

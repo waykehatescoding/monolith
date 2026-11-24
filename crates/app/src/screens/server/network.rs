@@ -2,6 +2,7 @@ use iced::widget::{column, row, rule, scrollable, text, Space};
 use iced::{clipboard, Alignment, Element, Length, Subscription, Task};
 use monolith_core::crossplay::{self, Crossplay};
 use monolith_core::events::Event;
+use monolith_core::proxy::{self, Backend};
 use monolith_core::reachability::{self, Reachability};
 use monolith_core::types::{ServerRecord, ServerRuntimeStatus};
 use monolith_core::upnp::{self, UpnpState};
@@ -12,7 +13,7 @@ use monolith_theme::token::{
 use monolith_theme::widget::{sized, sized_icon};
 use monolith_theme::{icon, style, Icon, MONO, UI_MEDIUM};
 
-use super::settings::{section, setting, switch};
+use super::settings::{dropdown, section, setting, switch};
 use crate::ctx::{Ctx, Route, SettingsPage};
 use crate::ui::busy_button;
 
@@ -22,6 +23,19 @@ pub enum Busy {
     Upnp,
     Check,
     Firewall,
+    Proxy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Choice {
+    id: String,
+    name: String,
+}
+
+impl std::fmt::Display for Choice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -32,6 +46,8 @@ pub struct State {
     crossplay: Option<Crossplay>,
     upnp: Option<UpnpState>,
     reach: Option<Reachability>,
+    backends: Vec<Backend>,
+    pick: Option<Choice>,
     busy: Option<Busy>,
     error: Option<String>,
 }
@@ -43,10 +59,17 @@ pub struct Loaded {
     port: u16,
     crossplay: Crossplay,
     upnp: Option<UpnpState>,
+    backends: Vec<Backend>,
 }
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    CreateProxy,
+    ProxyCreated(Result<String, String>),
+    Pick(Choice),
+    Attach,
+    Detach(String),
+    StartNetwork,
     Loaded(Loaded),
     Upnp(bool),
     Check,
@@ -67,6 +90,7 @@ fn load(server: ServerRecord) -> Task<Message> {
                 port: port_check::configured_port(std::path::Path::new(&server.server_path)).await,
                 crossplay: crossplay::status(&server).await,
                 upnp: upnp::state(&server.id),
+                backends: proxy::backends(&server).await,
                 id: server.id,
             }
         },
@@ -85,8 +109,57 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 state.port = loaded.port;
                 state.crossplay = Some(loaded.crossplay);
                 state.upnp = loaded.upnp;
+                state.backends = loaded.backends;
             }
             Task::none()
+        }
+        Message::CreateProxy => {
+            state.busy = Some(Busy::Proxy);
+            state.error = None;
+            Task::perform(
+                proxy::create_proxy(format!("{} Network", server.name), 1024),
+                |result| Message::ProxyCreated(result.map(|created| created.id)),
+            )
+        }
+        Message::ProxyCreated(result) => {
+            state.busy = None;
+            match result {
+                Ok(id) => {
+                    ctx.success("Velocity proxy created. Add servers to it here.");
+                    ctx.refresh_servers();
+                    ctx.select_server(id);
+                }
+                Err(error) => state.error = Some(error),
+            }
+            Task::none()
+        }
+        Message::Pick(choice) => {
+            state.pick = Some(choice);
+            Task::none()
+        }
+        Message::Attach => {
+            let Some(choice) = state.pick.take() else {
+                return Task::none();
+            };
+            state.busy = Some(Busy::Proxy);
+            state.error = None;
+            Task::perform(proxy::attach(server.id, choice.id), |result| {
+                Message::Done(Busy::Proxy, result)
+            })
+        }
+        Message::Detach(backend) => {
+            state.busy = Some(Busy::Proxy);
+            state.error = None;
+            Task::perform(proxy::detach(server.id, backend), |result| {
+                Message::Done(Busy::Proxy, result)
+            })
+        }
+        Message::StartNetwork => {
+            state.busy = Some(Busy::Proxy);
+            state.error = None;
+            Task::perform(proxy::start_network(server.id), |result| {
+                Message::Done(Busy::Proxy, result)
+            })
         }
         Message::Check => {
             state.busy = Some(Busy::Check);
@@ -143,6 +216,10 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                         Busy::Crossplay => ctx.changed_while_running(&server.id),
                         Busy::Upnp => ctx.refresh_servers(),
                         Busy::Firewall => ctx.success("Windows Firewall now allows the server."),
+                        Busy::Proxy => {
+                            ctx.refresh_servers();
+                            ctx.changed_while_running(&server.id);
+                        }
                         Busy::Check => {}
                     }
                     load(server)
@@ -375,6 +452,120 @@ fn reach_section<'a>(
     section("Can friends join?", rows)
 }
 
+fn status_word(status: ServerRuntimeStatus) -> &'static str {
+    match status {
+        ServerRuntimeStatus::Online => "Online",
+        ServerRuntimeStatus::Starting => "Starting",
+        ServerRuntimeStatus::Stopping => "Stopping",
+        ServerRuntimeStatus::Idle => "Idle",
+        ServerRuntimeStatus::Offline => "Offline",
+        ServerRuntimeStatus::Crashed => "Crashed",
+    }
+}
+
+fn proxy_section<'a>(
+    state: &'a State,
+    ctx: &'a Ctx,
+    server: &'a ServerRecord,
+) -> Element<'a, Message> {
+    let idle = state.busy.is_none();
+    let busy = state.busy == Some(Busy::Proxy);
+    let mut rows = vec![note("A Velocity proxy lets players move between several servers through one address. The servers behind it only listen on this PC, and players join the proxy.")];
+    if server.framework != "Velocity" {
+        let parent = ctx
+            .servers
+            .iter()
+            .find(|s| proxy::backend_ids(s).contains(&server.id));
+        match parent {
+            Some(parent) => rows.push(note(format!(
+                "This server is part of the {} network. Players join through the proxy.",
+                parent.name
+            ))),
+            None => rows.push(busy_button(
+                "Create Velocity proxy",
+                "Downloading Velocity",
+                busy,
+                idle.then_some(Message::CreateProxy),
+                style::secondary,
+                BUTTON_MD,
+            )),
+        }
+        return section("Proxy network", rows);
+    }
+
+    for backend in &state.backends {
+        let status = ctx.status(&backend.id);
+        rows.push(
+            row![
+                text(backend.name.as_str())
+                    .size(TEXT_MD)
+                    .width(Length::Fill),
+                text(format!("127.0.0.1:{}", backend.port))
+                    .size(TEXT_SM)
+                    .font(MONO)
+                    .style(style::muted),
+                text(status_word(status))
+                    .size(TEXT_SM)
+                    .style(style::colored(crate::ctx::status_color(status))),
+                busy_button(
+                    "Remove",
+                    "Removing",
+                    false,
+                    idle.then_some(Message::Detach(backend.id.clone())),
+                    style::secondary,
+                    BUTTON_SM,
+                ),
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center)
+            .into(),
+        );
+    }
+    if state.backends.is_empty() {
+        rows.push(note("No servers in this network yet."));
+    }
+
+    let attached: Vec<String> = ctx.servers.iter().flat_map(proxy::backend_ids).collect();
+    let choices: Vec<Choice> = ctx
+        .servers
+        .iter()
+        .filter(|s| s.framework != "Velocity" && !attached.contains(&s.id))
+        .map(|s| Choice {
+            id: s.id.clone(),
+            name: s.name.clone(),
+        })
+        .collect();
+    rows.push(
+        row![
+            dropdown(choices, state.pick.clone(), Message::Pick).placeholder("Choose a server"),
+            busy_button(
+                "Add server",
+                "Working",
+                busy,
+                (idle && state.pick.is_some()).then_some(Message::Attach),
+                style::secondary,
+                BUTTON_MD,
+            ),
+        ]
+        .spacing(SPACE_3)
+        .align_y(Alignment::Center)
+        .into(),
+    );
+    rows.push(note("Servers must be stopped to be added. Paper and Purpur need to have started once so config/paper-global.yml exists. Fabric servers get FabricProxy-Lite from Modrinth. Added servers switch to online-mode=false, listen only on 127.0.0.1 and trust the proxy's forwarding secret."));
+    rows.push(busy_button(
+        "Start network",
+        "Starting network",
+        busy,
+        (idle && !state.backends.is_empty()).then_some(Message::StartNetwork),
+        style::primary,
+        BUTTON_MD,
+    ));
+    rows.push(note(
+        "Starts each server, waits for it to come online, then starts the proxy.",
+    ));
+    section("Proxy network", rows)
+}
+
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(server) = ctx.selected_server() else {
         return Space::new().into();
@@ -398,6 +589,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         crossplay_section(state, server),
         router_section(state, server),
         reach_section(state, ctx, server),
+        proxy_section(state, ctx, server),
     ];
     for (index, part) in sections.into_iter().enumerate() {
         if index > 0 {

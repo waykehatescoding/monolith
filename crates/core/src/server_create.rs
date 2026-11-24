@@ -21,6 +21,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
+const FILL_API_BASE: &str = "https://fill.papermc.io/v3/projects";
 const PAPER_API_BASE: &str = "https://fill.papermc.io/v3/projects/paper";
 const PAPER_USER_AGENT: &str = "Monolith/1.2.0 (Minecraft server manager; https://github.com)";
 const PURPUR_API_BASE: &str = "https://api.purpurmc.org/v2/purpur";
@@ -81,13 +82,30 @@ async fn fetch_value(
     res.json::<Value>().await.map_err(|e| e.to_string())
 }
 
+pub(crate) async fn fill_value(path: &str) -> Result<Value, String> {
+    fetch_value(
+        &format!("{FILL_API_BASE}/{path}"),
+        Some(PAPER_USER_AGENT),
+        true,
+        format!("Failed to fetch {path}"),
+    )
+    .await
+}
+
 async fn paper_download(version: &str) -> Result<FrameworkDownload, String> {
-    let url = format!("{}/versions/{}/builds", PAPER_API_BASE, version);
+    fill_download("paper", version).await
+}
+
+pub(crate) async fn fill_download(
+    project: &str,
+    version: &str,
+) -> Result<FrameworkDownload, String> {
+    let url = format!("{FILL_API_BASE}/{project}/versions/{version}/builds");
     let data = fetch_value(
         &url,
         Some(PAPER_USER_AGENT),
         true,
-        format!("Failed to fetch Paper builds for {}", version),
+        format!("Failed to fetch {project} builds for {version}"),
     )
     .await?;
 
@@ -109,12 +127,12 @@ async fn paper_download(version: &str) -> Result<FrameworkDownload, String> {
         .iter()
         .rev()
         .max_by_key(|b| b["id"].as_i64().unwrap_or(i64::MIN))
-        .ok_or_else(|| format!("No builds found for Paper {}", version))?;
+        .ok_or_else(|| format!("No builds found for {project} {version}"))?;
 
     let download = &latest["downloads"]["server:default"];
     let url = download["url"]
         .as_str()
-        .ok_or_else(|| format!("No server download found for Paper {}", version))?;
+        .ok_or_else(|| format!("No server download found for {project} {version}"))?;
     let hashes = download["checksums"]["sha256"]
         .as_str()
         .filter(|s| !s.is_empty())

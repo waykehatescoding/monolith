@@ -50,3 +50,4 @@ pub mod crossplay;
 pub mod playit;
 pub mod upnp;
 pub mod reachability;
+pub mod proxy;

@@ -48,3 +48,4 @@ pub mod region;
 pub mod resource_pack;
 pub mod crossplay;
 pub mod playit;
+pub mod upnp;

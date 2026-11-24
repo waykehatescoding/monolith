@@ -2,35 +2,49 @@ use iced::widget::{column, row, rule, scrollable, text, Space};
 use iced::{clipboard, Alignment, Element, Length, Subscription, Task};
 use monolith_core::crossplay::{self, Crossplay};
 use monolith_core::events::Event;
-use monolith_core::ngrok_manager;
 use monolith_core::types::ServerRecord;
+use monolith_core::upnp::{self, UpnpState};
+use monolith_core::{ngrok_manager, port_check};
 use monolith_theme::token::{
     AMBER, BUTTON_MD, BUTTON_SM, CORAL, SPACE_2, SPACE_3, SPACE_4, SPACE_7, TEXT_MD, TEXT_SM,
 };
 use monolith_theme::widget::sized_icon;
 use monolith_theme::{icon, style, Icon, MONO};
 
-use super::settings::section;
+use super::settings::{section, setting, switch};
 use crate::ctx::Ctx;
 use crate::ui::busy_button;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Busy {
     Crossplay,
+    Upnp,
 }
 
 #[derive(Debug, Default)]
 pub struct State {
     server_id: Option<String>,
     local_ip: String,
+    port: u16,
     crossplay: Option<Crossplay>,
+    upnp: Option<UpnpState>,
     busy: Option<Busy>,
     error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
+pub struct Loaded {
+    id: String,
+    local_ip: String,
+    port: u16,
+    crossplay: Crossplay,
+    upnp: Option<UpnpState>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Message {
-    Loaded(String, String, Crossplay),
+    Loaded(Loaded),
+    Upnp(bool),
     EnableCrossplay,
     DisableCrossplay,
     Done(Busy, Result<(), String>),
@@ -40,11 +54,15 @@ pub enum Message {
 fn load(server: ServerRecord) -> Task<Message> {
     Task::perform(
         async move {
-            let ip = ngrok_manager::get_local_ip().await;
-            let crossplay = crossplay::status(&server).await;
-            (server.id, ip, crossplay)
+            Loaded {
+                local_ip: ngrok_manager::get_local_ip().await,
+                port: port_check::configured_port(std::path::Path::new(&server.server_path)).await,
+                crossplay: crossplay::status(&server).await,
+                upnp: upnp::state(&server.id),
+                id: server.id,
+            }
         },
-        |(id, ip, crossplay)| Message::Loaded(id, ip, crossplay),
+        Message::Loaded,
     )
 }
 
@@ -53,12 +71,21 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         return Task::none();
     };
     match message {
-        Message::Loaded(id, ip, crossplay) => {
-            if state.server_id.as_deref() == Some(id.as_str()) {
-                state.local_ip = ip;
-                state.crossplay = Some(crossplay);
+        Message::Loaded(loaded) => {
+            if state.server_id.as_deref() == Some(loaded.id.as_str()) {
+                state.local_ip = loaded.local_ip;
+                state.port = loaded.port;
+                state.crossplay = Some(loaded.crossplay);
+                state.upnp = loaded.upnp;
             }
             Task::none()
+        }
+        Message::Upnp(enabled) => {
+            state.busy = Some(Busy::Upnp);
+            state.error = None;
+            Task::perform(upnp::set_enabled(server.id, enabled), |result| {
+                Message::Done(Busy::Upnp, result)
+            })
         }
         Message::EnableCrossplay => {
             state.busy = Some(Busy::Crossplay);
@@ -78,8 +105,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.busy = None;
             match result {
                 Ok(()) => {
-                    if busy == Busy::Crossplay {
-                        ctx.changed_while_running(&server.id);
+                    match busy {
+                        Busy::Crossplay => ctx.changed_while_running(&server.id),
+                        Busy::Upnp => ctx.refresh_servers(),
                     }
                     load(server)
                 }
@@ -172,6 +200,52 @@ fn crossplay_section<'a>(state: &'a State, server: &'a ServerRecord) -> Element<
     section("Bedrock crossplay", rows)
 }
 
+fn router_section<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Message> {
+    let enabled = upnp::is_enabled_for(&server.extra);
+    let bedrock = state
+        .crossplay
+        .as_ref()
+        .filter(|c| c.installed)
+        .map(|c| format!(" and UDP {}", c.bedrock_port))
+        .unwrap_or_default();
+    let hint = format!(
+        "When the server starts, Monolith asks your router to forward TCP {}{bedrock} to this PC. The rule lasts an hour, renews while the server runs and is removed when it stops.",
+        state.port
+    );
+    let toggle: Element<'a, Message> = if state.busy.is_none() {
+        switch(enabled, Message::Upnp)
+    } else {
+        iced::widget::toggler(enabled)
+            .size(18)
+            .style(style::switch)
+            .into()
+    };
+    let mut rows = vec![setting(
+        "Open the port on my router automatically (UPnP)",
+        hint,
+        toggle,
+    )];
+    match state.upnp.as_ref().filter(|_| enabled) {
+        Some(UpnpState::Opening) => rows.push(note("Asking your router to open the port")),
+        Some(UpnpState::Open { external_ip, ports }) => {
+            let opened: Vec<String> = ports.iter().map(|(p, n)| format!("{p} {n}")).collect();
+            rows.push(note(format!("Forwarded {}.", opened.join(" and "))));
+            if !external_ip.is_empty() {
+                rows.push(address("Internet", format!("{external_ip}:{}", state.port)));
+            }
+        }
+        Some(UpnpState::Failed(error)) => rows.push(
+            text(error.as_str())
+                .size(TEXT_SM)
+                .style(style::colored(CORAL))
+                .into(),
+        ),
+        None if enabled => rows.push(note("The port opens the next time the server starts.")),
+        None => {}
+    }
+    section("Router", rows)
+}
+
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(server) = ctx.selected_server() else {
         return Space::new().into();
@@ -191,7 +265,10 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             .align_y(Alignment::Center),
         );
     }
-    let sections = [crossplay_section(state, server)];
+    let sections = [
+        crossplay_section(state, server),
+        router_section(state, server),
+    ];
     for (index, part) in sections.into_iter().enumerate() {
         if index > 0 {
             page = page.push(rule::horizontal(1).style(style::hairline));
@@ -205,7 +282,15 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         .into()
 }
 
-pub fn on_event(_state: &mut State, _event: &Event, _ctx: &Ctx) -> Task<Message> {
+pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
+    match (event, ctx.selected_server()) {
+        (Event::NetworkChanged, Some(server))
+            if state.server_id.as_deref() == Some(server.id.as_str()) =>
+        {
+            state.upnp = upnp::state(&server.id);
+        }
+        _ => {}
+    }
     Task::none()
 }
 

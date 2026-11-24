@@ -19,7 +19,7 @@ pub(crate) fn bindable(port: u16) -> bool {
     TcpListener::bind(("0.0.0.0", port)).is_ok()
 }
 
-pub(crate) async fn configured_port(server_path: &Path) -> u16 {
+pub async fn configured_port(server_path: &Path) -> u16 {
     read_properties(server_path)
         .await
         .iter()

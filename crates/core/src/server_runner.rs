@@ -321,6 +321,7 @@ async fn set_offline(server_id: &str, notify: bool) {
 
 async fn set_ended(server_id: &str, status: ServerRuntimeStatus, notify: bool) {
     crate::playit::release(server_id).await;
+    tokio::spawn(crate::upnp::close(server_id.to_string()));
     update_server_status(server_id, status, Some("0/20")).await;
     if notify {
         send_status_update(server_id, status, Some("0/20"));
@@ -1014,6 +1015,7 @@ async fn start_server_core(server_id: String) -> SuccessResult {
             }
         }
     });
+    tokio::spawn(crate::upnp::on_start(server_id.clone()));
     tokio::spawn(async move { start_ngrok_for(&server_id, &server.server_path).await });
 
     SuccessResult::ok()

@@ -12,3 +12,4 @@ pub mod overview;
 pub mod players;
 pub mod properties;
 pub mod settings;
+pub mod storage;

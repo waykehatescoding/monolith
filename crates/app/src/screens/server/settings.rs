@@ -32,6 +32,7 @@ use super::console::legacy_spans;
 use super::discord;
 use super::gamerules;
 use super::properties::{self, Kind, CATALOG};
+use super::storage;
 use crate::ctx::{Confirm, Ctx};
 use crate::ui::busy_button;
 use std::path::PathBuf;
@@ -81,6 +82,7 @@ pub struct State {
     configs: configs::State,
     gamerules: gamerules::State,
     discord: discord::State,
+    storage: storage::State,
 }
 
 impl Default for State {
@@ -128,6 +130,7 @@ impl Default for State {
             configs: configs::State::default(),
             gamerules: gamerules::State::default(),
             discord: discord::State::default(),
+            storage: storage::State::default(),
         }
     }
 }
@@ -193,6 +196,7 @@ pub enum Message {
     Configs(configs::Message),
     Gamerules(gamerules::Message),
     Discord(discord::Message),
+    Storage(storage::Message),
 }
 
 fn outcome(result: SuccessResult, fallback: &str) -> Result<(), String> {
@@ -903,6 +907,12 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::Discord(message) => {
             discord::update(&mut state.discord, message, ctx).map(Message::Discord)
         }
+        Message::Storage(message) => match ctx.selected_server() {
+            Some(server) => {
+                storage::update(&mut state.storage, message, server).map(Message::Storage)
+            }
+            None => Task::none(),
+        },
         Message::Delete => {
             let name = ctx.server(&id).map(|s| s.name.clone()).unwrap_or_default();
             ctx.confirm(
@@ -1729,6 +1739,8 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         divider(),
         discord::view(&state.discord).map(Message::Discord),
         divider(),
+        storage::view(&state.storage, server).map(Message::Storage),
+        divider(),
         platform(state, server, ctx),
         divider(),
         duplicate(state, ctx, server),
@@ -1776,6 +1788,7 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
     tasks.push(configs::on_show(&mut state.configs, server).map(Message::Configs));
     tasks.push(gamerules::on_show(&mut state.gamerules, &server.id, ctx).map(Message::Gamerules));
     discord::on_show(&mut state.discord, server);
+    tasks.push(storage::on_show(&mut state.storage, server).map(Message::Storage));
     let icon = PathBuf::from(&server.server_path).join("server-icon.png");
     tasks.push(Task::perform(
         {

@@ -245,6 +245,35 @@ pub async fn reset_world(
     Ok(())
 }
 
+pub async fn create_world(
+    server_id: String,
+    name: String,
+    seed: String,
+    level_type: String,
+    structures: bool,
+) -> Result<String, String> {
+    let name = check_name(&name)?;
+    let path = server_path(&server_id).await?;
+    if path.join(&name).exists() {
+        return Err(format!("A world named {name} already exists"));
+    }
+    set_properties(
+        &path,
+        &[
+            ("level-name", &name),
+            ("level-seed", seed.trim()),
+            ("level-type", &level_type),
+            (
+                "generate-structures",
+                if structures { "true" } else { "false" },
+            ),
+        ],
+    )
+    .await?;
+    emit(Event::WorldsChanged { server_id });
+    Ok(name)
+}
+
 fn write_world_zip(folders: &[PathBuf], output: &Path) -> Result<(), String> {
     let mut zip = ZipWriter::new(File::create(output).map_err(|e| e.to_string())?);
     let options = SimpleFileOptions::default()

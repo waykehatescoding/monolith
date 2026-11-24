@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use iced::widget::{column, container, row, rule, scrollable, text, toggler};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
+use monolith_core::server_runner::start_server;
 use monolith_core::types::ServerRuntimeStatus;
 use monolith_core::worlds::{self, Dimension, World};
 use monolith_theme::token::*;
@@ -10,6 +11,7 @@ use monolith_theme::widget::sized;
 use monolith_theme::{icon_colored, style, Icon, MONO, UI_MEDIUM, UI_SEMIBOLD};
 
 use super::backups::{format_age, format_size};
+use super::properties::{self, Kind};
 use super::settings::{dropdown, field};
 use crate::ctx::{Confirm, Ctx};
 use crate::ui::busy_button;
@@ -29,9 +31,34 @@ struct Reset {
     seed: String,
 }
 
+#[derive(Debug)]
+struct NewWorld {
+    name: String,
+    seed: String,
+    level_type: &'static str,
+    structures: bool,
+}
+
+impl Default for NewWorld {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            seed: String::new(),
+            level_type: level_types().0,
+            structures: true,
+        }
+    }
+}
+
+fn level_types() -> (&'static str, &'static [&'static str]) {
+    match properties::find("level-type").map(|spec| &spec.kind) {
+        Some(Kind::Choice(default, options)) => (default, options),
+        _ => ("minecraft:normal", &["minecraft:normal"]),
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct State {
-    reset: Option<Reset>,
     server_id: Option<String>,
     worlds: Vec<World>,
     loaded: bool,
@@ -41,6 +68,9 @@ pub struct State {
     picking: bool,
     import: Option<Import>,
     importing: bool,
+    reset: Option<Reset>,
+    new_world: NewWorld,
+    creating: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +93,12 @@ pub enum Message {
     ResetSeed(String),
     CancelReset,
     ConfirmReset,
+    NewName(String),
+    NewSeed(String),
+    NewType(&'static str),
+    NewStructures(bool),
+    Create,
+    Created(Result<(String, bool), String>),
 }
 
 fn suggested_name(source: &std::path::Path) -> String {
@@ -302,7 +338,153 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             );
             Task::none()
         }
+        Message::NewName(name) => {
+            state.new_world.name = name;
+            Task::none()
+        }
+        Message::NewSeed(seed) => {
+            state.new_world.seed = seed;
+            Task::none()
+        }
+        Message::NewType(level_type) => {
+            state.new_world.level_type = level_type;
+            Task::none()
+        }
+        Message::NewStructures(on) => {
+            state.new_world.structures = on;
+            Task::none()
+        }
+        Message::Create => {
+            state.creating = true;
+            let start = !running(ctx, &id);
+            let new = &state.new_world;
+            let created = worlds::create_world(
+                id.clone(),
+                new.name.clone(),
+                new.seed.clone(),
+                new.level_type.to_string(),
+                new.structures,
+            );
+            Task::perform(
+                async move {
+                    let name = created.await?;
+                    if start {
+                        let started = start_server(id).await;
+                        if !started.success {
+                            return Err(format!(
+                                "{name} is set up, but the server did not start: {}",
+                                started.error.unwrap_or_default()
+                            ));
+                        }
+                    }
+                    Ok((name, start))
+                },
+                Message::Created,
+            )
+        }
+        Message::Created(result) => {
+            state.creating = false;
+            match result {
+                Ok((name, true)) => {
+                    ctx.success(format!("Starting the server to generate {name}."));
+                    state.new_world = NewWorld::default();
+                }
+                Ok((name, false)) => {
+                    ctx.success(format!(
+                        "{name} is now the active world. Restart the server to generate it."
+                    ));
+                    ctx.changed_while_running(&id);
+                    state.new_world = NewWorld::default();
+                }
+
+                Err(error) => ctx.error(error),
+            }
+            Task::none()
+        }
     }
+}
+
+fn new_world_view<'a>(state: &'a State, running: bool) -> Element<'a, Message> {
+    let new = &state.new_world;
+    let checked = worlds::check_name(&new.name);
+    let taken = checked.as_ref().is_ok_and(|name| {
+        state
+            .worlds
+            .iter()
+            .any(|w| w.generated && w.name.eq_ignore_ascii_case(name))
+    });
+    let problem = match &checked {
+        Err(error) if !new.name.is_empty() => Some(error.clone()),
+        _ if taken => Some("A world with this name already exists".to_string()),
+        _ => None,
+    };
+    let label = |value| text(value).size(TEXT_MD).width(140);
+    let mut form = column![row![
+        label("Name"),
+        field("survival", &new.name, problem.is_some(), Message::NewName).width(280),
+    ]
+    .spacing(SPACE_3)
+    .align_y(Alignment::Center),]
+    .spacing(SPACE_3);
+    if let Some(problem) = problem {
+        form = form.push(text(problem).size(TEXT_SM).color(CORAL));
+    }
+    form = form
+        .push(
+            row![
+                label("Seed"),
+                field("Random", &new.seed, false, Message::NewSeed).width(280),
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center),
+        )
+        .push(
+            row![
+                label("World type"),
+                dropdown(level_types().1, Some(new.level_type), Message::NewType).width(280),
+            ]
+            .spacing(SPACE_3)
+            .align_y(Alignment::Center),
+        )
+        .push(
+            toggler(new.structures)
+                .label("Generate villages, temples and other structures")
+                .size(18)
+                .text_size(TEXT_MD)
+                .spacing(SPACE_2)
+                .style(style::switch)
+                .on_toggle(Message::NewStructures),
+        )
+        .push(row![busy_button(
+            if running {
+                "Create world"
+            } else {
+                "Create and start"
+            },
+            "Creating",
+            state.creating,
+            (checked.is_ok() && !taken).then_some(Message::Create),
+            style::primary,
+            BUTTON_MD,
+        )]);
+    let hint = if running {
+        "Monolith sets level-name, level-seed, level-type and generate-structures in server.properties. Minecraft generates the world when the server restarts."
+    } else {
+        "Monolith sets level-name, level-seed, level-type and generate-structures in server.properties, then starts the server so Minecraft generates the world."
+    };
+    column![
+        column![
+            text("New world").size(TEXT_LG).font(UI_SEMIBOLD),
+            text(hint).size(TEXT_SM).style(style::muted),
+        ]
+        .spacing(SPACE_1),
+        container(form)
+            .padding(SPACE_4)
+            .width(Length::Fill)
+            .style(style::panel),
+    ]
+    .spacing(SPACE_3)
+    .into()
 }
 
 fn reset_view<'a>(reset: &'a Reset, stopped: bool) -> Element<'a, Message> {
@@ -563,13 +745,17 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(id) = state.server_id.as_deref() else {
         return text("Loading worlds").style(style::muted).into();
     };
-    let page = column![list_view(state, ctx, id), import_view(state)]
-        .spacing(SPACE_7)
-        .padding(iced::Padding {
-            right: SPACE_4,
-            bottom: SPACE_7,
-            ..iced::Padding::ZERO
-        });
+    let page = column![
+        list_view(state, ctx, id),
+        new_world_view(state, running(ctx, id)),
+        import_view(state)
+    ]
+    .spacing(SPACE_7)
+    .padding(iced::Padding {
+        right: SPACE_4,
+        bottom: SPACE_7,
+        ..iced::Padding::ZERO
+    });
     scrollable(page)
         .width(Length::Fill)
         .height(Length::Fill)

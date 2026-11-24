@@ -1,6 +1,7 @@
 pub enum Kind {
     Bool(bool),
     Int(i64, i64, i64),
+    Float(f64, f64, f64),
     Choice(&'static str, &'static [&'static str]),
     Text(&'static str),
     Secret,
@@ -14,7 +15,7 @@ pub struct Spec {
     pub kind: Kind,
 }
 
-const fn spec(
+pub const fn spec(
     group: &'static str,
     key: &'static str,
     label: &'static str,
@@ -98,6 +99,63 @@ pub const CATALOG: &[Spec] = &[
     spec(PACKS, "require-resource-pack", "Require pack", "Kick players who decline the resource pack.", Bool(false)),
 ];
 
+const BUKKIT: &str = "bukkit.yml";
+const SPIGOT: &str = "spigot.yml";
+const PAPER_GLOBAL: &str = "config/paper-global.yml";
+const PAPER_WORLD: &str = "config/paper-world-defaults.yml";
+const PURPUR: &str = "purpur.yml";
+
+pub const CONFIGS: &[Spec] = &[
+    spec(BUKKIT, "settings.allow-end", "The End", "Let players travel to the End.", Bool(true)),
+    spec(BUKKIT, "settings.connection-throttle", "Connection throttle", "Milliseconds a player must wait before reconnecting. -1 turns it off.", Int(4000, -1, 1_000_000)),
+    spec(BUKKIT, "settings.shutdown-message", "Shutdown message", "Shown to players when the server stops.", Text("Server closed")),
+    spec(BUKKIT, "spawn-limits.monsters", "Monster limit", "Hostile mobs per player.", Int(70, 0, 1000)),
+    spec(BUKKIT, "spawn-limits.animals", "Animal limit", "Passive animals per player.", Int(10, 0, 1000)),
+    spec(BUKKIT, "spawn-limits.water-animals", "Water animal limit", "Squid and dolphins per player.", Int(5, 0, 1000)),
+    spec(BUKKIT, "spawn-limits.water-ambient", "Fish limit", "Fish per player.", Int(20, 0, 1000)),
+    spec(BUKKIT, "spawn-limits.ambient", "Bat limit", "Bats per player.", Int(15, 0, 1000)),
+    spec(BUKKIT, "ticks-per.animal-spawns", "Animal spawn interval", "Ticks between animal spawn attempts. Higher is lighter.", Int(400, 0, 100_000)),
+    spec(BUKKIT, "ticks-per.monster-spawns", "Monster spawn interval", "Ticks between monster spawn attempts. Higher is lighter.", Int(1, 0, 100_000)),
+    spec(BUKKIT, "ticks-per.autosave", "Autosave interval", "Ticks between world saves. 6000 is five minutes.", Int(6000, 0, 1_000_000)),
+    spec(SPIGOT, "settings.restart-on-crash", "Restart script on crash", "Run the restart script when the server crashes. Monolith already restarts crashed servers.", Bool(true)),
+    spec(SPIGOT, "settings.timeout-time", "Watchdog timeout", "Seconds a frozen server waits before dumping threads and stopping.", Int(60, 1, 100_000)),
+    spec(SPIGOT, "settings.bungeecord", "BungeeCord", "Accept player info forwarded by a BungeeCord proxy.", Bool(false)),
+    spec(SPIGOT, "world-settings.default.view-distance", "View distance", "Chunks sent to players. default uses server.properties.", Text("default")),
+    spec(SPIGOT, "world-settings.default.simulation-distance", "Simulation distance", "Chunks that tick around players. default uses server.properties.", Text("default")),
+    spec(SPIGOT, "world-settings.default.mob-spawn-range", "Mob spawn range", "Chunks around players where mobs can spawn.", Int(8, 1, 32)),
+    spec(SPIGOT, "world-settings.default.merge-radius.item", "Item merge radius", "Blocks within which dropped items merge.", Float(2.5, 0.0, 32.0)),
+    spec(SPIGOT, "world-settings.default.merge-radius.exp", "XP merge radius", "Blocks within which experience orbs merge.", Float(3.0, -1.0, 32.0)),
+    spec(SPIGOT, "world-settings.default.entity-activation-range.animals", "Animal activation range", "Animals farther than this many blocks tick less often.", Int(32, 0, 512)),
+    spec(SPIGOT, "world-settings.default.entity-activation-range.monsters", "Monster activation range", "Monsters farther than this many blocks tick less often.", Int(32, 0, 512)),
+    spec(SPIGOT, "world-settings.default.entity-activation-range.villagers", "Villager activation range", "Villagers farther than this many blocks tick less often.", Int(32, 0, 512)),
+    spec(SPIGOT, "world-settings.default.entity-activation-range.misc", "Other activation range", "Items and other entities farther than this tick less often.", Int(16, 0, 512)),
+    spec(SPIGOT, "world-settings.default.item-despawn-rate", "Item despawn time", "Ticks before dropped items disappear. 6000 is five minutes.", Int(6000, 0, 1_000_000)),
+    spec(PAPER_GLOBAL, "proxies.velocity.enabled", "Velocity forwarding", "Accept modern forwarding from a Velocity proxy.", Bool(false)),
+    spec(PAPER_GLOBAL, "proxies.velocity.online-mode", "Velocity online mode", "Players behind Velocity must have paid accounts.", Bool(true)),
+    spec(PAPER_GLOBAL, "proxies.velocity.secret", "Velocity secret", "Must match forwarding.secret on the proxy.", Secret),
+    spec(PAPER_GLOBAL, "chunk-system.io-threads", "Chunk IO threads", "Threads for reading and writing chunks. -1 picks automatically.", Int(-1, -1, 256)),
+    spec(PAPER_GLOBAL, "chunk-system.worker-threads", "Chunk worker threads", "Threads for generating and loading chunks. -1 picks automatically.", Int(-1, -1, 256)),
+    spec(PAPER_GLOBAL, "chunk-loading-basic.player-max-chunk-load-rate", "Chunk load rate", "Chunks loaded per second for each player. -1 removes the limit.", Float(100.0, -1.0, 100_000.0)),
+    spec(PAPER_GLOBAL, "misc.max-joins-per-tick", "Joins per tick", "Players let in per tick when many join at once.", Int(5, 1, 1000)),
+    spec(PAPER_GLOBAL, "unsupported-settings.allow-piston-duplication", "Piston duplication", "Allow TNT, carpet and rail duplication with pistons.", Bool(false)),
+    spec(PAPER_GLOBAL, "unsupported-settings.allow-headless-pistons", "Headless pistons", "Allow headless piston exploits.", Bool(false)),
+    spec(PAPER_GLOBAL, "unsupported-settings.allow-permanent-block-break-exploits", "Bedrock breaking", "Allow breaking bedrock and end portal frames with exploits.", Bool(false)),
+    spec(PAPER_WORLD, "chunks.auto-save-interval", "Chunk autosave interval", "Ticks between chunk saves. default uses bukkit.yml.", Text("default")),
+    spec(PAPER_WORLD, "chunks.max-auto-save-chunks-per-tick", "Chunks saved per tick", "Spreads autosaves out to avoid lag spikes.", Int(24, 1, 10_000)),
+    spec(PAPER_WORLD, "collisions.max-entity-collisions", "Entity collisions", "Collisions an entity processes per tick.", Int(8, 0, 1000)),
+    spec(PAPER_WORLD, "entities.spawning.despawn-ranges.monster.hard", "Monster hard despawn range", "Monsters farther than this many blocks despawn instantly.", Int(128, 0, 1024)),
+    spec(PAPER_WORLD, "entities.spawning.despawn-ranges.monster.soft", "Monster soft despawn range", "Monsters farther than this many blocks may despawn.", Int(32, 0, 1024)),
+    spec(PAPER_WORLD, "entities.spawning.per-player-mob-spawns", "Per-player mob spawns", "Spread mob caps fairly between players.", Bool(true)),
+    spec(PAPER_WORLD, "anticheat.anti-xray.enabled", "Anti-xray", "Hide ores from x-ray clients.", Bool(false)),
+    spec(PAPER_WORLD, "environment.optimize-explosions", "Faster explosions", "Use a quicker explosion algorithm.", Bool(false)),
+    spec(PAPER_WORLD, "misc.redstone-implementation", "Redstone engine", "Faster engines can change how some contraptions behave.", Choice("VANILLA", &["VANILLA", "EIGENCRAFT", "ALTERNATE_CURRENT"])),
+    spec(PURPUR, "settings.use-alternate-keepalive", "Alternate keepalive", "Kick fewer players on bad connections.", Bool(false)),
+    spec(PURPUR, "settings.server-mod-name", "Server brand", "Name shown in the F3 screen.", Text("Purpur")),
+    spec(PURPUR, "world-settings.default.gameplay-mechanics.use-better-mending", "Better mending", "Mending repairs the most damaged item first.", Bool(false)),
+    spec(PURPUR, "world-settings.default.mobs.villager.lobotomize.enabled", "Lobotomize villagers", "Trapped villagers stop thinking, which saves a lot of CPU.", Bool(false)),
+    spec(PURPUR, "world-settings.default.gameplay-mechanics.player.idle-timeout.kick-if-idle", "Kick idle players", "Kick players after the idle timeout instead of only marking them AFK.", Bool(true)),
+];
+
 pub fn find(key: &str) -> Option<&'static Spec> {
     CATALOG.iter().find(|spec| spec.key == key)
 }
@@ -106,6 +164,7 @@ impl Spec {
     pub fn valid(&self, value: &str) -> bool {
         match self.kind {
             Int(_, min, max) => value.parse::<i64>().is_ok_and(|n| (min..=max).contains(&n)),
+            Float(_, min, max) => value.parse::<f64>().is_ok_and(|n| (min..=max).contains(&n)),
             _ => true,
         }
     }
@@ -126,6 +185,7 @@ mod tests {
         match spec.kind {
             Bool(on) => on.to_string(),
             Int(default, ..) => default.to_string(),
+            Float(default, ..) => default.to_string(),
             Choice(default, _) | Text(default) => default.to_string(),
             Secret => String::new(),
         }
@@ -143,5 +203,19 @@ mod tests {
         }
         assert!(find("view-distance").is_some_and(|s| !s.valid("40") && s.valid("12")));
         assert!(find("network-compression-threshold").is_some_and(|s| s.valid("-1")));
+    }
+
+    #[test]
+    fn config_catalog_defaults_are_valid() {
+        for (i, spec) in CONFIGS.iter().enumerate() {
+            assert!(
+                CONFIGS[..i]
+                    .iter()
+                    .all(|s| s.key != spec.key || s.group != spec.group),
+                "{}",
+                spec.key
+            );
+            assert!(spec.valid(&default_value(spec)), "{}", spec.key);
+        }
     }
 }

@@ -27,6 +27,7 @@ use monolith_theme::token::{
 use monolith_theme::widget::sized;
 use monolith_theme::{style, MONO, UI_SEMIBOLD};
 
+use super::configs;
 use super::console::legacy_spans;
 use super::properties::{self, Kind, CATALOG};
 use crate::ctx::{Confirm, Ctx};
@@ -75,6 +76,7 @@ pub struct State {
     exporting: bool,
     copy_name: Option<String>,
     duplicating: Option<f64>,
+    configs: configs::State,
 }
 
 impl Default for State {
@@ -119,6 +121,7 @@ impl Default for State {
             exporting: false,
             copy_name: None,
             duplicating: None,
+            configs: configs::State::default(),
         }
     }
 }
@@ -153,7 +156,6 @@ pub enum Message {
     RemoveIcon,
     IconSaved(Result<Option<Vec<u8>>, String>),
     Prop(String, String),
-    PropToggle(String, bool),
     PropFilter(String),
     ToggleRaw,
     RawAction(text_editor::Action),
@@ -182,6 +184,7 @@ pub enum Message {
     Duplicate,
     Duplicated(Result<(String, String), String>),
     Delete,
+    Configs(configs::Message),
 }
 
 fn outcome(result: SuccessResult, fallback: &str) -> Result<(), String> {
@@ -310,7 +313,7 @@ async fn remove_icon(target: PathBuf) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
-fn integer(value: String) -> String {
+pub(super) fn integer(value: String) -> String {
     value
         .chars()
         .enumerate()
@@ -576,10 +579,6 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 _ => value,
             };
             set_prop(&mut state.props, &key, value);
-            Task::none()
-        }
-        Message::PropToggle(key, on) => {
-            set_prop(&mut state.props, &key, on.to_string());
             Task::none()
         }
         Message::PropFilter(query) => {
@@ -887,6 +886,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             Task::none()
         }
+        Message::Configs(message) => {
+            configs::update(&mut state.configs, message, ctx).map(Message::Configs)
+        }
         Message::Delete => {
             let name = ctx.server(&id).map(|s| s.name.clone()).unwrap_or_default();
             ctx.confirm(
@@ -915,11 +917,11 @@ fn save_reliability(state: &mut State, id: String, update: ServerSettingsUpdate)
     Task::perform(save_settings(id, update), Message::ReliabilitySaved)
 }
 
-fn setting<'a>(
+pub(super) fn setting<'a, M: 'a>(
     title: &'a str,
     hint: impl text::IntoFragment<'a>,
-    control: impl Into<Element<'a, Message>>,
-) -> Element<'a, Message> {
+    control: impl Into<Element<'a, M>>,
+) -> Element<'a, M> {
     row![
         column![
             text(title).size(TEXT_MD),
@@ -936,7 +938,7 @@ fn setting<'a>(
     .into()
 }
 
-fn section<'a>(title: &'a str, rows: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+pub(super) fn section<'a, M: 'a>(title: &'a str, rows: Vec<Element<'a, M>>) -> Element<'a, M> {
     column![
         text(title).size(TEXT_XL).font(UI_SEMIBOLD),
         column(rows).spacing(SPACE_5)
@@ -945,7 +947,7 @@ fn section<'a>(title: &'a str, rows: Vec<Element<'a, Message>>) -> Element<'a, M
     .into()
 }
 
-fn switch<'a>(on: bool, on_toggle: impl Fn(bool) -> Message + 'a) -> Element<'a, Message> {
+pub(super) fn switch<'a, M: 'a>(on: bool, on_toggle: impl Fn(bool) -> M + 'a) -> Element<'a, M> {
     toggler(on)
         .size(18)
         .style(style::switch)
@@ -965,12 +967,12 @@ fn switch_maybe<'a>(
         .into()
 }
 
-fn field<'a>(
+pub(super) fn field<'a, M: Clone + 'a>(
     placeholder: &str,
     value: &'a str,
     invalid: bool,
-    on_input: impl Fn(String) -> Message + 'a,
-) -> text_input::TextInput<'a, Message> {
+    on_input: impl Fn(String) -> M + 'a,
+) -> text_input::TextInput<'a, M> {
     text_input(placeholder, value)
         .size(TEXT_MD)
         .padding([8, 12])
@@ -984,11 +986,11 @@ fn field<'a>(
         })
 }
 
-fn dropdown<'a, T: Clone + PartialEq + ToString + 'a>(
+pub(super) fn dropdown<'a, T: Clone + PartialEq + ToString + 'a, M: Clone + 'a>(
     options: impl std::borrow::Borrow<[T]> + 'a,
     selected: Option<T>,
-    on_select: impl Fn(T) -> Message + 'a,
-) -> pick_list::PickList<'a, T, impl std::borrow::Borrow<[T]> + 'a, T, Message> {
+    on_select: impl Fn(T) -> M + 'a,
+) -> pick_list::PickList<'a, T, impl std::borrow::Borrow<[T]> + 'a, T, M> {
     pick_list(options, selected, on_select)
         .width(Length::Fill)
         .padding([6, 12])
@@ -1001,13 +1003,13 @@ fn gb(mb: u32) -> String {
     format!("{:.1} GB", mb as f64 / 1024.0)
 }
 
-fn save_row<'a>(
+pub(super) fn save_row<'a, M: Clone + 'a>(
     label: &'a str,
     busy_label: &'a str,
     busy: bool,
-    message: Option<Message>,
+    message: Option<M>,
     note: Option<&'static str>,
-) -> Element<'a, Message> {
+) -> Element<'a, M> {
     let mut footer = row![].spacing(SPACE_3).align_y(Alignment::Center);
     if let Some(note) = note {
         footer = footer.push(text(note).size(TEXT_SM).color(CORAL));
@@ -1292,7 +1294,7 @@ fn gameplay(state: &State) -> Element<'_, Message> {
     section(TITLE, rows)
 }
 
-fn subheading(title: &str) -> Element<'_, Message> {
+pub(super) fn subheading<M>(title: &str) -> Element<'_, M> {
     text(title)
         .size(TEXT_SM)
         .font(UI_SEMIBOLD)
@@ -1301,42 +1303,53 @@ fn subheading(title: &str) -> Element<'_, Message> {
 }
 
 fn prop_control<'a>(state: &'a State, spec: &'static properties::Spec) -> Element<'a, Message> {
-    let key = spec.key;
     let value = state
         .props
         .iter()
-        .find(|p| p.key == key)
+        .find(|p| p.key == spec.key)
         .map(|p| p.value.as_str());
+    spec_control(spec, value, move |v| Message::Prop(spec.key.to_string(), v))
+}
+
+pub(super) fn spec_control<'a, M: Clone + 'a>(
+    spec: &'static properties::Spec,
+    value: Option<&'a str>,
+    on_change: impl Fn(String) -> M + 'a,
+) -> Element<'a, M> {
+    let invalid = value.is_some_and(|v| !spec.valid(v));
     match spec.kind {
         Kind::Bool(default) => switch(value.map_or(default, |v| v == "true"), move |on| {
-            Message::PropToggle(key.to_string(), on)
+            on_change(on.to_string())
         }),
         Kind::Choice(default, options) => {
             let current = value.unwrap_or(default);
             dropdown(
                 options,
                 options.iter().copied().find(|o| *o == current),
-                move |v: &'static str| Message::Prop(key.to_string(), v.to_string()),
+                move |v: &'static str| on_change(v.to_string()),
             )
             .into()
         }
         Kind::Int(default, ..) => field(
             &default.to_string(),
             value.unwrap_or(""),
-            !state.prop_ok(spec),
-            move |v| Message::Prop(key.to_string(), v),
+            invalid,
+            on_change,
         )
         .width(140)
         .into(),
-        Kind::Text(default) => field(default, value.unwrap_or(""), false, move |v| {
-            Message::Prop(key.to_string(), v)
-        })
+        Kind::Float(default, ..) => field(
+            &default.to_string(),
+            value.unwrap_or(""),
+            invalid,
+            on_change,
+        )
+        .width(140)
         .into(),
-        Kind::Secret => field("Not set", value.unwrap_or(""), false, move |v| {
-            Message::Prop(key.to_string(), v)
-        })
-        .secure(true)
-        .into(),
+        Kind::Text(default) => field(default, value.unwrap_or(""), false, on_change).into(),
+        Kind::Secret => field("Not set", value.unwrap_or(""), false, on_change)
+            .secure(true)
+            .into(),
     }
 }
 
@@ -1672,6 +1685,16 @@ fn danger<'a>(state: &'a State, ctx: &'a Ctx, server: &'a ServerRecord) -> Eleme
     )
 }
 
+fn config_sections(state: &State) -> Element<'_, Message> {
+    let mut sections = column![gameplay(state)].spacing(SPACE_7);
+    if let Some(configs) = configs::view(&state.configs) {
+        sections = sections
+            .push(rule::horizontal(1).style(style::hairline))
+            .push(configs.map(Message::Configs));
+    }
+    sections.into()
+}
+
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(server) = ctx.selected_server() else {
         return Space::new().into();
@@ -1683,7 +1706,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let page = column![
         general(state, server),
         divider(),
-        gameplay(state),
+        config_sections(state),
         divider(),
         reliability(state, server),
         divider(),
@@ -1731,6 +1754,7 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
         tasks.push(state.fetch_versions(&framework));
     }
     let id = server.id.clone();
+    tasks.push(configs::on_show(&mut state.configs, server).map(Message::Configs));
     let icon = PathBuf::from(&server.server_path).join("server-icon.png");
     tasks.push(Task::perform(
         {

@@ -392,9 +392,17 @@ async fn create_backup_inner(
 
     match outcome {
         Ok(size) => {
-            if let Some(config) = &server.backup_config {
-                prune(&backups_dir, config.keep_last, config.keep_days);
-            }
+            let warning = match server.backup_config.clone() {
+                Some(config) => {
+                    let zip_path = zip_path.clone();
+                    tokio::task::spawn_blocking(move || {
+                        finish_backup(&zip_path, &backups_dir, &server_path, &config)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Some(e.to_string()))
+                }
+                None => None,
+            };
             let backup = BackupEntry {
                 name: display_name,
                 filename,
@@ -416,6 +424,7 @@ async fn create_backup_inner(
                 error: None,
                 backup: Some(backup),
                 started: Some(true),
+                warning,
             }
         }
         Err(error) => {
@@ -536,12 +545,65 @@ fn expired(
         .collect()
 }
 
-fn prune(dir: &Path, keep_last: Option<u32>, keep_days: Option<u32>) {
-    for filename in expired(&list_backups(dir), keep_last, keep_days, Utc::now()) {
+fn prune(dir: &Path, locks_dir: &Path, keep_last: Option<u32>, keep_days: Option<u32>) {
+    let locks = read_locks(locks_dir);
+    let backups: Vec<BackupEntry> = list_backups(dir)
+        .into_iter()
+        .map(|backup| BackupEntry {
+            locked: backup.locked || locks.contains(&backup.filename),
+            ..backup
+        })
+        .collect();
+    for filename in expired(&backups, keep_last, keep_days, Utc::now()) {
         if let Err(e) = fs::remove_file(dir.join(&filename)) {
             eprintln!("[BACKUP] Could not remove old backup {filename}: {e}");
         }
     }
+}
+
+fn copy_to_folder(
+    zip_path: &Path,
+    backups_dir: &Path,
+    server_path: &Path,
+    folder: &Path,
+    config: &BackupConfig,
+) -> Result<(), String> {
+    if folder.starts_with(server_path) {
+        return Err("the folder is inside the server folder".to_string());
+    }
+    let (Some(server_name), Some(file_name)) = (server_path.file_name(), zip_path.file_name())
+    else {
+        return Err("invalid backup path".to_string());
+    };
+    let target_dir = folder.join(server_name);
+    fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
+    let target = target_dir.join(file_name);
+    let partial = target.with_extension("zip.part");
+    if let Err(e) = fs::copy(zip_path, &partial).and_then(|_| fs::rename(&partial, &target)) {
+        let _ = fs::remove_file(&partial);
+        return Err(e.to_string());
+    }
+    prune(&target_dir, backups_dir, config.keep_last, config.keep_days);
+    Ok(())
+}
+
+fn finish_backup(
+    zip_path: &Path,
+    backups_dir: &Path,
+    server_path: &Path,
+    config: &BackupConfig,
+) -> Option<String> {
+    prune(backups_dir, backups_dir, config.keep_last, config.keep_days);
+    let folder = config.copy_to.as_deref().filter(|f| !f.trim().is_empty())?;
+    copy_to_folder(
+        zip_path,
+        backups_dir,
+        server_path,
+        Path::new(folder),
+        config,
+    )
+    .err()
+    .map(|e| format!("copying it to {folder} failed: {e}"))
 }
 
 pub async fn get_backups(server_id: String) -> Vec<BackupEntry> {
@@ -957,6 +1019,40 @@ mod tests {
         assert!(staging.join("plugins/dynmap/config.txt").exists());
         assert!(!staging.join("server.properties").exists());
         assert!(server.join("backups/b.zip").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn copies_backups_and_prunes_the_copy_folder() {
+        let root = std::env::temp_dir().join(format!(
+            "monolith-copy-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let server = root.join("srv");
+        let backups = server.join(BACKUP_DIR_NAME);
+        let folder = root.join("mirror");
+        fs::create_dir_all(&backups).unwrap();
+        fs::create_dir_all(folder.join("srv")).unwrap();
+        fs::write(folder.join("srv/backup-a-auto.zip"), "a").unwrap();
+        fs::write(folder.join("srv/backup-b-auto.zip"), "b").unwrap();
+        fs::write(folder.join("srv/backup-m-manual.zip"), "m").unwrap();
+        write_locks(&backups, &BTreeSet::from(["backup-a-auto.zip".to_string()])).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let zip = backups.join("backup-c-auto.zip");
+        fs::write(&zip, "c").unwrap();
+
+        let config = BackupConfig {
+            keep_last: Some(1),
+            ..BackupConfig::default()
+        };
+        copy_to_folder(&zip, &backups, &server, &folder, &config).unwrap();
+
+        let copy = folder.join("srv");
+        assert!(copy.join("backup-a-auto.zip").exists());
+        assert!(!copy.join("backup-b-auto.zip").exists());
+        assert!(copy.join("backup-c-auto.zip").exists());
+        assert!(copy.join("backup-m-manual.zip").exists());
+        assert!(copy_to_folder(&zip, &backups, &server, &server.join("x"), &config).is_err());
         let _ = fs::remove_dir_all(&root);
     }
 

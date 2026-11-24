@@ -39,6 +39,7 @@ struct Form {
     keep_last: String,
     keep_days: String,
     exclusions: Vec<String>,
+    copy_to: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -55,6 +56,7 @@ pub struct State {
     saving: bool,
     locking: Option<String>,
     new_exclusion: String,
+    choosing_folder: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -62,7 +64,7 @@ pub enum Message {
     Loaded(String, Vec<BackupEntry>),
     Status(String, Option<BackupStatus>),
     Create,
-    Created(String, Result<(), String>),
+    Created(String, Result<Option<String>, String>),
     Cancel,
     CancelResult(bool),
     Restore(String),
@@ -78,6 +80,9 @@ pub enum Message {
     NewExclusion(String),
     AddExclusion(String),
     RemoveExclusion(usize),
+    ChooseCopyFolder,
+    CopyFolderChosen(Option<String>),
+    ClearCopyFolder,
     SaveSchedule,
     ScheduleSaved(Result<(), String>),
 }
@@ -172,6 +177,7 @@ fn sync_config(state: &mut State, ctx: &Ctx) {
         keep_last: limit(config.keep_last),
         keep_days: limit(config.keep_days),
         exclusions: config.exclusions,
+        copy_to: config.copy_to,
     };
     state.saved = state.form.clone();
 }
@@ -207,7 +213,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 backup_manager::create_backup(id.clone(), None),
                 move |result| {
                     let outcome = if result.success {
-                        Ok(())
+                        Ok(result.warning)
                     } else {
                         Err(result.error.unwrap_or_else(|| "The backup failed.".into()))
                     };
@@ -224,7 +230,8 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.cancelling = false;
             state.stage = None;
             match outcome {
-                Ok(()) => ctx.success("Backup created"),
+                Ok(None) => ctx.success("Backup created"),
+                Ok(Some(warning)) => ctx.error(format!("Backup created, but {warning}")),
                 Err(_) if cancelled => ctx.info("Backup cancelled"),
                 Err(error) => ctx.error(format!("Backup failed: {error}")),
             }
@@ -387,6 +394,38 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.new_exclusion.clear();
             Task::none()
         }
+        Message::ChooseCopyFolder => {
+            state.choosing_folder = true;
+            Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .set_title("Copy backups to")
+                        .pick_folder()
+                        .await
+                        .map(|folder| folder.path().to_string_lossy().into_owned())
+                },
+                Message::CopyFolderChosen,
+            )
+        }
+        Message::CopyFolderChosen(folder) => {
+            state.choosing_folder = false;
+            let Some(folder) = folder else {
+                return Task::none();
+            };
+            let inside_server = ctx
+                .selected_server()
+                .is_some_and(|server| Path::new(&folder).starts_with(&server.server_path));
+            if inside_server {
+                ctx.error("Choose a folder outside this server's folder.");
+            } else {
+                state.form.copy_to = Some(folder);
+            }
+            Task::none()
+        }
+        Message::ClearCopyFolder => {
+            state.form.copy_to = None;
+            Task::none()
+        }
         Message::RemoveExclusion(index) => {
             if index < state.form.exclusions.len() {
                 state.form.exclusions.remove(index);
@@ -413,6 +452,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 keep_last,
                 keep_days,
                 exclusions: state.form.exclusions.clone(),
+                copy_to: state.form.copy_to.clone(),
                 ..current
             };
             Task::perform(
@@ -626,6 +666,40 @@ fn number_input<'a>(
         .into()
 }
 
+fn copy_view(state: &State) -> Element<'_, Message> {
+    let folder = match &state.form.copy_to {
+        Some(folder) => text(folder).size(TEXT_SM).font(MONO),
+        None => text("Off").size(TEXT_SM).style(style::muted),
+    };
+    let mut controls = row![busy_button(
+        "Choose folder",
+        "Choosing",
+        state.choosing_folder,
+        Some(Message::ChooseCopyFolder),
+        style::secondary,
+        BUTTON_MD,
+    )]
+    .spacing(SPACE_2)
+    .align_y(Alignment::Center);
+    if state.form.copy_to.is_some() {
+        controls = controls.push(action(
+            text("Stop copying").size(TEXT_MD).font(UI_MEDIUM).into(),
+            style::ghost,
+            Some(Message::ClearCopyFolder),
+        ));
+    }
+    column![
+        text("Copy to another folder").size(TEXT_MD).font(UI_MEDIUM),
+        folder,
+        controls,
+        text("Each new backup is also copied here, for example to a OneDrive, Dropbox or Google Drive folder or an external drive. Retention applies to the copies too.")
+            .size(TEXT_SM)
+            .style(style::muted),
+    ]
+    .spacing(SPACE_3)
+    .into()
+}
+
 fn exclusions_view(state: &State) -> Element<'_, Message> {
     let mut list = column![].spacing(SPACE_1);
     for (index, pattern) in state.form.exclusions.iter().enumerate() {
@@ -775,6 +849,8 @@ fn schedule_view(state: &State) -> Element<'_, Message> {
         retention_hint,
         Space::new().height(SPACE_2),
         exclusions_view(state),
+        Space::new().height(SPACE_2),
+        copy_view(state),
         Space::new().height(SPACE_2),
         row![save],
     ]

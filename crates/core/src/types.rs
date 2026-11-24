@@ -229,6 +229,8 @@ pub struct BackupConfig {
     pub keep_days: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclusions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy_to: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -305,6 +307,8 @@ pub struct CreateBackupResult {
     pub backup: Option<BackupEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub started: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

@@ -157,8 +157,8 @@ pub fn tokens(syntax: Syntax, line: &str) -> Vec<(Range<usize>, Token)> {
         }
         Syntax::Yaml => {
             let mut at = start;
-            if body.starts_with("- ") {
-                at += 2 + leading(&body[2..]);
+            if let Some(item) = body.strip_prefix("- ") {
+                at += 2 + leading(item);
             }
             let rest = &line[at..];
             let colon = match rest.chars().next() {

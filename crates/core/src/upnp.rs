@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -23,6 +23,7 @@ const SEARCH_TARGETS: [&str; 2] = [
 const LEASE_SECONDS: u32 = 3600;
 const RENEW_EVERY: Duration = Duration::from_secs(45 * 60);
 const SETTING: &str = "upnp";
+const MAX_BODY: usize = 64 * 1024;
 
 static LOCATION_RE: Lazy<Regex> = Lazy::new(|| re(r"(?im)^location:\s*(\S+)"));
 static SERVICE_RE: Lazy<Regex> = Lazy::new(|| re(r"(?s)<service>(.*?)</service>"));
@@ -54,10 +55,52 @@ struct Mapping {
     stop: Option<oneshot::Sender<oneshot::Sender<()>>>,
 }
 
-static MAPPINGS: Lazy<Mutex<HashMap<String, Mapping>>> = Lazy::new(Default::default);
+#[derive(Default)]
+struct Registry {
+    mappings: HashMap<String, Mapping>,
+    generations: HashMap<String, u64>,
+}
 
-fn lock() -> std::sync::MutexGuard<'static, HashMap<String, Mapping>> {
-    MAPPINGS.lock().unwrap_or_else(|e| e.into_inner())
+impl Registry {
+    fn generation(&self, server_id: &str) -> u64 {
+        self.generations.get(server_id).copied().unwrap_or(0)
+    }
+}
+
+static REGISTRY: Lazy<Mutex<Registry>> = Lazy::new(Default::default);
+
+fn lock() -> std::sync::MutexGuard<'static, Registry> {
+    REGISTRY.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn http() -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+async fn read_capped(mut response: reqwest::Response) -> Result<String, String> {
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        body.extend_from_slice(&chunk);
+        if body.len() > MAX_BODY {
+            return Err("The router sent an unexpectedly large reply".into());
+        }
+    }
+    Ok(String::from_utf8_lossy(&body).into_owned())
+}
+
+pub fn trusted_responder(source: SocketAddr) -> Option<Ipv4Addr> {
+    match source.ip() {
+        IpAddr::V4(ip) if ip.is_private() => Some(ip),
+        _ => None,
+    }
+}
+
+pub fn on_router(url: &url::Url, router: Ipv4Addr) -> bool {
+    url.scheme() == "http" && url.host_str() == Some(router.to_string().as_str())
 }
 
 pub fn location_of(reply: &str) -> Option<String> {
@@ -75,6 +118,7 @@ pub fn wan_service(description: &str) -> Option<(String, String)> {
 
 fn friendly_error(code: Option<u32>, port: u16) -> String {
     match code {
+        Some(725) => "Your router only accepts permanent port mappings. Monolith does not create those, so nothing stays open after the server stops. Forward the port in your router's settings instead.".into(),
         Some(718) => format!("Another device on your network already uses port {port} on the router. Pick a different server port or remove that rule in your router."),
         Some(606) | Some(401) => "Your router refused the request. UPnP may be turned off or set to read-only in its settings.".into(),
         Some(code) => format!("Your router rejected the port mapping (UPnP error {code})."),
@@ -96,11 +140,17 @@ async fn discover() -> Result<Gateway, String> {
             .map_err(|e| e.to_string())?;
     }
     let mut buf = [0u8; 2048];
-    let location = tokio::time::timeout(Duration::from_secs(4), async {
+    let (router, base) = tokio::time::timeout(Duration::from_secs(4), async {
         loop {
-            let (len, _) = socket.recv_from(&mut buf).await.ok()?;
-            if let Some(location) = location_of(&String::from_utf8_lossy(&buf[..len])) {
-                return Some(location);
+            let (len, source) = socket.recv_from(&mut buf).await.ok()?;
+            let Some(router) = trusted_responder(source) else {
+                continue;
+            };
+            let location = location_of(&String::from_utf8_lossy(&buf[..len]))
+                .and_then(|l| url::Url::parse(&l).ok())
+                .filter(|url| on_router(url, router));
+            if let Some(location) = location {
+                return Some((router, location));
             }
         }
     })
@@ -109,23 +159,27 @@ async fn discover() -> Result<Gateway, String> {
     .flatten()
     .ok_or("No router answered. Your router has UPnP turned off, or this PC is not behind a home router.")?;
 
-    let base = url::Url::parse(&location).map_err(|e| e.to_string())?;
-    let description = reqwest::Client::new()
+    let response = http()?
         .get(base.clone())
-        .timeout(Duration::from_secs(5))
         .send()
         .await
-        .map_err(|e| e.to_string())?
-        .text()
-        .await
         .map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "The router answered with HTTP {}",
+            response.status().as_u16()
+        ));
+    }
+    let description = read_capped(response).await?;
     let (service_type, control) =
         wan_service(&description).ok_or("Your router does not offer UPnP port forwarding.")?;
     let control_url = base.join(&control).map_err(|e| e.to_string())?;
-    let router: IpAddr = control_url
-        .host_str()
-        .and_then(|host| host.parse().ok())
-        .ok_or("The router address is not an IP address")?;
+    if !on_router(&control_url, router) {
+        return Err(
+            "The router pointed port forwarding at a different address, so Monolith ignored it."
+                .into(),
+        );
+    }
     let probe = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
     probe.connect((router, 1900)).map_err(|e| e.to_string())?;
     let IpAddr::V4(local_ip) = probe.local_addr().map_err(|e| e.to_string())?.ip() else {
@@ -151,9 +205,9 @@ async fn soap(
         "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\"><s:Body><u:{action} xmlns:u=\"{}\">{body}</u:{action}></s:Body></s:Envelope>",
         gateway.service_type
     );
-    let response = reqwest::Client::new()
+    let response = http()
+        .map_err(|_| None)?
         .post(&gateway.control_url)
-        .timeout(Duration::from_secs(5))
         .header("Content-Type", "text/xml; charset=\"utf-8\"")
         .header(
             "SOAPAction",
@@ -164,7 +218,7 @@ async fn soap(
         .await
         .map_err(|_| None)?;
     let ok = response.status().is_success();
-    let text = response.text().await.map_err(|_| None)?;
+    let text = read_capped(response).await.map_err(|_| None)?;
     if ok {
         Ok(text)
     } else {
@@ -175,26 +229,38 @@ async fn soap(
 }
 
 async fn add(gateway: &Gateway, protocol: &str, port: u16) -> Result<(), String> {
-    let mut lease = LEASE_SECONDS;
-    loop {
-        let args = [
-            ("NewRemoteHost", String::new()),
-            ("NewExternalPort", port.to_string()),
-            ("NewProtocol", protocol.to_string()),
-            ("NewInternalPort", port.to_string()),
-            ("NewInternalClient", gateway.local_ip.to_string()),
-            ("NewEnabled", "1".to_string()),
-            (
-                "NewPortMappingDescription",
-                format!("Monolith {protocol} {port}"),
-            ),
-            ("NewLeaseDuration", lease.to_string()),
-        ];
-        match soap(gateway, "AddPortMapping", &args).await {
-            Ok(_) => return Ok(()),
-            Err(Some(725)) if lease != 0 => lease = 0,
-            Err(code) => return Err(friendly_error(code, port)),
+    let args = [
+        ("NewRemoteHost", String::new()),
+        ("NewExternalPort", port.to_string()),
+        ("NewProtocol", protocol.to_string()),
+        ("NewInternalPort", port.to_string()),
+        ("NewInternalClient", gateway.local_ip.to_string()),
+        ("NewEnabled", "1".to_string()),
+        (
+            "NewPortMappingDescription",
+            format!("Monolith {protocol} {port}"),
+        ),
+        ("NewLeaseDuration", LEASE_SECONDS.to_string()),
+    ];
+    soap(gateway, "AddPortMapping", &args)
+        .await
+        .map(|_| ())
+        .map_err(|code| friendly_error(code, port))
+}
+
+async fn add_all(gateway: &Gateway, ports: &[(&'static str, u16)]) -> Result<(), String> {
+    for (index, (protocol, port)) in ports.iter().enumerate() {
+        if let Err(error) = add(gateway, protocol, *port).await {
+            remove_all(gateway, &ports[..index]).await;
+            return Err(error);
         }
+    }
+    Ok(())
+}
+
+async fn remove_all(gateway: &Gateway, ports: &[(&'static str, u16)]) {
+    for (protocol, port) in ports {
+        remove(gateway, protocol, *port).await;
     }
 }
 
@@ -241,16 +307,32 @@ pub async fn set_enabled(server_id: String, enabled: bool) -> Result<(), String>
 }
 
 pub fn state(server_id: &str) -> Option<UpnpState> {
-    lock().get(server_id).map(|m| m.state.clone())
+    lock().mappings.get(server_id).map(|m| m.state.clone())
 }
 
 fn set_state(
     server_id: &str,
+    generation: u64,
     state: UpnpState,
     stop: Option<oneshot::Sender<oneshot::Sender<()>>>,
-) {
-    lock().insert(server_id.to_string(), Mapping { state, stop });
+) -> bool {
+    let mut registry = lock();
+    if registry.generation(server_id) != generation {
+        return false;
+    }
+    registry
+        .mappings
+        .insert(server_id.to_string(), Mapping { state, stop });
+    drop(registry);
     emit(Event::NetworkChanged);
+    true
+}
+
+async fn still_wanted(server_id: &str) -> bool {
+    crate::server_runner::is_running(server_id)
+        && get_server(server_id.to_string())
+            .await
+            .is_some_and(|s| is_enabled_for(&s.extra))
 }
 
 async fn wanted_ports(
@@ -275,16 +357,17 @@ pub async fn on_start(server_id: String) {
 
 async fn open(server_id: String) {
     close(server_id.clone()).await;
+    let generation = lock().generation(&server_id);
     let Some(server) = get_server(server_id.clone()).await else {
         return;
     };
-    set_state(&server_id, UpnpState::Opening, None);
+    if !set_state(&server_id, generation, UpnpState::Opening, None) {
+        return;
+    }
     let ports = wanted_ports(Path::new(&server.server_path), &server).await;
     let result = async {
         let gateway = discover().await?;
-        for (protocol, port) in &ports {
-            add(&gateway, protocol, *port).await?;
-        }
+        add_all(&gateway, &ports).await?;
         let external = soap(&gateway, "GetExternalIPAddress", &[])
             .await
             .ok()
@@ -296,19 +379,25 @@ async fn open(server_id: String) {
     let (gateway, external_ip) = match result {
         Ok(found) => found,
         Err(error) => {
-            set_state(&server_id, UpnpState::Failed(error), None);
+            set_state(&server_id, generation, UpnpState::Failed(error), None);
             return;
         }
     };
     let (stop_tx, mut stop_rx) = oneshot::channel();
-    set_state(
-        &server_id,
-        UpnpState::Open {
-            external_ip,
-            ports: ports.clone(),
-        },
-        Some(stop_tx),
-    );
+    let installed = still_wanted(&server_id).await
+        && set_state(
+            &server_id,
+            generation,
+            UpnpState::Open {
+                external_ip,
+                ports: ports.clone(),
+            },
+            Some(stop_tx),
+        );
+    if !installed {
+        remove_all(&gateway, &ports).await;
+        return;
+    }
     tokio::spawn(async move {
         loop {
             tokio::select! {
@@ -318,9 +407,7 @@ async fn open(server_id: String) {
                     }
                 }
                 ack = &mut stop_rx => {
-                    for (protocol, port) in &ports {
-                        remove(&gateway, protocol, *port).await;
-                    }
+                    remove_all(&gateway, &ports).await;
                     if let Ok(ack) = ack {
                         let _ = ack.send(());
                     }
@@ -332,7 +419,11 @@ async fn open(server_id: String) {
 }
 
 pub async fn close(server_id: String) {
-    let removed = lock().remove(&server_id);
+    let removed = {
+        let mut registry = lock();
+        *registry.generations.entry(server_id.clone()).or_default() += 1;
+        registry.mappings.remove(&server_id)
+    };
     if let Some(stop) = removed.and_then(|m| m.stop) {
         let (ack_tx, ack_rx) = oneshot::channel();
         if stop.send(ack_tx).is_ok() {
@@ -343,7 +434,7 @@ pub async fn close(server_id: String) {
 }
 
 pub async fn close_all() {
-    let ids: Vec<String> = lock().keys().cloned().collect();
+    let ids: Vec<String> = lock().mappings.keys().cloned().collect();
     futures_util::future::join_all(ids.into_iter().map(close)).await;
 }
 
@@ -380,7 +471,42 @@ mod tests {
     }
 
     #[test]
+    fn only_trusts_the_router_on_the_lan() {
+        let router: Ipv4Addr = "192.168.1.1".parse().unwrap();
+        assert_eq!(
+            trusted_responder("192.168.1.1:1900".parse().unwrap()),
+            Some(router)
+        );
+        assert_eq!(trusted_responder("8.8.8.8:1900".parse().unwrap()), None);
+        let ok = url::Url::parse("http://192.168.1.1:5000/rootDesc.xml").unwrap();
+        assert!(on_router(&ok, router));
+        assert!(on_router(&ok.join("/ctl/IPConn").unwrap(), router));
+        for bad in [
+            "http://192.168.1.2:5000/rootDesc.xml",
+            "https://192.168.1.1/rootDesc.xml",
+            "http://example.com/rootDesc.xml",
+            "file:///C:/Windows/win.ini",
+        ] {
+            assert!(!on_router(&url::Url::parse(bad).unwrap(), router), "{bad}");
+        }
+        assert!(!on_router(&ok.join("http://10.0.0.5/ctl").unwrap(), router));
+    }
+
+    #[test]
+    fn close_cancels_a_pending_open() {
+        let id = "generation-test";
+        let generation = lock().generation(id);
+        assert!(set_state(id, generation, UpnpState::Opening, None));
+        tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(close(id.to_string()));
+        assert!(!set_state(id, generation, UpnpState::Opening, None));
+        assert_eq!(state(id), None);
+    }
+
+    #[test]
     fn explains_router_errors() {
+        assert!(friendly_error(Some(725), 1).contains("permanent"));
         assert!(friendly_error(Some(718), 25565).contains("25565"));
         assert!(friendly_error(Some(606), 1).contains("turned off"));
     }

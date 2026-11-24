@@ -4,6 +4,7 @@ pub mod configs;
 pub mod console;
 pub mod content;
 pub mod files;
+pub mod gamerules;
 pub mod highlight;
 pub mod overview;
 pub mod players;

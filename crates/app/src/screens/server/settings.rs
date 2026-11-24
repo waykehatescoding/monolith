@@ -29,6 +29,7 @@ use monolith_theme::{style, MONO, UI_SEMIBOLD};
 
 use super::configs;
 use super::console::legacy_spans;
+use super::gamerules;
 use super::properties::{self, Kind, CATALOG};
 use crate::ctx::{Confirm, Ctx};
 use crate::ui::busy_button;
@@ -77,6 +78,7 @@ pub struct State {
     copy_name: Option<String>,
     duplicating: Option<f64>,
     configs: configs::State,
+    gamerules: gamerules::State,
 }
 
 impl Default for State {
@@ -122,6 +124,7 @@ impl Default for State {
             copy_name: None,
             duplicating: None,
             configs: configs::State::default(),
+            gamerules: gamerules::State::default(),
         }
     }
 }
@@ -185,6 +188,7 @@ pub enum Message {
     Duplicated(Result<(String, String), String>),
     Delete,
     Configs(configs::Message),
+    Gamerules(gamerules::Message),
 }
 
 fn outcome(result: SuccessResult, fallback: &str) -> Result<(), String> {
@@ -888,6 +892,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::Configs(message) => {
             configs::update(&mut state.configs, message, ctx).map(Message::Configs)
+        }
+        Message::Gamerules(message) => {
+            gamerules::update(&mut state.gamerules, message, ctx).map(Message::Gamerules)
         }
         Message::Delete => {
             let name = ctx.server(&id).map(|s| s.name.clone()).unwrap_or_default();
@@ -1685,14 +1692,17 @@ fn danger<'a>(state: &'a State, ctx: &'a Ctx, server: &'a ServerRecord) -> Eleme
     )
 }
 
-fn config_sections(state: &State) -> Element<'_, Message> {
+fn config_sections<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let mut sections = column![gameplay(state)].spacing(SPACE_7);
     if let Some(configs) = configs::view(&state.configs) {
         sections = sections
             .push(rule::horizontal(1).style(style::hairline))
             .push(configs.map(Message::Configs));
     }
-    sections.into()
+    sections
+        .push(rule::horizontal(1).style(style::hairline))
+        .push(gamerules::view(&state.gamerules, ctx).map(Message::Gamerules))
+        .into()
 }
 
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
@@ -1706,7 +1716,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let page = column![
         general(state, server),
         divider(),
-        config_sections(state),
+        config_sections(state, ctx),
         divider(),
         reliability(state, server),
         divider(),
@@ -1729,7 +1739,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         .into()
 }
 
-pub fn on_event(state: &mut State, event: &Event, _ctx: &Ctx) -> Task<Message> {
+pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
     if let Event::FrameworkChangeProgress(progress) = event {
         if state.changing.is_some() {
             state.changing = Some((progress.percent.clamp(0.0, 100.0), progress.message.clone()));
@@ -1740,7 +1750,7 @@ pub fn on_event(state: &mut State, event: &Event, _ctx: &Ctx) -> Task<Message> {
             state.duplicating = Some(percent.clamp(0.0, 100.0));
         }
     }
-    Task::none()
+    gamerules::on_event(&mut state.gamerules, event, ctx).map(Message::Gamerules)
 }
 
 pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
@@ -1755,6 +1765,7 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
     }
     let id = server.id.clone();
     tasks.push(configs::on_show(&mut state.configs, server).map(Message::Configs));
+    tasks.push(gamerules::on_show(&mut state.gamerules, &server.id, ctx).map(Message::Gamerules));
     let icon = PathBuf::from(&server.server_path).join("server-icon.png");
     tasks.push(Task::perform(
         {

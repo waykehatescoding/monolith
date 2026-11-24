@@ -36,6 +36,7 @@ pub enum Event {
         title: &'static str,
         body: String,
     },
+    NetworkChanged,
 }
 
 static BUS: Lazy<broadcast::Sender<Event>> = Lazy::new(|| broadcast::channel(1024).0);

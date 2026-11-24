@@ -28,7 +28,8 @@ pub async fn shutdown() {
     tokio::join!(
         server_runner::stop_all_servers(),
         ngrok_manager::stop_all_tunnels(),
-        sleep_mode::stop_all()
+        sleep_mode::stop_all(),
+        crate::playit::stop()
     );
 }
 

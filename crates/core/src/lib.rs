@@ -47,3 +47,4 @@ pub mod chunky;
 pub mod region;
 pub mod resource_pack;
 pub mod crossplay;
+pub mod playit;

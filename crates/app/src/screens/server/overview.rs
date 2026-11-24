@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use iced::widget::{column, container, row, text, Space};
 use iced::{clipboard, Alignment, Color, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
+use monolith_core::playit::{self, PlayitStatus};
 use monolith_core::types::{
     ServerProperty, ServerRecord, ServerRuntimeStatus, ServerSettingsUpdate, SuccessResult,
 };
@@ -22,6 +23,8 @@ use crate::ui::busy_button;
 
 const DEFAULT_PORT: u16 = 25565;
 const NO_TOKEN: &str = "Add your ngrok authtoken in Settings, Sharing, then try again.";
+const NO_PLAYIT: &str = "Link your playit.gg account in Settings, Sharing, then try again.";
+const LABEL_WIDTH: f32 = 64.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Busy {
@@ -47,6 +50,7 @@ pub struct State {
     started_at: Option<Instant>,
     listing: listing::State,
     bedrock_port: Option<u16>,
+    playit: Option<PlayitStatus>,
 }
 
 #[derive(Debug, Clone)]
@@ -73,6 +77,7 @@ pub enum Message {
     Copy(String),
     Tick,
     Listing(listing::Message),
+    Playit(PlayitStatus),
 }
 
 fn port_of(properties: &[ServerProperty]) -> u16 {
@@ -133,7 +138,28 @@ async fn update_sharing(id: &str, enabled: bool) -> SuccessResult {
     .await
 }
 
+async fn toggle_playit(server: ServerRecord, enable: bool) -> SuccessResult {
+    if !enable {
+        playit::release(&server.id).await;
+        return update_sharing(&server.id, false).await;
+    }
+    if !playit::status().await.claimed {
+        return SuccessResult::err(NO_PLAYIT);
+    }
+    let saved = update_sharing(&server.id, true).await;
+    if !saved.success || !server_runner::is_running(&server.id) {
+        return saved;
+    }
+    match playit::acquire(&server.id).await {
+        Ok(()) => SuccessResult::ok(),
+        Err(error) => SuccessResult::err(error),
+    }
+}
+
 async fn toggle_share(server: ServerRecord, port: u16, enable: bool) -> SuccessResult {
+    if playit::is_enabled().await {
+        return toggle_playit(server, enable).await;
+    }
     if !enable {
         let stopped = ngrok_manager::stop_ngrok(server.id.clone()).await;
         if !stopped.success {
@@ -257,6 +283,10 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             let online = ctx.status(&server.id) == ServerRuntimeStatus::Online;
             listing::update(&mut state.listing, message, &server, online).map(Message::Listing)
         }
+        Message::Playit(status) => {
+            state.playit = Some(status).filter(|status| status.enabled);
+            Task::none()
+        }
     }
 }
 
@@ -273,7 +303,10 @@ fn state_word(status: ServerRuntimeStatus) -> &'static str {
 
 fn address_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
     row![
-        text(label).size(TEXT_SM).style(style::muted).width(52),
+        text(label)
+            .size(TEXT_SM)
+            .style(style::muted)
+            .width(LABEL_WIDTH),
         text(value.clone()).size(TEXT_MD).font(MONO),
         sized_icon(icon(Icon::Copy, 14.0), BUTTON_SM)
             .style(style::icon_button)
@@ -401,12 +434,19 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             ));
         }
     }
-    match public {
-        Some(url) => addresses = addresses.push(address_row("Public", url)),
-        None if sharing && online => {
+    match (&state.playit, public) {
+        (Some(playit), _) if sharing && online => {
+            addresses = addresses.push(playit_rows(playit, state));
+        }
+        (Some(_), _) => {}
+        (None, Some(url)) => addresses = addresses.push(address_row("Public", url)),
+        (None, None) if sharing && online => {
             addresses = addresses.push(
                 row![
-                    text("Public").size(TEXT_SM).style(style::muted).width(52),
+                    text("Public")
+                        .size(TEXT_SM)
+                        .style(style::muted)
+                        .width(LABEL_WIDTH),
                     text(
                         state
                             .tunnel_error
@@ -422,12 +462,43 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
                 .spacing(SPACE_2),
             );
         }
-        None => {}
+        (None, None) => {}
     }
 
     column![title, addresses, actions.wrap()]
         .spacing(SPACE_4)
         .into()
+}
+
+fn playit_rows<'a>(playit: &'a PlayitStatus, state: &'a State) -> Element<'a, Message> {
+    let mut rows = column![].spacing(SPACE_1);
+    let wanted = |port: Option<u16>, local: Option<u16>| port.is_none() || port == local;
+    for tunnel in &playit.tunnels {
+        let label = match tunnel.protocol.as_str() {
+            "udp" if wanted(tunnel.local_port, state.bedrock_port) => "Public BE",
+            "udp" => continue,
+            _ if wanted(tunnel.local_port, Some(state.port)) => "Public",
+            _ => continue,
+        };
+        rows = rows.push(address_row(label, tunnel.address.clone()));
+    }
+    if playit.tunnels.is_empty() {
+        let status = match playit.lines.last() {
+            Some(line) if playit.running => line.clone(),
+            _ => "Starting playit.gg".to_string(),
+        };
+        rows = rows.push(
+            row![
+                text("Public")
+                    .size(TEXT_SM)
+                    .style(style::muted)
+                    .width(LABEL_WIDTH),
+                text(status).size(TEXT_MD).style(style::muted),
+            ]
+            .spacing(SPACE_2),
+        );
+    }
+    rows.into()
 }
 
 fn readout<'a>(label: &'a str, value: String) -> Element<'a, Message> {
@@ -530,7 +601,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         });
         let action = match fix {
             Some(fix) => Some(fix),
-            None if error == NO_TOKEN => Some(
+            None if error == NO_TOKEN || error == NO_PLAYIT => Some(
                 sized(
                     text("Open Sharing settings").size(TEXT_MD).font(UI_MEDIUM),
                     BUTTON_MD,
@@ -631,6 +702,7 @@ pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
         Event::NgrokFailed { server_id, error } if *server_id == id => {
             state.tunnel_error = Some(error.clone());
         }
+        Event::NetworkChanged => return Task::perform(playit::status(), Message::Playit),
         _ => {}
     }
     task
@@ -661,6 +733,7 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
     Task::batch([
         Task::perform(load(server.clone()), Message::Loaded),
         listing::refresh(&mut state.listing, server, online).map(Message::Listing),
+        Task::perform(playit::status(), Message::Playit),
     ])
 }
 

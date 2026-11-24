@@ -148,7 +148,7 @@ fn crossplay_section<'a>(state: &'a State, server: &'a ServerRecord) -> Element<
                 "Remove crossplay",
                 "Removing",
                 busy,
-                Some(Message::DisableCrossplay).filter(|_| idle),
+                idle.then_some(Message::DisableCrossplay),
                 style::secondary,
                 BUTTON_MD,
             ));
@@ -163,7 +163,7 @@ fn crossplay_section<'a>(state: &'a State, server: &'a ServerRecord) -> Element<
                 "Enable crossplay",
                 "Installing",
                 busy,
-                Some(Message::EnableCrossplay).filter(|_| idle),
+                idle.then_some(Message::EnableCrossplay),
                 style::primary,
                 BUTTON_MD,
             ));

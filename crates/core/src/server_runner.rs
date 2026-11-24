@@ -320,6 +320,7 @@ async fn set_offline(server_id: &str, notify: bool) {
 }
 
 async fn set_ended(server_id: &str, status: ServerRuntimeStatus, notify: bool) {
+    crate::playit::release(server_id).await;
     update_server_status(server_id, status, Some("0/20")).await;
     if notify {
         send_status_update(server_id, status, Some("0/20"));
@@ -690,6 +691,16 @@ async fn start_ngrok_for(server_id: &str, server_path: &str) {
         Some(sharing) => sharing,
         None => is_ngrok_enabled().await,
     };
+    if wanted && crate::playit::is_enabled().await {
+        if let Err(error) = crate::playit::acquire(server_id).await {
+            send_console_line(
+                server_id,
+                &format!("Could not start playit.gg: {error}"),
+                ConsoleLineType::Stderr,
+            );
+        }
+        return;
+    }
     if !(wanted && is_ngrok_authtoken_configured().await) {
         return;
     }

@@ -3,6 +3,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
+use monolith_core::playit::{self, PlayitStatus};
 use monolith_core::types::{NgrokAuthtokenValidation, SuccessResult};
 use monolith_core::{ngrok_manager, safety};
 use monolith_theme::style;
@@ -14,8 +15,17 @@ use monolith_theme::widget::{sized, sized_icon};
 use monolith_theme::{icon, Icon, MONO, UI_MEDIUM, UI_SEMIBOLD};
 
 use crate::ctx::Ctx;
+use crate::ui::busy_button;
 
 const TOKEN_URL: &str = "https://dashboard.ngrok.com/get-started/your-authtoken";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayitBusy {
+    Install,
+    Link,
+    Toggle,
+    Unlink,
+}
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -31,6 +41,10 @@ pub struct State {
     confirm_remove: bool,
     error: Option<String>,
     local_ip: Option<String>,
+    playit: Option<PlayitStatus>,
+    playit_busy: Option<PlayitBusy>,
+    playit_error: Option<String>,
+    claim_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +64,28 @@ pub enum Message {
     TokenRemoved(SuccessResult),
     OpenTokenPage,
     CopyIp,
+    PlayitLoaded(PlayitStatus),
+    PlayitInstall,
+    PlayitLink,
+    PlayitEnabled(bool),
+    PlayitUnlink,
+    PlayitDone(PlayitBusy, Result<(), String>),
+    Open(String),
+}
+
+fn load_playit() -> Task<Message> {
+    Task::perform(playit::status(), Message::PlayitLoaded)
+}
+
+fn open_link(url: &str, ctx: &Ctx) {
+    match safety::get_safe_external_url(url) {
+        Some(url) => {
+            if let Err(e) = open::that_detached(url) {
+                ctx.error(format!("Could not open the link: {e}"));
+            }
+        }
+        None => ctx.error("That link is not safe to open."),
+    }
 }
 
 fn load() -> Task<Message> {
@@ -196,15 +232,64 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
         Message::OpenTokenPage => {
-            match safety::get_safe_external_url(TOKEN_URL) {
-                Some(url) => {
-                    if let Err(e) = open::that_detached(url) {
-                        ctx.error(format!("Could not open the link: {e}"));
-                    }
-                }
-                None => ctx.error("That link is not safe to open."),
-            }
+            open_link(TOKEN_URL, ctx);
             Task::none()
+        }
+        Message::Open(url) => {
+            open_link(&url, ctx);
+            Task::none()
+        }
+        Message::PlayitLoaded(status) => {
+            state.playit = Some(status);
+            Task::none()
+        }
+        Message::PlayitInstall => {
+            state.playit_busy = Some(PlayitBusy::Install);
+            state.playit_error = None;
+            Task::perform(playit::install(), |r| {
+                Message::PlayitDone(PlayitBusy::Install, r)
+            })
+        }
+        Message::PlayitLink => {
+            let code = playit::claim_code();
+            let url = playit::claim_url(&code);
+            open_link(&url, ctx);
+            state.claim_url = Some(url);
+            state.playit_busy = Some(PlayitBusy::Link);
+            state.playit_error = None;
+            Task::perform(playit::wait_for_claim(code), |r| {
+                Message::PlayitDone(PlayitBusy::Link, r)
+            })
+        }
+        Message::PlayitEnabled(enabled) => {
+            state.playit_busy = Some(PlayitBusy::Toggle);
+            Task::perform(playit::set_enabled(enabled), |r| {
+                Message::PlayitDone(PlayitBusy::Toggle, r)
+            })
+        }
+        Message::PlayitUnlink => {
+            state.playit_busy = Some(PlayitBusy::Unlink);
+            Task::perform(
+                async {
+                    playit::set_enabled(false).await?;
+                    playit::unlink().await
+                },
+                |r| Message::PlayitDone(PlayitBusy::Unlink, r),
+            )
+        }
+        Message::PlayitDone(busy, result) => {
+            state.playit_busy = None;
+            state.claim_url = None;
+            match result {
+                Ok(()) => match busy {
+                    PlayitBusy::Install => ctx.success("playit.gg is installed."),
+                    PlayitBusy::Link => ctx.success("Your playit.gg account is linked."),
+                    PlayitBusy::Unlink => ctx.success("playit.gg is unlinked."),
+                    PlayitBusy::Toggle => {}
+                },
+                Err(error) => state.playit_error = Some(error),
+            }
+            load_playit()
         }
         Message::CopyIp => match &state.local_ip {
             Some(ip) => {
@@ -421,6 +506,138 @@ fn enable_section(state: &State) -> Element<'_, Message> {
     .into()
 }
 
+fn link<'a>(label: &'a str, url: String) -> Element<'a, Message> {
+    button(text(label).size(TEXT_MD).style(style::link))
+        .padding(0)
+        .style(style::ghost)
+        .on_press(Message::Open(url))
+        .into()
+}
+
+fn playit_section(state: &State) -> Element<'_, Message> {
+    let mut section = column![
+        subheading("playit.gg"),
+        text("A free alternative to ngrok that also carries Bedrock (UDP) traffic for crossplay. When it is on, shared servers use playit.gg instead of ngrok.")
+            .size(TEXT_SM)
+            .style(style::muted),
+    ]
+    .spacing(SPACE_2);
+    let Some(status) = &state.playit else {
+        return section
+            .push(
+                text("Checking for playit.gg")
+                    .size(TEXT_SM)
+                    .style(style::muted),
+            )
+            .into();
+    };
+    let busy = state.playit_busy;
+    let idle = busy.is_none();
+    let mut actions = row![busy_button(
+        if status.installed {
+            "Reinstall playit.gg"
+        } else {
+            "Install playit.gg"
+        },
+        "Installing",
+        busy == Some(PlayitBusy::Install),
+        idle.then_some(Message::PlayitInstall),
+        if status.installed {
+            style::secondary
+        } else {
+            style::primary
+        },
+        BUTTON_MD,
+    )]
+    .spacing(SPACE_3)
+    .align_y(Alignment::Center);
+    if status.installed && !status.claimed {
+        actions = actions.push(busy_button(
+            "Link your playit account",
+            "Waiting for approval",
+            busy == Some(PlayitBusy::Link),
+            idle.then_some(Message::PlayitLink),
+            style::primary,
+            BUTTON_MD,
+        ));
+    }
+    if status.claimed {
+        actions = actions.push(busy_button(
+            "Unlink",
+            "Unlinking",
+            busy == Some(PlayitBusy::Unlink),
+            idle.then_some(Message::PlayitUnlink),
+            style::secondary,
+            BUTTON_MD,
+        ));
+    }
+    section = section.push(container(actions).padding(iced::Padding::ZERO.top(SPACE_1)));
+
+    if let Some(url) = &state.claim_url {
+        section = section.push(
+            row![
+                text("Approve Monolith in your browser:")
+                    .size(TEXT_SM)
+                    .style(style::muted),
+                link(url, url.clone()),
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center),
+        );
+    }
+    if let Some(error) = &state.playit_error {
+        section = section.push(text(error.as_str()).size(TEXT_SM).color(CORAL));
+    }
+
+    if status.claimed {
+        let mut switch = toggler(status.enabled).size(20).style(style::switch);
+        if idle {
+            switch = switch.on_toggle(Message::PlayitEnabled);
+        }
+        section = section
+            .push(
+                row![
+                    column![
+                        text("Use playit.gg for sharing").size(TEXT_MD).font(UI_MEDIUM),
+                        text("On playit.gg, add a Minecraft Java tunnel to 127.0.0.1 and your server port. For crossplay, add a Minecraft Bedrock tunnel to UDP port 19132.")
+                            .size(TEXT_SM)
+                            .style(style::muted)
+                    ]
+                    .spacing(SPACE_1)
+                    .width(Length::Fill),
+                    switch
+                ]
+                .spacing(SPACE_5)
+                .align_y(Alignment::Center),
+            )
+            .push(link("Set up tunnels on playit.gg", playit::TUNNELS_URL.into()));
+    }
+    if status.running {
+        for tunnel in &status.tunnels {
+            section = section.push(
+                text(format!(
+                    "{} ({})",
+                    tunnel.address,
+                    tunnel.protocol.to_uppercase()
+                ))
+                .size(TEXT_MD)
+                .font(MONO),
+            );
+        }
+        if status.tunnels.is_empty() {
+            for line in &status.lines {
+                section = section.push(
+                    text(line.as_str())
+                        .size(TEXT_SM)
+                        .font(MONO)
+                        .style(style::muted),
+                );
+            }
+        }
+    }
+    section.into()
+}
+
 fn lan_section(state: &State) -> Element<'_, Message> {
     let address: Element<Message> = match &state.local_ip {
         Some(ip) => row![
@@ -452,7 +669,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
     let body = column![
         column![
             heading("Sharing"),
-            text("Sharing lets friends outside your home network join your server through a free ngrok tunnel.")
+            text("Sharing lets friends outside your home network join your server through a free ngrok or playit.gg tunnel.")
                 .size(TEXT_MD)
                 .style(style::muted),
         ]
@@ -460,6 +677,7 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
         install_section(state),
         token_section(state),
         enable_section(state),
+        playit_section(state),
         lan_section(state),
     ]
     .spacing(SPACE_6 + SPACE_2);
@@ -471,14 +689,16 @@ pub fn view<'a>(state: &'a State, _ctx: &'a Ctx) -> Element<'a, Message> {
 }
 
 pub fn on_event(state: &mut State, event: &Event, _ctx: &Ctx) -> Task<Message> {
-    if let Event::NgrokInstallProgress(progress) = event {
-        state.percent = progress.percent as f32;
+    match event {
+        Event::NgrokInstallProgress(progress) => state.percent = progress.percent as f32,
+        Event::NetworkChanged if state.playit.is_some() => return load_playit(),
+        _ => {}
     }
     Task::none()
 }
 
 pub fn on_show(_state: &mut State, _ctx: &Ctx) -> Task<Message> {
-    load()
+    Task::batch([load(), load_playit()])
 }
 
 pub fn subscription(_state: &State) -> Subscription<Message> {

@@ -3,7 +3,9 @@ use std::time::Duration;
 use chrono::{Local, NaiveDateTime};
 use iced::widget::{button, column, container, row, rule, scrollable, text, Space};
 use iced::{time, Alignment, Element, Length, Subscription, Task};
-use monolith_core::automation::{self, Automation, Schedule, ScheduledTask, Step};
+use monolith_core::automation::{
+    self, Automation, Schedule, ScheduledTask, Step, Trigger, TriggerEvent,
+};
 use monolith_core::events::Event;
 use monolith_theme::token::*;
 use monolith_theme::widget::{sized, sized_icon};
@@ -97,6 +99,52 @@ impl std::fmt::Display for Unit {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventKind {
+    Join,
+    Leave,
+    Chat,
+    Console,
+    Started,
+    Stopped,
+    Crashed,
+}
+
+impl EventKind {
+    const ALL: [EventKind; 7] = [
+        EventKind::Join,
+        EventKind::Leave,
+        EventKind::Chat,
+        EventKind::Console,
+        EventKind::Started,
+        EventKind::Stopped,
+        EventKind::Crashed,
+    ];
+
+    fn placeholder(self) -> Option<&'static str> {
+        match self {
+            EventKind::Join | EventKind::Leave => Some("Any player"),
+            EventKind::Chat => Some("Text in the message"),
+            EventKind::Console => Some("Text or regular expression"),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for EventKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            EventKind::Join => "A player joins",
+            EventKind::Leave => "A player leaves",
+            EventKind::Chat => "A chat message contains",
+            EventKind::Console => "A console line matches",
+            EventKind::Started => "The server starts",
+            EventKind::Stopped => "The server stops",
+            EventKind::Crashed => "The server crashes",
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 struct StepForm {
     kind: StepKind,
@@ -106,6 +154,9 @@ struct StepForm {
 #[derive(Debug, Clone)]
 struct Editor {
     index: Option<usize>,
+    trigger: bool,
+    event: EventKind,
+    value: String,
     name: String,
     repeat: Repeat,
     times: String,
@@ -121,6 +172,9 @@ impl Editor {
     fn new() -> Self {
         Self {
             index: None,
+            trigger: false,
+            event: EventKind::Join,
+            value: String::new(),
             name: String::new(),
             repeat: Repeat::Daily,
             times: String::new(),
@@ -134,6 +188,67 @@ impl Editor {
             }],
             error: None,
         }
+    }
+
+    fn from_trigger(index: usize, trigger: &Trigger) -> Self {
+        let (event, value) = match &trigger.event {
+            TriggerEvent::Join(name) => (EventKind::Join, name.clone()),
+            TriggerEvent::Leave(name) => (EventKind::Leave, name.clone()),
+            TriggerEvent::Chat(text) => (EventKind::Chat, text.clone()),
+            TriggerEvent::Console(text) => (EventKind::Console, text.clone()),
+            TriggerEvent::Started => (EventKind::Started, String::new()),
+            TriggerEvent::Stopped => (EventKind::Stopped, String::new()),
+            TriggerEvent::Crashed => (EventKind::Crashed, String::new()),
+        };
+        Self {
+            index: Some(index),
+            trigger: true,
+            event,
+            value,
+            steps: trigger.steps.iter().map(step_form).collect(),
+            ..Self::new()
+        }
+    }
+
+    fn event(&self) -> TriggerEvent {
+        let value = self.value.trim().to_string();
+        match self.event {
+            EventKind::Join => TriggerEvent::Join(value),
+            EventKind::Leave => TriggerEvent::Leave(value),
+            EventKind::Chat => TriggerEvent::Chat(value),
+            EventKind::Console => TriggerEvent::Console(value),
+            EventKind::Started => TriggerEvent::Started,
+            EventKind::Stopped => TriggerEvent::Stopped,
+            EventKind::Crashed => TriggerEvent::Crashed,
+        }
+    }
+
+    fn apply(&self, current: &Automation) -> Result<Automation, String> {
+        let mut next = current.clone();
+        let steps = self.steps()?;
+        if self.trigger {
+            let existing = self.index.and_then(|i| current.triggers.get(i));
+            let trigger = Trigger {
+                id: existing.map_or_else(automation::new_id, |t| t.id.clone()),
+                enabled: existing.is_none_or(|t| t.enabled),
+                event: self.event(),
+                steps,
+            };
+            place(&mut next.triggers, self.index, trigger);
+        } else {
+            let existing = self.index.and_then(|i| current.tasks.get(i));
+            let task = ScheduledTask {
+                id: existing.map_or_else(automation::new_id, |t| t.id.clone()),
+                name: self.name.trim().to_string(),
+                enabled: existing.is_none_or(|t| t.enabled),
+                schedule: self.schedule()?,
+                steps,
+                only_when_online: self.only_online,
+            };
+            place(&mut next.tasks, self.index, task);
+        }
+        automation::validate(&next)?;
+        Ok(next)
     }
 
     fn from_task(index: usize, task: &ScheduledTask) -> Self {
@@ -200,6 +315,13 @@ impl Editor {
 
     fn steps(&self) -> Result<Vec<Step>, String> {
         self.steps.iter().map(to_step).collect()
+    }
+}
+
+fn place<T>(list: &mut Vec<T>, index: Option<usize>, item: T) {
+    match index {
+        Some(index) if index < list.len() => list[index] = item,
+        _ => list.push(item),
     }
 }
 
@@ -325,6 +447,12 @@ pub enum Message {
     Watchdog(bool),
     Failures(String),
     SaveRules,
+    NewTrigger,
+    EditTrigger(usize),
+    Event(EventKind),
+    Value(String),
+    ToggleTrigger(usize, bool),
+    DeleteTrigger(usize),
 }
 
 fn save(state: &mut State, automation: Automation) -> Task<Message> {
@@ -348,6 +476,11 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
     if let Some(editor) = state.editor.as_mut() {
         match &message {
             Message::Name(value) => editor.name = value.clone(),
+            Message::Event(value) => {
+                editor.event = *value;
+                editor.value.clear();
+            }
+            Message::Value(value) => editor.value = value.clone(),
             Message::Repeat(value) => editor.repeat = *value,
             Message::Times(value) => editor.times = value.clone(),
             Message::Day(day) => {
@@ -400,33 +533,8 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             let Some(editor) = state.editor.as_mut() else {
                 return Task::none();
             };
-            let built = editor.schedule().and_then(|schedule| {
-                Ok(ScheduledTask {
-                    id: editor
-                        .index
-                        .and_then(|i| state.automation.tasks.get(i))
-                        .map(|task| task.id.clone())
-                        .unwrap_or_else(automation::new_id),
-                    name: editor.name.trim().to_string(),
-                    enabled: editor
-                        .index
-                        .and_then(|i| state.automation.tasks.get(i))
-                        .is_none_or(|task| task.enabled),
-                    schedule,
-                    steps: editor.steps()?,
-                    only_when_online: editor.only_online,
-                })
-            });
-            let mut next = state.automation.clone();
-            let result = built.and_then(|task| {
-                match editor.index {
-                    Some(index) if index < next.tasks.len() => next.tasks[index] = task,
-                    _ => next.tasks.push(task),
-                }
-                automation::validate(&next)
-            });
-            match result {
-                Ok(()) => {
+            match editor.apply(&state.automation) {
+                Ok(next) => {
                     editor.error = None;
                     save(state, next)
                 }
@@ -435,6 +543,38 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                     Task::none()
                 }
             }
+        }
+        Message::NewTrigger => {
+            state.editor = Some(Editor {
+                trigger: true,
+                ..Editor::new()
+            });
+            Task::none()
+        }
+        Message::EditTrigger(index) => {
+            state.editor = state
+                .automation
+                .triggers
+                .get(index)
+                .map(|trigger| Editor::from_trigger(index, trigger));
+            Task::none()
+        }
+        Message::ToggleTrigger(index, on) => {
+            let mut next = state.automation.clone();
+            match next.triggers.get_mut(index) {
+                Some(trigger) => trigger.enabled = on,
+                None => return Task::none(),
+            }
+            save(state, next)
+        }
+        Message::DeleteTrigger(index) => {
+            let mut next = state.automation.clone();
+            if index >= next.triggers.len() {
+                return Task::none();
+            }
+            next.triggers.remove(index);
+            state.editor = None;
+            save(state, next)
         }
         Message::ToggleTask(index, on) => {
             let mut next = state.automation.clone();
@@ -636,8 +776,8 @@ fn labelled<'a>(label: &'a str, control: impl Into<Element<'a, Message>>) -> Ele
     .into()
 }
 
-fn editor_view<'a>(state: &'a State, editor: &'a Editor) -> Element<'a, Message> {
-    let when: Element<'a, Message> = match editor.repeat {
+fn task_fields(editor: &Editor) -> Vec<Element<'_, Message>> {
+    let when: Element<'_, Message> = match editor.repeat {
         Repeat::Daily => labelled(
             "At",
             field("04:00, 16:00", &editor.times, false, Message::Times),
@@ -676,14 +816,14 @@ fn editor_view<'a>(state: &'a State, editor: &'a Editor) -> Element<'a, Message>
             .spacing(SPACE_2),
         ),
     };
-    let mut body = column![
+    vec![
         labelled(
             "Name",
-            field("Nightly backup", &editor.name, false, Message::Name)
+            field("Nightly backup", &editor.name, false, Message::Name),
         ),
         labelled(
             "Repeat",
-            dropdown(Repeat::ALL, Some(editor.repeat), Message::Repeat)
+            dropdown(Repeat::ALL, Some(editor.repeat), Message::Repeat),
         ),
         when,
         labelled(
@@ -695,11 +835,40 @@ fn editor_view<'a>(state: &'a State, editor: &'a Editor) -> Element<'a, Message>
                     .style(style::muted)
             ]
             .spacing(SPACE_3)
-            .align_y(Alignment::Center)
+            .align_y(Alignment::Center),
         ),
-        steps_view(&editor.steps),
     ]
-    .spacing(SPACE_4);
+}
+
+fn trigger_fields(editor: &Editor) -> Vec<Element<'_, Message>> {
+    let mut fields = vec![labelled(
+        "When",
+        dropdown(EventKind::ALL, Some(editor.event), Message::Event),
+    )];
+    if let Some(placeholder) = editor.event.placeholder() {
+        fields.push(labelled(
+            "",
+            field(placeholder, &editor.value, false, Message::Value),
+        ));
+    }
+    fields.push(
+        text("Commands and messages can use {player} and {message}.")
+            .size(TEXT_SM)
+            .style(style::muted)
+            .into(),
+    );
+    fields
+}
+
+fn editor_view<'a>(state: &'a State, editor: &'a Editor) -> Element<'a, Message> {
+    let fields = if editor.trigger {
+        trigger_fields(editor)
+    } else {
+        task_fields(editor)
+    };
+    let mut body = column(fields)
+        .push(steps_view(&editor.steps))
+        .spacing(SPACE_4);
     if let Some(error) = &editor.error {
         body = body.push(text(error.as_str()).size(TEXT_SM).color(CORAL));
     }
@@ -710,7 +879,11 @@ fn editor_view<'a>(state: &'a State, editor: &'a Editor) -> Element<'a, Message>
                 .style(style::ghost)
                 .on_press_maybe((!state.saving).then_some(Message::CancelEdit)),
             busy_button(
-                "Save task",
+                if editor.trigger {
+                    "Save trigger"
+                } else {
+                    "Save task"
+                },
                 "Saving",
                 state.saving,
                 Some(Message::SaveEdit),
@@ -727,33 +900,124 @@ fn editor_view<'a>(state: &'a State, editor: &'a Editor) -> Element<'a, Message>
         .into()
 }
 
-fn tasks_view(state: &State) -> Element<'_, Message> {
-    let mut rows: Vec<Element<'_, Message>> = Vec::new();
-    for (index, task) in state.automation.tasks.iter().enumerate() {
-        match &state.editor {
-            Some(editor) if editor.index == Some(index) => rows.push(editor_view(state, editor)),
-            _ => rows.push(task_row(state, index, task)),
-        }
+fn list_section<'a>(
+    state: &'a State,
+    title: &'a str,
+    trigger: bool,
+    rows: Vec<Element<'a, Message>>,
+    empty: &'a str,
+    add: (&'a str, Message),
+) -> Element<'a, Message> {
+    let mut rows = rows;
+    let editor = state.editor.as_ref().filter(|e| e.trigger == trigger);
+    if rows.is_empty() && editor.is_none() {
+        rows.push(text(empty).size(TEXT_SM).style(style::muted).into());
     }
-    if state.automation.tasks.is_empty() && state.editor.is_none() {
-        rows.push(
-            text("Run commands, broadcasts, restarts or backups on a schedule.")
-                .size(TEXT_SM)
-                .style(style::muted)
-                .into(),
-        );
-    }
-    match &state.editor {
+    match editor {
         Some(editor) if editor.index.is_none() => rows.push(editor_view(state, editor)),
-        Some(_) => {}
-        None => rows.push(
-            row![sized(small("New task"), BUTTON_MD)
+        _ if state.editor.is_some() => {}
+        _ => rows.push(
+            row![sized(small(add.0), BUTTON_MD)
                 .style(style::secondary)
-                .on_press_maybe((!state.saving).then_some(Message::NewTask))]
+                .on_press_maybe((!state.saving).then_some(add.1))]
             .into(),
         ),
     }
-    section("Scheduled tasks", rows)
+    section(title, rows)
+}
+
+fn editing(state: &State, trigger: bool, index: usize) -> Option<&Editor> {
+    state
+        .editor
+        .as_ref()
+        .filter(|e| e.trigger == trigger && e.index == Some(index))
+}
+
+fn tasks_view(state: &State) -> Element<'_, Message> {
+    let rows = state
+        .automation
+        .tasks
+        .iter()
+        .enumerate()
+        .map(|(index, task)| match editing(state, false, index) {
+            Some(editor) => editor_view(state, editor),
+            None => task_row(state, index, task),
+        })
+        .collect();
+    list_section(
+        state,
+        "Scheduled tasks",
+        false,
+        rows,
+        "Run commands, broadcasts, restarts or backups on a schedule.",
+        ("New task", Message::NewTask),
+    )
+}
+
+fn trigger_summary(event: &TriggerEvent) -> String {
+    let who = |name: &str| match name {
+        "" => "a player".to_string(),
+        name => name.to_string(),
+    };
+    match event {
+        TriggerEvent::Join(name) => format!("When {} joins", who(name)),
+        TriggerEvent::Leave(name) => format!("When {} leaves", who(name)),
+        TriggerEvent::Chat(text) => format!("When a chat message contains \"{text}\""),
+        TriggerEvent::Console(text) => format!("When a console line matches \"{text}\""),
+        TriggerEvent::Started => "When the server starts".into(),
+        TriggerEvent::Stopped => "When the server stops".into(),
+        TriggerEvent::Crashed => "When the server crashes".into(),
+    }
+}
+
+fn trigger_row<'a>(state: &'a State, index: usize, trigger: &'a Trigger) -> Element<'a, Message> {
+    let steps: Vec<String> = trigger
+        .steps
+        .iter()
+        .map(|step| step_form(step).kind.to_string())
+        .collect();
+    let idle = !state.saving;
+    row![
+        column![
+            text(trigger_summary(&trigger.event))
+                .size(TEXT_MD)
+                .font(UI_MEDIUM),
+            text(steps.join(", ")).size(TEXT_SM).style(style::muted),
+        ]
+        .spacing(SPACE_1)
+        .width(Length::Fill),
+        switch(trigger.enabled, move |on| Message::ToggleTrigger(index, on)),
+        sized(small("Edit"), BUTTON_MD)
+            .style(style::ghost)
+            .on_press_maybe(idle.then_some(Message::EditTrigger(index))),
+        sized_icon(icon(Icon::Trash, 16.0), BUTTON_MD)
+            .style(style::danger)
+            .on_press_maybe(idle.then_some(Message::DeleteTrigger(index))),
+    ]
+    .spacing(SPACE_3)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+fn triggers_view(state: &State) -> Element<'_, Message> {
+    let rows = state
+        .automation
+        .triggers
+        .iter()
+        .enumerate()
+        .map(|(index, trigger)| match editing(state, true, index) {
+            Some(editor) => editor_view(state, editor),
+            None => trigger_row(state, index, trigger),
+        })
+        .collect();
+    list_section(
+        state,
+        "Triggers",
+        true,
+        rows,
+        "Run steps when players join, chat or the server changes state.",
+        ("New trigger", Message::NewTrigger),
+    )
 }
 
 fn rules_view(state: &State) -> Element<'_, Message> {
@@ -817,6 +1081,8 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     }
     let page = column![
         tasks_view(state),
+        rule::horizontal(1).style(style::hairline),
+        triggers_view(state),
         rule::horizontal(1).style(style::hairline),
         rules_view(state),
     ]

@@ -1,28 +1,41 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{Datelike, Local, NaiveDateTime, NaiveTime};
 use once_cell::sync::Lazy;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast::error::RecvError;
 
 use crate::backup_manager::create_backup_of_type;
-use crate::events::{emit, Event};
+use crate::events::{emit, subscribe, Event};
 use crate::schedule;
 use crate::server_runner::{
     force_restart, is_running, ping, player_count, restart_server, send_command, send_console_line,
     start_server, stop_server,
 };
 use crate::server_store::{load_server_list, save_server_list};
-use crate::types::{BackupType, ConsoleLineType, ServerRecord, SuccessResult};
+use crate::types::{BackupType, ConsoleLineType, ServerRecord, ServerRuntimeStatus, SuccessResult};
 
 const KEY: &str = "automation";
 const WATCHDOG_INTERVAL: chrono::Duration = chrono::Duration::seconds(60);
+const TRIGGER_COOLDOWN: Duration = Duration::from_secs(10);
+
+static JOIN: Lazy<Regex> = Lazy::new(|| pattern(r"\]: (\S+) joined the game"));
+static LEAVE: Lazy<Regex> = Lazy::new(|| pattern(r"\]: (\S+) left the game"));
+static CHAT: Lazy<Regex> = Lazy::new(|| pattern(r"\]: (?:\[Not Secure\] )?<([^>]+)> (.*)$"));
+static ANSI: Lazy<Regex> = Lazy::new(|| pattern(r"\x1b\[[0-9;]*[A-Za-z]"));
+
+fn pattern(text: &str) -> Regex {
+    Regex::new(text).unwrap_or_else(|_| Regex::new("$^").unwrap_or_else(|_| unreachable!()))
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Automation {
     pub tasks: Vec<ScheduledTask>,
+    pub triggers: Vec<Trigger>,
     pub wait_for_empty: bool,
     pub max_wait_minutes: u32,
     pub idle_stop_minutes: u32,
@@ -34,6 +47,7 @@ impl Default for Automation {
     fn default() -> Self {
         Self {
             tasks: Vec::new(),
+            triggers: Vec::new(),
             wait_for_empty: false,
             max_wait_minutes: 60,
             idle_stop_minutes: 0,
@@ -81,6 +95,29 @@ pub enum Step {
     Backup,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Trigger {
+    pub id: String,
+    #[serde(default = "enabled")]
+    pub enabled: bool,
+    pub event: TriggerEvent,
+    #[serde(default)]
+    pub steps: Vec<Step>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "camelCase")]
+pub enum TriggerEvent {
+    Join(String),
+    Leave(String),
+    Chat(String),
+    Console(String),
+    Started,
+    Stopped,
+    Crashed,
+}
+
 pub fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
@@ -117,6 +154,15 @@ pub fn validate(automation: &Automation) -> Result<(), String> {
             }
         }
         validate_steps(&task.steps)?;
+    }
+    for trigger in &automation.triggers {
+        match &trigger.event {
+            TriggerEvent::Chat(text) | TriggerEvent::Console(text) if text.trim().is_empty() => {
+                return Err("Enter the text the trigger should look for".into());
+            }
+            _ => {}
+        }
+        validate_steps(&trigger.steps)?;
     }
     Ok(())
 }
@@ -315,6 +361,7 @@ pub struct Scheduler {
 impl Scheduler {
     pub async fn tick(&mut self, now: NaiveDateTime) {
         let servers = load_server_list().await;
+        remember_triggers(&servers);
         run_tasks(&servers, now);
         for server in &servers {
             let settings = of(server);
@@ -440,6 +487,127 @@ impl Scheduler {
     }
 }
 
+pub fn match_line(event: &TriggerEvent, line: &str) -> Option<Vec<(&'static str, String)>> {
+    let player = |regex: &Regex, name: &str| {
+        let player = regex.captures(line)?.get(1)?.as_str().to_string();
+        let wanted = name.trim();
+        (wanted.is_empty() || wanted.eq_ignore_ascii_case(&player))
+            .then(|| vec![("player", player)])
+    };
+    match event {
+        TriggerEvent::Join(name) => player(&JOIN, name),
+        TriggerEvent::Leave(name) => player(&LEAVE, name),
+        TriggerEvent::Chat(text) => {
+            let captures = CHAT.captures(line)?;
+            let message = captures[2].to_string();
+            message
+                .to_lowercase()
+                .contains(&text.trim().to_lowercase())
+                .then(|| vec![("player", captures[1].to_string()), ("message", message)])
+        }
+        TriggerEvent::Console(text) => {
+            let found = match Regex::new(text) {
+                Ok(regex) => regex.is_match(line),
+                Err(_) => line.contains(text.as_str()),
+            };
+            found.then(|| vec![("message", line.to_string())])
+        }
+        _ => None,
+    }
+}
+
+fn status_event(
+    previous: ServerRuntimeStatus,
+    current: ServerRuntimeStatus,
+) -> Option<TriggerEvent> {
+    use ServerRuntimeStatus::*;
+    match (previous, current) {
+        (Online, Online) | (Crashed, Crashed) => None,
+        (_, Online) => Some(TriggerEvent::Started),
+        (Online | Stopping, Offline) => Some(TriggerEvent::Stopped),
+        (_, Crashed) => Some(TriggerEvent::Crashed),
+        _ => None,
+    }
+}
+
+static TRIGGERS: Lazy<Mutex<HashMap<String, Vec<Trigger>>>> =
+    Lazy::new(|| Mutex::new(HashMap::new()));
+
+fn remember_triggers(servers: &[ServerRecord]) {
+    if let Ok(mut triggers) = TRIGGERS.lock() {
+        *triggers = servers
+            .iter()
+            .map(|server| {
+                let enabled = of(server).triggers.into_iter().filter(|t| t.enabled);
+                (server.id.clone(), enabled.collect())
+            })
+            .collect();
+    }
+}
+
+pub async fn watch_events() {
+    let mut events = subscribe();
+    let mut statuses: HashMap<String, ServerRuntimeStatus> = HashMap::new();
+    let mut fired: HashMap<String, Instant> = HashMap::new();
+    loop {
+        let event = match events.recv().await {
+            Ok(event) => event,
+            Err(RecvError::Lagged(_)) => continue,
+            Err(RecvError::Closed) => return,
+        };
+        let (server_id, line, status) = match event {
+            Event::ConsoleOutput { server_id, line } if line.kind != ConsoleLineType::System => (
+                server_id,
+                ANSI.replace_all(&line.text, "").into_owned(),
+                None,
+            ),
+            Event::ServerStatus(update) => {
+                let previous = statuses
+                    .insert(update.server_id.clone(), update.status)
+                    .unwrap_or_default();
+                match status_event(previous, update.status) {
+                    Some(event) => (update.server_id, String::new(), Some(event)),
+                    None => continue,
+                }
+            }
+            _ => continue,
+        };
+        let triggers = TRIGGERS
+            .lock()
+            .ok()
+            .and_then(|t| t.get(&server_id).cloned())
+            .unwrap_or_default();
+        for trigger in triggers {
+            let vars = match &status {
+                Some(event) => (*event == trigger.event).then(Vec::new),
+                None => match_line(&trigger.event, &line),
+            };
+            let Some(vars) = vars else {
+                continue;
+            };
+            let now = Instant::now();
+            if fired
+                .get(&trigger.id)
+                .is_some_and(|at| now.duration_since(*at) < TRIGGER_COOLDOWN)
+            {
+                continue;
+            }
+            fired.insert(trigger.id.clone(), now);
+            let id = server_id.clone();
+            tokio::spawn(async move {
+                let vars: Vec<(&str, &str)> = vars.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                if let Err(error) = run_steps(&id, &trigger.steps, "Trigger", &vars).await {
+                    send_console_line(
+                        &id,
+                        &format!("An automation trigger failed: {error}"),
+                        ConsoleLineType::System,
+                    );
+                }
+            });
+        }
+    }
+}
+
 async fn say(id: &str, message: String) {
     send_command(id.to_string(), format!("say {message}")).await;
 }
@@ -461,6 +629,43 @@ mod tests {
         NaiveDate::from_ymd_opt(2026, 6, day)
             .and_then(|d| d.and_hms_opt(h, m, 0))
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn matches_console_lines() {
+        let join = "[12:00:00 INFO]: Steve joined the game";
+        let chat = "[12:00:01] [Server thread/INFO]: [Not Secure] <Alex> Hello there";
+        let any = TriggerEvent::Join(String::new());
+        assert_eq!(
+            match_line(&any, join),
+            Some(vec![("player", "Steve".into())])
+        );
+        assert!(match_line(&TriggerEvent::Join("steve".into()), join).is_some());
+        assert!(match_line(&TriggerEvent::Join("Alex".into()), join).is_none());
+        assert!(match_line(&TriggerEvent::Leave(String::new()), join).is_none());
+        assert_eq!(
+            match_line(&TriggerEvent::Chat("hello".into()), chat),
+            Some(vec![
+                ("player", "Alex".into()),
+                ("message", "Hello there".into())
+            ])
+        );
+        assert!(match_line(&TriggerEvent::Chat("bye".into()), chat).is_none());
+        assert!(match_line(&TriggerEvent::Join(String::new()), chat).is_none());
+        assert!(match_line(&TriggerEvent::Console(r"joined the \w+".into()), join).is_some());
+        assert!(match_line(&TriggerEvent::Console("[unclosed".into()), "a [unclosed b").is_some());
+        assert!(match_line(&TriggerEvent::Started, join).is_none());
+    }
+
+    #[test]
+    fn maps_status_changes() {
+        use ServerRuntimeStatus::*;
+        assert_eq!(status_event(Starting, Online), Some(TriggerEvent::Started));
+        assert_eq!(status_event(Stopping, Offline), Some(TriggerEvent::Stopped));
+        assert_eq!(status_event(Online, Crashed), Some(TriggerEvent::Crashed));
+        assert_eq!(status_event(Offline, Offline), None);
+        assert_eq!(status_event(Starting, Offline), None);
+        assert_eq!(status_event(Online, Online), None);
     }
 
     #[test]

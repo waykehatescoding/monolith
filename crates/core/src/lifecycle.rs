@@ -41,6 +41,7 @@ pub async fn run_auto_backups() {
 pub async fn run_automation() {
     let mut interval = tokio::time::interval(SCHEDULE_TICK);
     let mut scheduler = automation::Scheduler::default();
+    tokio::spawn(automation::watch_events());
     loop {
         interval.tick().await;
         scheduler.tick(chrono::Local::now().naive_local()).await;

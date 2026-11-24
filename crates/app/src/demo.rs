@@ -233,6 +233,7 @@ fn seed(dir: &Path) -> io::Result<()> {
                 enabled: true,
                 interval_hours: 6.0,
                 last_backup_at: Some(iso(ago(2 * 3600))),
+                ..BackupConfig::default()
             });
             seed_survival(&path)?;
         }

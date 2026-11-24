@@ -19,8 +19,18 @@ use monolith_theme::widget::{sized, sized_icon};
 use monolith_theme::{icon, icon_colored, style, Icon, UI_MEDIUM, UI_SEMIBOLD};
 
 use crate::ctx::{Confirm, Ctx};
+use crate::ui::busy_button;
 
 const MAX_INTERVAL_HOURS: u32 = 720;
+const MAX_KEEP: u32 = 9999;
+
+#[derive(Debug, Default, Clone, PartialEq)]
+struct Form {
+    auto_enabled: bool,
+    interval: String,
+    keep_last: String,
+    keep_days: String,
+}
 
 #[derive(Debug, Default)]
 pub struct State {
@@ -31,9 +41,8 @@ pub struct State {
     cancelling: bool,
     percent: f64,
     stage: Option<BackupStage>,
-    auto_enabled: bool,
-    interval: String,
-    saved: (bool, String),
+    form: Form,
+    saved: Form,
     saving: bool,
 }
 
@@ -51,6 +60,8 @@ pub enum Message {
     Tick,
     ToggleAuto(bool),
     Interval(String),
+    KeepLast(String),
+    KeepDays(String),
     SaveSchedule,
     ScheduleSaved(Result<(), String>),
 }
@@ -61,6 +72,20 @@ fn parse_interval(value: &str) -> Option<u32> {
         .parse::<u32>()
         .ok()
         .filter(|hours| (1..=MAX_INTERVAL_HOURS).contains(hours))
+}
+
+fn parse_limit(value: &str) -> Result<Option<u32>, ()> {
+    if value.trim().is_empty() {
+        return Ok(None);
+    }
+    match value.trim().parse::<u32>() {
+        Ok(n) if (1..=MAX_KEEP).contains(&n) => Ok(Some(n)),
+        _ => Err(()),
+    }
+}
+
+fn digits(value: &str) -> String {
+    value.chars().filter(char::is_ascii_digit).collect()
 }
 
 fn format_size(bytes: u64) -> String {
@@ -124,9 +149,14 @@ fn sync_config(state: &mut State, ctx: &Ctx) {
     } else {
         24
     };
-    state.auto_enabled = config.enabled;
-    state.interval = hours.to_string();
-    state.saved = (config.enabled, state.interval.clone());
+    let limit = |value: Option<u32>| value.map(|n| n.to_string()).unwrap_or_default();
+    state.form = Form {
+        auto_enabled: config.enabled,
+        interval: hours.to_string(),
+        keep_last: limit(config.keep_last),
+        keep_days: limit(config.keep_days),
+    };
+    state.saved = state.form.clone();
 }
 
 pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
@@ -274,30 +304,43 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             _ => Task::none(),
         },
         Message::ToggleAuto(value) => {
-            state.auto_enabled = value;
+            state.form.auto_enabled = value;
             Task::none()
         }
         Message::Interval(value) => {
             if value.chars().all(|c| c.is_ascii_digit()) {
-                state.interval = value;
+                state.form.interval = value;
             }
             Task::none()
         }
+        Message::KeepLast(value) => {
+            state.form.keep_last = digits(&value);
+            Task::none()
+        }
+        Message::KeepDays(value) => {
+            state.form.keep_days = digits(&value);
+            Task::none()
+        }
         Message::SaveSchedule => {
-            let (Some(id), Some(hours)) =
-                (state.server_id.clone(), parse_interval(&state.interval))
-            else {
+            let (Some(id), Some(hours), Ok(keep_last), Ok(keep_days)) = (
+                state.server_id.clone(),
+                parse_interval(&state.form.interval),
+                parse_limit(&state.form.keep_last),
+                parse_limit(&state.form.keep_days),
+            ) else {
                 return Task::none();
             };
             state.saving = true;
-            let last_backup_at = ctx
+            let current = ctx
                 .selected_server()
-                .and_then(|server| server.backup_config.as_ref())
-                .and_then(|config| config.last_backup_at.clone());
+                .and_then(|server| server.backup_config.clone())
+                .unwrap_or_default();
             let config = BackupConfig {
-                enabled: state.auto_enabled,
+                enabled: state.form.auto_enabled,
                 interval_hours: f64::from(hours),
-                last_backup_at,
+                keep_last,
+                keep_days,
+                ..current
             };
             Task::perform(
                 server_store::update_server_settings(
@@ -322,8 +365,8 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.saving = false;
             match outcome {
                 Ok(()) => {
-                    state.saved = (state.auto_enabled, state.interval.clone());
-                    ctx.success("Backup schedule saved");
+                    state.saved = state.form.clone();
+                    ctx.success("Backup settings saved");
                     ctx.refresh_servers();
                 }
                 Err(error) => ctx.error(format!("Could not save the schedule: {error}")),
@@ -466,25 +509,39 @@ fn list_view<'a>(state: &'a State, can_restore: bool) -> Element<'a, Message> {
         .into()
 }
 
-fn schedule_view(state: &State) -> Element<'_, Message> {
-    let hours = parse_interval(&state.interval);
-    let dirty = (state.auto_enabled, state.interval.clone()) != state.saved;
-    let can_save = hours.is_some() && dirty && !state.saving;
-
-    let input = text_input("24", &state.interval)
+fn number_input<'a>(
+    placeholder: &str,
+    value: &'a str,
+    valid: bool,
+    submit: Option<Message>,
+    on_input: fn(String) -> Message,
+) -> Element<'a, Message> {
+    text_input(placeholder, value)
         .size(TEXT_MD)
         .padding([8, 12])
         .width(72)
-        .on_input(Message::Interval)
-        .on_submit_maybe(can_save.then_some(Message::SaveSchedule))
+        .on_input(on_input)
+        .on_submit_maybe(submit)
         .style(move |theme: &Theme, status| {
-            if hours.is_none() {
-                style::input_error(theme, status)
-            } else {
+            if valid {
                 style::input(theme, status)
+            } else {
+                style::input_error(theme, status)
             }
-        });
-    let hint = if hours.is_none() {
+        })
+        .into()
+}
+
+fn schedule_view(state: &State) -> Element<'_, Message> {
+    let form = &state.form;
+    let hours_ok = parse_interval(&form.interval).is_some();
+    let keep_last_ok = parse_limit(&form.keep_last).is_ok();
+    let keep_days_ok = parse_limit(&form.keep_days).is_ok();
+    let valid = hours_ok && keep_last_ok && keep_days_ok;
+    let can_save = valid && *form != state.saved && !state.saving;
+    let submit = can_save.then_some(Message::SaveSchedule);
+
+    let hint = if !hours_ok {
         text(format!(
             "Enter a whole number from 1 to {MAX_INTERVAL_HOURS}."
         ))
@@ -495,22 +552,29 @@ fn schedule_view(state: &State) -> Element<'_, Message> {
             .size(TEXT_SM)
             .style(style::muted)
     };
-    let save = action(
-        text(if state.saving {
-            "Saving"
-        } else {
-            "Save schedule"
-        })
-        .size(TEXT_MD)
-        .font(UI_MEDIUM)
-        .into(),
-        style::secondary,
-        can_save.then_some(Message::SaveSchedule),
+    let retention_hint = if keep_last_ok && keep_days_ok {
+        text("Leave empty for no limit. Applies to automatic backups only; manual and locked backups are never removed.")
+            .size(TEXT_SM)
+            .style(style::muted)
+    } else {
+        text(format!(
+            "Enter a whole number from 1 to {MAX_KEEP}, or leave it empty."
+        ))
+        .size(TEXT_SM)
+        .color(CORAL)
+    };
+    let save = busy_button(
+        "Save settings",
+        "Saving",
+        state.saving,
+        submit.clone(),
+        style::primary,
+        BUTTON_MD,
     );
 
     column![
         text("Automatic backups").size(TEXT_LG).font(UI_SEMIBOLD),
-        toggler(state.auto_enabled)
+        toggler(form.auto_enabled)
             .label("Back up this server on a schedule")
             .size(18)
             .text_size(TEXT_MD)
@@ -519,14 +583,49 @@ fn schedule_view(state: &State) -> Element<'_, Message> {
             .on_toggle(Message::ToggleAuto),
         row![
             text("Every").size(TEXT_MD),
-            input,
+            number_input(
+                "24",
+                &form.interval,
+                hours_ok,
+                submit.clone(),
+                Message::Interval
+            ),
             text("hours").size(TEXT_MD),
-            Space::new().width(SPACE_3),
-            save,
         ]
         .spacing(SPACE_2)
         .align_y(Alignment::Center),
         hint,
+        Space::new().height(SPACE_2),
+        text("Retention").size(TEXT_MD).font(UI_MEDIUM),
+        row![
+            text("Keep the last").size(TEXT_MD),
+            number_input(
+                "All",
+                &form.keep_last,
+                keep_last_ok,
+                submit.clone(),
+                Message::KeepLast
+            ),
+            text("automatic backups").size(TEXT_MD),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center),
+        row![
+            text("Remove automatic backups older than").size(TEXT_MD),
+            number_input(
+                "Never",
+                &form.keep_days,
+                keep_days_ok,
+                submit,
+                Message::KeepDays
+            ),
+            text("days").size(TEXT_MD),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center),
+        retention_hint,
+        Space::new().height(SPACE_2),
+        row![save],
     ]
     .spacing(SPACE_3)
     .into()
@@ -612,7 +711,10 @@ pub fn on_event(state: &mut State, event: &Event, _ctx: &Ctx) -> Task<Message> {
     };
     match event {
         Event::BackupProgress(progress) if progress.server_id == id => {
-            if progress.percent >= 0.0 && progress.stage.as_deref() != Some("complete") {
+            if progress.error.is_some() {
+                state.creating = false;
+                state.stage = None;
+            } else if progress.percent >= 0.0 && progress.stage.as_deref() != Some("complete") {
                 state.creating = true;
                 state.percent = progress.percent;
                 state.stage = match progress.stage.as_deref() {
@@ -644,7 +746,7 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
             ..State::default()
         };
         sync_config(state, ctx);
-    } else if (state.auto_enabled, state.interval.clone()) == state.saved {
+    } else if state.form == state.saved {
         sync_config(state, ctx);
     }
     load(id)

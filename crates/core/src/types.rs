@@ -223,6 +223,10 @@ pub struct BackupConfig {
     pub interval_hours: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_backup_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_last: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keep_days: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

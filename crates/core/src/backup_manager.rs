@@ -315,6 +315,7 @@ async fn create_backup_inner(
     let joined = {
         let server_id = server_id.to_string();
         let server_path = server_path.clone();
+        let backups_dir = backups_dir.clone();
         let zip_path = zip_path.clone();
         let cancel = cancel.clone();
         tokio::task::spawn_blocking(move || {
@@ -333,6 +334,9 @@ async fn create_backup_inner(
 
     match outcome {
         Ok(size) => {
+            if let Some(config) = &server.backup_config {
+                prune(&backups_dir, config.keep_last, config.keep_days);
+            }
             let backup = BackupEntry {
                 name: display_name,
                 filename,
@@ -387,20 +391,25 @@ pub async fn check_and_run_auto_backups() {
             continue;
         }
 
-        let result = create_backup_of_type(&server.id, None, BackupType::Auto).await;
-        if result.success {
-            server_store::update_server_settings(
-                server.id.clone(),
-                ServerSettingsUpdate {
-                    backup_config: Some(BackupConfig {
-                        last_backup_at: Some(iso(Utc::now())),
-                        ..config
-                    }),
-                    ..Default::default()
-                },
-            )
-            .await;
+        let result = create_backup_inner(&server.id, None, BackupType::Auto, true).await;
+        if !result.success {
+            continue;
         }
+        let current = server_store::get_server(server.id.clone())
+            .await
+            .and_then(|s| s.backup_config)
+            .unwrap_or(config);
+        server_store::update_server_settings(
+            server.id.clone(),
+            ServerSettingsUpdate {
+                backup_config: Some(BackupConfig {
+                    last_backup_at: Some(iso(Utc::now())),
+                    ..current
+                }),
+                ..Default::default()
+            },
+        )
+        .await;
     }
 }
 
@@ -438,12 +447,52 @@ fn parse_backup(path: &Path, file: &str) -> Option<BackupEntry> {
     })
 }
 
+fn expired(
+    backups: &[BackupEntry],
+    keep_last: Option<u32>,
+    keep_days: Option<u32>,
+    now: DateTime<Utc>,
+) -> Vec<String> {
+    let keep_last = keep_last.filter(|n| *n > 0).map(|n| n as usize);
+    let cutoff = keep_days
+        .filter(|d| *d > 0)
+        .map(|d| now - chrono::Duration::days(i64::from(d)));
+    let mut autos: Vec<&BackupEntry> = backups
+        .iter()
+        .filter(|b| b.kind == BackupType::Auto)
+        .collect();
+    autos.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    autos
+        .into_iter()
+        .enumerate()
+        .filter(|(index, backup)| {
+            keep_last.is_some_and(|n| *index >= n)
+                || cutoff.is_some_and(|cutoff| {
+                    DateTime::parse_from_rfc3339(&backup.created_at)
+                        .is_ok_and(|created| created < cutoff)
+                })
+        })
+        .map(|(_, backup)| backup.filename.clone())
+        .collect()
+}
+
+fn prune(dir: &Path, keep_last: Option<u32>, keep_days: Option<u32>) {
+    for filename in expired(&list_backups(dir), keep_last, keep_days, Utc::now()) {
+        if let Err(e) = fs::remove_file(dir.join(&filename)) {
+            eprintln!("[BACKUP] Could not remove old backup {filename}: {e}");
+        }
+    }
+}
+
 pub async fn get_backups(server_id: String) -> Vec<BackupEntry> {
     let Some(server) = server_store::get_server(server_id).await else {
         return Vec::new();
     };
-    let backups_dir = Path::new(&server.server_path).join(BACKUP_DIR_NAME);
-    let Ok(read) = fs::read_dir(&backups_dir) else {
+    list_backups(&Path::new(&server.server_path).join(BACKUP_DIR_NAME))
+}
+
+fn list_backups(backups_dir: &Path) -> Vec<BackupEntry> {
+    let Ok(read) = fs::read_dir(backups_dir) else {
         return Vec::new();
     };
 
@@ -658,4 +707,48 @@ pub async fn get_backup_status(server_id: String) -> Option<BackupStatus> {
 
 pub async fn is_backup_in_progress(server_id: String) -> bool {
     is_in_progress(&server_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(filename: &str, days_ago: i64, kind: BackupType) -> BackupEntry {
+        BackupEntry {
+            name: filename.to_string(),
+            filename: filename.to_string(),
+            path: String::new(),
+            size: 0,
+            created_at: iso(Utc::now() - chrono::Duration::days(days_ago)),
+            kind,
+        }
+    }
+
+    #[test]
+    fn retention_keeps_the_newest_automatic_backups() {
+        let backups = vec![
+            entry("a", 3, BackupType::Auto),
+            entry("b", 1, BackupType::Auto),
+            entry("c", 2, BackupType::Auto),
+            entry("m", 9, BackupType::Manual),
+        ];
+        assert_eq!(expired(&backups, Some(2), None, Utc::now()), vec!["a"]);
+    }
+
+    #[test]
+    fn retention_drops_automatic_backups_older_than_the_limit() {
+        let backups = vec![
+            entry("old", 10, BackupType::Auto),
+            entry("new", 1, BackupType::Auto),
+            entry("manual", 30, BackupType::Manual),
+        ];
+        assert_eq!(expired(&backups, None, Some(7), Utc::now()), vec!["old"]);
+    }
+
+    #[test]
+    fn retention_without_limits_keeps_everything() {
+        let backups = vec![entry("a", 100, BackupType::Auto)];
+        assert!(expired(&backups, None, None, Utc::now()).is_empty());
+        assert!(expired(&backups, Some(0), Some(0), Utc::now()).is_empty());
+    }
 }

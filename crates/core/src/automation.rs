@@ -41,6 +41,7 @@ pub struct Automation {
     pub idle_stop_minutes: u32,
     pub watchdog: bool,
     pub watchdog_failures: u32,
+    pub auto_update: bool,
 }
 
 impl Default for Automation {
@@ -53,6 +54,7 @@ impl Default for Automation {
             idle_stop_minutes: 0,
             watchdog: false,
             watchdog_failures: 3,
+            auto_update: false,
         }
     }
 }

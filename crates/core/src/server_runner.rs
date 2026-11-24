@@ -818,6 +818,8 @@ async fn start_server_core(server_id: String) -> SuccessResult {
         return SuccessResult::err("Server is already running");
     }
 
+    crate::software_updates::before_start(&server_id).await;
+
     let Some(server) = get_server(server_id.clone()).await else {
         return SuccessResult::err("Server not found");
     };

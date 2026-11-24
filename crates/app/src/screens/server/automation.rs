@@ -1,12 +1,14 @@
 use std::time::Duration;
 
 use chrono::{Local, NaiveDateTime};
-use iced::widget::{button, column, container, row, rule, scrollable, text, Space};
+use iced::widget::{button, column, container, row, rule, scrollable, text, toggler, Space};
 use iced::{time, Alignment, Element, Length, Subscription, Task};
 use monolith_core::automation::{
     self, Automation, Schedule, ScheduledTask, Step, Trigger, TriggerEvent,
 };
 use monolith_core::events::Event;
+use monolith_core::software_updates;
+use monolith_core::types::ServerRecord;
 use monolith_theme::token::*;
 use monolith_theme::widget::{sized, sized_icon};
 use monolith_theme::{icon, style, Icon, UI_MEDIUM};
@@ -416,6 +418,7 @@ pub struct State {
     saving: bool,
     rules: Rules,
     saved_rules: Rules,
+    checking: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -453,6 +456,9 @@ pub enum Message {
     Value(String),
     ToggleTrigger(usize, bool),
     DeleteTrigger(usize),
+    AutoUpdate(bool),
+    CheckNow,
+    Checked(Result<String, String>),
 }
 
 fn save(state: &mut State, automation: Automation) -> Task<Message> {
@@ -543,6 +549,29 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                     Task::none()
                 }
             }
+        }
+        Message::AutoUpdate(on) => {
+            let next = Automation {
+                auto_update: on,
+                ..state.automation.clone()
+            };
+            save(state, next)
+        }
+        Message::CheckNow => {
+            let Some(id) = state.server_id.clone() else {
+                return Task::none();
+            };
+            state.checking = true;
+            Task::perform(software_updates::check_now(id), Message::Checked)
+        }
+        Message::Checked(result) => {
+            state.checking = false;
+            match result {
+                Ok(text) => ctx.success(text),
+                Err(error) => ctx.error(format!("Could not check for updates: {error}")),
+            }
+            ctx.refresh_servers();
+            Task::none()
         }
         Message::NewTrigger => {
             state.editor = Some(Editor {
@@ -1072,6 +1101,46 @@ fn rules_view(state: &State) -> Element<'_, Message> {
     )
 }
 
+fn software_view<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Message> {
+    let supported = software_updates::supports(&server.framework);
+    let hint = if supported {
+        format!(
+            "Before each start, install the newest {} build for Minecraft {}. The Minecraft version never changes. Uses the backup before changes setting.",
+            server.framework, server.version
+        )
+    } else {
+        "Only Paper, Purpur and Fabric servers can update automatically.".to_string()
+    };
+    let installed = software_updates::installed_build(server)
+        .map(software_updates::label)
+        .unwrap_or("Unknown until the first update");
+    section(
+        "Server software",
+        vec![
+            setting(
+                "Keep on the latest build",
+                hint,
+                toggler(state.automation.auto_update)
+                    .size(18)
+                    .style(style::switch)
+                    .on_toggle_maybe((supported && !state.saving).then_some(Message::AutoUpdate)),
+            ),
+            setting(
+                "Installed build",
+                installed,
+                busy_button(
+                    "Check now",
+                    "Checking",
+                    state.checking,
+                    supported.then_some(Message::CheckNow),
+                    style::secondary,
+                    BUTTON_MD,
+                ),
+            ),
+        ],
+    )
+}
+
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(server) = ctx.selected_server() else {
         return Space::new().into();
@@ -1085,6 +1154,8 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         triggers_view(state),
         rule::horizontal(1).style(style::hairline),
         rules_view(state),
+        rule::horizontal(1).style(style::hairline),
+        software_view(state, server),
     ]
     .spacing(SPACE_6)
     .padding(iced::Padding {

@@ -5,6 +5,7 @@ use iced::widget::{
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
 use monolith_core::java_manager::discover_installed_javas;
+use monolith_core::modrinth_installs::incompatible_installs;
 use monolith_core::schedule::parse_times;
 use monolith_core::server_create::get_minecraft_versions;
 use monolith_core::server_framework::change_server_framework;
@@ -63,6 +64,7 @@ pub struct State {
     versions_error: Option<String>,
     changing: Option<(f64, String)>,
     platform_armed: bool,
+    compat: Option<Result<Vec<String>, String>>,
     exporting: bool,
 }
 
@@ -100,6 +102,7 @@ impl Default for State {
             versions_error: None,
             changing: None,
             platform_armed: false,
+            compat: None,
             exporting: false,
         }
     }
@@ -149,6 +152,7 @@ pub enum Message {
     ApplyPlatform,
     CancelPlatform,
     PlatformChanged(Result<String, String>),
+    Compatibility(String, String, Result<Vec<String>, String>),
     Export,
     Exported(Result<Option<String>, String>),
     Delete,
@@ -638,7 +642,14 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             if !state.platform_armed {
                 state.platform_armed = true;
-                return Task::none();
+                state.compat = None;
+                let framework = state.framework.clone();
+                return Task::perform(
+                    incompatible_installs(id, framework.clone(), version.clone()),
+                    move |result| {
+                        Message::Compatibility(framework.clone(), version.clone(), result)
+                    },
+                );
             }
             state.platform_armed = false;
             let framework = state.framework.clone();
@@ -655,6 +666,12 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 },
                 Message::PlatformChanged,
             )
+        }
+        Message::Compatibility(framework, version, result) => {
+            if state.framework == framework && state.version.as_deref() == Some(version.as_str()) {
+                state.compat = Some(result);
+            }
+            Task::none()
         }
         Message::PlatformChanged(result) => {
             state.changing = None;
@@ -1255,7 +1272,32 @@ fn platform<'a>(state: &'a State, server: &'a ServerRecord, ctx: &'a Ctx) -> Ele
         );
     }
     if state.platform_armed {
+        match &state.compat {
+            None => rows.push(
+                text("Checking installed plugins and mods")
+                    .size(TEXT_SM)
+                    .style(style::muted)
+                    .into(),
+            ),
+            Some(Ok(titles)) if !titles.is_empty() => rows.push(
+                text(format!(
+                    "No compatible version found for {}. They may fail to load after the change.",
+                    titles.join(", ")
+                ))
+                .size(TEXT_SM)
+                .color(CORAL)
+                .into(),
+            ),
+            Some(Err(error)) => rows.push(
+                text(format!("Could not check plugins and mods: {error}"))
+                    .size(TEXT_SM)
+                    .style(style::muted)
+                    .into(),
+            ),
+            Some(Ok(_)) => {}
+        }
         rows.push(
+
             text("Changing software can break worlds and plugins, and going to an older version can corrupt a world. Export or back up the server first, then confirm.")
                 .size(TEXT_SM)
                 .color(CORAL)

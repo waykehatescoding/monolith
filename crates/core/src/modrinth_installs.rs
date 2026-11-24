@@ -667,6 +667,47 @@ pub async fn set_install_enabled(
     }
 }
 
+fn quick_verdict(
+    entry: &ModrinthInstallEntry,
+    target: Option<(ModrinthProjectType, &str)>,
+) -> Option<bool> {
+    match target {
+        None => Some(false),
+        Some((project_type, _)) if project_type != entry.project_type => Some(false),
+        _ if entry.source == ContentSource::Spigot => Some(true),
+        _ => None,
+    }
+}
+
+pub async fn incompatible_installs(
+    server_id: String,
+    framework: String,
+    game_version: String,
+) -> Result<Vec<String>, String> {
+    let path = server_path_of(server_id).await.ok_or("Server not found")?;
+    let target = crate::content_sources::loader_for(&framework);
+    let mut incompatible = Vec::new();
+    for project_type in [ModrinthProjectType::Plugin, ModrinthProjectType::Mod] {
+        for entry in list_installs_at(&path, project_type).await {
+            let compatible = match quick_verdict(&entry, target) {
+                Some(verdict) => verdict,
+                None => !versions(
+                    entry.source,
+                    &entry.project_id,
+                    target.map(|(_, loader)| loader),
+                    Some(&game_version),
+                )
+                .await?
+                .is_empty(),
+            };
+            if !compatible {
+                incompatible.push(entry.title);
+            }
+        }
+    }
+    Ok(incompatible)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -734,6 +775,25 @@ mod tests {
         assert!(!plugins.join("a.jar.disabled").exists());
         assert_eq!(read_manifest(&dir).await.len(), 1);
         let _ = tokio::fs::remove_dir_all(&dir).await;
+    }
+
+    #[test]
+    fn quick_verdicts_skip_the_network_when_possible() {
+        let plugin = entry(ContentSource::Modrinth, "a", "a.jar");
+        assert_eq!(quick_verdict(&plugin, None), Some(false));
+        assert_eq!(
+            quick_verdict(&plugin, Some((ModrinthProjectType::Mod, "fabric"))),
+            Some(false)
+        );
+        assert_eq!(
+            quick_verdict(&plugin, Some((ModrinthProjectType::Plugin, "paper"))),
+            None
+        );
+        let spigot = entry(ContentSource::Spigot, "1", "b.jar");
+        assert_eq!(
+            quick_verdict(&spigot, Some((ModrinthProjectType::Plugin, "paper"))),
+            Some(true)
+        );
     }
 
     #[test]

@@ -16,7 +16,7 @@ use crate::ctx::{
 };
 use crate::demo;
 use crate::screens::server::{
-    analytics, automation, backups, console, content, files, overview, players,
+    analytics, automation, backups, console, content, files, network, overview, players,
     settings as server_settings, worlds,
 };
 use crate::screens::settings::{defaults, general, sharing, templates};
@@ -544,6 +544,7 @@ impl App {
                     Tab::Automation => {
                         automation::on_show(&mut screens.automation, ctx).map(S::Automation)
                     }
+                    Tab::Network => network::on_show(&mut screens.network, ctx).map(S::Network),
                     Tab::Settings => server_settings::on_show(&mut screens.server_settings, ctx)
                         .map(S::ServerSettings),
                 };
@@ -826,6 +827,7 @@ impl App {
             Tab::Backups => mapped(backups::view(&screens.backups, ctx), S::Backups),
             Tab::Analytics => mapped(analytics::view(&screens.analytics, ctx), S::Analytics),
             Tab::Automation => mapped(automation::view(&screens.automation, ctx), S::Automation),
+            Tab::Network => mapped(network::view(&screens.network, ctx), S::Network),
             Tab::Settings => mapped(
                 server_settings::view(&screens.server_settings, ctx),
                 S::ServerSettings,

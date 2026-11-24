@@ -11,6 +11,7 @@ pub mod files;
 pub mod gamerules;
 pub mod highlight;
 pub mod listing;
+pub mod network;
 pub mod overview;
 pub mod players;
 pub mod profiler;

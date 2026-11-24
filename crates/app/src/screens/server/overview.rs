@@ -9,7 +9,7 @@ use monolith_core::events::Event;
 use monolith_core::types::{
     ServerProperty, ServerRecord, ServerRuntimeStatus, ServerSettingsUpdate, SuccessResult,
 };
-use monolith_core::{ngrok_manager, server_props, server_runner, server_store};
+use monolith_core::{crossplay, ngrok_manager, server_props, server_runner, server_store};
 use monolith_theme::token::{
     AMBER, CORAL, SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, TEXT_2XL, TEXT_MD, TEXT_SM, TEXT_XL,
 };
@@ -46,6 +46,7 @@ pub struct State {
     port_fix: Option<u16>,
     started_at: Option<Instant>,
     listing: listing::State,
+    bedrock_port: Option<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +55,7 @@ pub struct Loaded {
     address: String,
     port: u16,
     eula_accepted: bool,
+    bedrock_port: Option<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,7 +91,9 @@ async fn load(server: ServerRecord) -> Loaded {
         .map(|content| content.lines().any(|line| line.trim() == "eula=true"))
         .unwrap_or(false);
     let address = ngrok_manager::get_local_ip().await;
+    let bedrock_port = crossplay::bedrock_port(&server).await;
     Loaded {
+        bedrock_port,
         server_id: server.id,
         address,
         port: port_of(&properties),
@@ -196,6 +200,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 state.address = loaded.address;
                 state.port = loaded.port;
                 state.eula_accepted = loaded.eula_accepted;
+                state.bedrock_port = loaded.bedrock_port;
             }
             Task::none()
         }
@@ -389,6 +394,12 @@ pub fn header<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             "Local",
             format!("{}:{}", state.address, state.port),
         ));
+        if let Some(port) = state.bedrock_port {
+            addresses = addresses.push(address_row(
+                "Bedrock",
+                format!("{}:{}", state.address, port),
+            ));
+        }
     }
     match public {
         Some(url) => addresses = addresses.push(address_row("Public", url)),

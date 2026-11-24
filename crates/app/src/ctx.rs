@@ -18,11 +18,12 @@ pub enum Tab {
     Backups,
     Analytics,
     Automation,
+    Network,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 9] = [
+    pub const ALL: [Tab; 10] = [
         Tab::Overview,
         Tab::Files,
         Tab::Players,
@@ -31,6 +32,7 @@ impl Tab {
         Tab::Backups,
         Tab::Analytics,
         Tab::Automation,
+        Tab::Network,
         Tab::Settings,
     ];
 
@@ -44,6 +46,7 @@ impl Tab {
             Tab::Backups => "Backups",
             Tab::Analytics => "Analytics",
             Tab::Automation => "Automation",
+            Tab::Network => "Network",
             Tab::Settings => "Settings",
         }
     }
@@ -105,6 +108,7 @@ impl Route {
             "backups" => Route::Server(Tab::Backups),
             "analytics" => Route::Server(Tab::Analytics),
             "automation" => Route::Server(Tab::Automation),
+            "network" => Route::Server(Tab::Network),
             "server-settings" => Route::Server(Tab::Settings),
             "create" => Route::Create,
             "settings-general" => Route::Settings(SettingsPage::General),

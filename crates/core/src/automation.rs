@@ -7,17 +7,35 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
 use crate::backup_manager::create_backup_of_type;
+use crate::events::{emit, Event};
 use crate::schedule;
-use crate::server_runner::{is_running, restart_server, send_command, start_server, stop_server};
+use crate::server_runner::{
+    is_running, player_count, restart_server, send_command, send_console_line, start_server,
+    stop_server,
+};
 use crate::server_store::{load_server_list, save_server_list};
-use crate::types::{BackupType, ServerRecord, SuccessResult};
+use crate::types::{BackupType, ConsoleLineType, ServerRecord, SuccessResult};
 
 const KEY: &str = "automation";
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct Automation {
     pub tasks: Vec<ScheduledTask>,
+    pub wait_for_empty: bool,
+    pub max_wait_minutes: u32,
+    pub idle_stop_minutes: u32,
+}
+
+impl Default for Automation {
+    fn default() -> Self {
+        Self {
+            tasks: Vec::new(),
+            wait_for_empty: false,
+            max_wait_minutes: 60,
+            idle_stop_minutes: 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -281,6 +299,116 @@ pub async fn run_steps(
     Ok(())
 }
 
+#[derive(Default)]
+pub struct Scheduler {
+    remaining: HashMap<String, i64>,
+    waiting: HashMap<String, (NaiveDateTime, i64)>,
+    empty_since: HashMap<String, NaiveDateTime>,
+}
+
+impl Scheduler {
+    pub async fn tick(&mut self, now: NaiveDateTime) {
+        let servers = load_server_list().await;
+        run_tasks(&servers, now);
+        for server in &servers {
+            let settings = of(server);
+            self.restart(server, &settings, now).await;
+            self.stop_when_empty(server, &settings, now);
+        }
+    }
+
+    async fn restart(&mut self, server: &ServerRecord, settings: &Automation, now: NaiveDateTime) {
+        let id = &server.id;
+        if !is_running(id) {
+            self.remaining.remove(id);
+            self.waiting.remove(id);
+            return;
+        }
+        if let Some((deadline, previous)) = self.waiting.get(id).copied() {
+            let left = (deadline - now).num_seconds();
+            if left <= 0 || player_count(id) == Some(0) {
+                self.waiting.remove(id);
+                tokio::spawn(restart_server(id.clone()));
+            } else {
+                if let Some(seconds) = schedule::crossed_warning(previous, left) {
+                    say(id, format!("Server restarting in {}", describe(seconds))).await;
+                }
+                self.waiting.insert(id.clone(), (deadline, left));
+            }
+            return;
+        }
+        let Some(current) = schedule::seconds_until_next(now, &server.restart_times) else {
+            self.remaining.remove(id);
+            return;
+        };
+        let Some(previous) = self.remaining.insert(id.clone(), current) else {
+            return;
+        };
+        if current > previous {
+            if settings.wait_for_empty && player_count(id).is_some_and(|n| n > 0) {
+                let minutes = settings.max_wait_minutes;
+                say(
+                    id,
+                    format!("Server restarts once everyone has left, or in {minutes} minute(s)"),
+                )
+                .await;
+                let deadline = now + chrono::Duration::minutes(i64::from(minutes));
+                self.waiting
+                    .insert(id.clone(), (deadline, i64::from(minutes) * 60));
+            } else {
+                tokio::spawn(restart_server(id.clone()));
+            }
+        } else if !settings.wait_for_empty {
+            if let Some(seconds) = schedule::crossed_warning(previous, current) {
+                say(id, format!("Server restarting in {}", describe(seconds))).await;
+            }
+        }
+    }
+
+    fn stop_when_empty(
+        &mut self,
+        server: &ServerRecord,
+        settings: &Automation,
+        now: NaiveDateTime,
+    ) {
+        let id = &server.id;
+        let minutes = settings.idle_stop_minutes;
+        if minutes == 0 || player_count(id) != Some(0) {
+            self.empty_since.remove(id);
+            return;
+        }
+        let since = *self.empty_since.entry(id.clone()).or_insert(now);
+        if now - since < chrono::Duration::minutes(i64::from(minutes)) {
+            return;
+        }
+        self.empty_since.remove(id);
+        send_console_line(
+            id,
+            &format!("Nobody has been online for {minutes} minute(s), stopping the server"),
+            ConsoleLineType::System,
+        );
+        emit(Event::Notice {
+            title: "Server stopped while empty",
+            body: format!(
+                "{} stopped after {minutes} minute(s) with nobody online.",
+                server.name
+            ),
+        });
+        tokio::spawn(stop_server(id.clone()));
+    }
+}
+
+async fn say(id: &str, message: String) {
+    send_command(id.to_string(), format!("say {message}")).await;
+}
+
+fn describe(seconds: i64) -> String {
+    match seconds {
+        s if s >= 60 => format!("{} minute(s)", s / 60),
+        s => format!("{s} seconds"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -359,6 +487,7 @@ mod tests {
                 steps: vec![Step::Backup],
                 only_when_online: false,
             }],
+            ..Default::default()
         };
         assert!(validate(&automation).is_ok());
         automation.tasks[0].steps.clear();
@@ -392,6 +521,7 @@ mod tests {
                 ],
                 only_when_online: true,
             }],
+            ..Default::default()
         };
         let mut server = ServerRecord::default();
         server.extra.insert(

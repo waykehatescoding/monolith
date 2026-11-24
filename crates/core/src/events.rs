@@ -32,6 +32,10 @@ pub enum Event {
     WorldsChanged {
         server_id: String,
     },
+    Notice {
+        title: &'static str,
+        body: String,
+    },
 }
 
 static BUS: Lazy<broadcast::Sender<Event>> = Lazy::new(|| broadcast::channel(1024).0);

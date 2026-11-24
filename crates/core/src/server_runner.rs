@@ -276,7 +276,7 @@ fn write_server_command(server_id: &str, command: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn send_console_line(server_id: &str, text: &str, kind: ConsoleLineType) {
+pub(crate) fn send_console_line(server_id: &str, text: &str, kind: ConsoleLineType) {
     let line = ConsoleLine {
         timestamp: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         text: text.to_string(),
@@ -1119,6 +1119,15 @@ pub async fn get_server_logs(server_id: String) -> Vec<ConsoleLine> {
         .ok()
         .and_then(|l| l.get(&server_id).cloned())
         .unwrap_or_default()
+}
+
+pub fn player_count(server_id: &str) -> Option<u32> {
+    STATS
+        .lock()
+        .ok()?
+        .get(server_id)
+        .filter(|state| state.ready)
+        .map(|state| state.stats.player_count)
 }
 
 #[cfg(test)]

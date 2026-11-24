@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use chrono::{Local, NaiveDateTime};
-use iced::widget::{button, column, container, row, scrollable, text, Space};
+use iced::widget::{button, column, container, row, rule, scrollable, text, Space};
 use iced::{time, Alignment, Element, Length, Subscription, Task};
 use monolith_core::automation::{self, Automation, Schedule, ScheduledTask, Step};
 use monolith_core::events::Event;
@@ -9,7 +9,7 @@ use monolith_theme::token::*;
 use monolith_theme::widget::{sized, sized_icon};
 use monolith_theme::{icon, style, Icon, UI_MEDIUM};
 
-use super::settings::{dropdown, field, section, switch};
+use super::settings::{dropdown, field, save_row, section, setting, switch};
 use crate::ctx::Ctx;
 use crate::ui::busy_button;
 
@@ -233,12 +233,56 @@ fn to_step(form: &StepForm) -> Result<Step, String> {
     })
 }
 
+#[derive(Debug, Clone, Default, PartialEq)]
+struct Rules {
+    wait_for_empty: bool,
+    max_wait: String,
+    idle_stop: String,
+}
+
+impl Rules {
+    fn of(automation: &Automation) -> Self {
+        Self {
+            wait_for_empty: automation.wait_for_empty,
+            max_wait: automation.max_wait_minutes.to_string(),
+            idle_stop: match automation.idle_stop_minutes {
+                0 => String::new(),
+                minutes => minutes.to_string(),
+            },
+        }
+    }
+
+    fn apply(&self, automation: &Automation) -> Option<Automation> {
+        let max_wait = minutes(&self.max_wait)?;
+        let idle_stop = match self.idle_stop.trim() {
+            "" => 0,
+            value => minutes(value)?,
+        };
+        Some(Automation {
+            wait_for_empty: self.wait_for_empty,
+            max_wait_minutes: max_wait,
+            idle_stop_minutes: idle_stop,
+            ..automation.clone()
+        })
+    }
+}
+
+fn minutes(value: &str) -> Option<u32> {
+    value.trim().parse().ok().filter(|m| (1..=1440).contains(m))
+}
+
+fn digits(value: &str) -> String {
+    value.chars().filter(char::is_ascii_digit).collect()
+}
+
 #[derive(Debug, Default)]
 pub struct State {
     server_id: Option<String>,
     automation: Automation,
     editor: Option<Editor>,
     saving: bool,
+    rules: Rules,
+    saved_rules: Rules,
 }
 
 #[derive(Debug, Clone)]
@@ -264,6 +308,10 @@ pub enum Message {
     RunTask(usize),
     TaskRan(String, Result<String, String>),
     Saved(Automation, Result<(), String>),
+    WaitForEmpty(bool),
+    MaxWait(String),
+    IdleStop(String),
+    SaveRules,
 }
 
 fn save(state: &mut State, automation: Automation) -> Task<Message> {
@@ -294,9 +342,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                     *slot = !*slot;
                 }
             }
-            Message::Every(value) => {
-                editor.every = value.chars().filter(char::is_ascii_digit).collect()
-            }
+            Message::Every(value) => editor.every = digits(value),
             Message::Unit(value) => editor.unit = *value,
             Message::OnlyOnline(value) => editor.only_online = *value,
             Message::StepKind(index, kind) => {
@@ -417,6 +463,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.saving = false;
             match result {
                 Ok(()) => {
+                    state.saved_rules = Rules::of(&next);
                     state.automation = next;
                     state.editor = None;
                     ctx.refresh_servers();
@@ -428,6 +475,22 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             Task::none()
         }
+        Message::WaitForEmpty(on) => {
+            state.rules.wait_for_empty = on;
+            Task::none()
+        }
+        Message::MaxWait(value) => {
+            state.rules.max_wait = digits(&value);
+            Task::none()
+        }
+        Message::IdleStop(value) => {
+            state.rules.idle_stop = digits(&value);
+            Task::none()
+        }
+        Message::SaveRules => match state.rules.apply(&state.automation) {
+            Some(next) => save(state, next),
+            None => Task::none(),
+        },
         _ => Task::none(),
     }
 }
@@ -672,6 +735,45 @@ fn tasks_view(state: &State) -> Element<'_, Message> {
     section("Scheduled tasks", rows)
 }
 
+fn rules_view(state: &State) -> Element<'_, Message> {
+    let rules = &state.rules;
+    let max_wait_ok = minutes(&rules.max_wait).is_some();
+    let idle_ok = rules.idle_stop.is_empty() || minutes(&rules.idle_stop).is_some();
+    let note = if !max_wait_ok || !idle_ok {
+        Some("Use between 1 and 1440 minutes")
+    } else {
+        None
+    };
+    let dirty = *rules != state.saved_rules;
+    section(
+        "Restarts and empty servers",
+        vec![
+            setting(
+                "Wait for an empty server",
+                "Daily restarts from Settings wait until nobody is online. Players are warned before a forced restart.",
+                switch(rules.wait_for_empty, Message::WaitForEmpty),
+            ),
+            setting(
+                "Restart anyway after",
+                "Minutes to wait for players to leave.",
+                field("60", &rules.max_wait, !max_wait_ok, Message::MaxWait),
+            ),
+            setting(
+                "Stop when empty",
+                "Stop the server after this many minutes with nobody online. Leave empty to keep it running.",
+                field("Off", &rules.idle_stop, !idle_ok, Message::IdleStop),
+            ),
+            save_row(
+                "Save",
+                "Saving",
+                state.saving,
+                (dirty && note.is_none()).then_some(Message::SaveRules),
+                note,
+            ),
+        ],
+    )
+}
+
 pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let Some(server) = ctx.selected_server() else {
         return Space::new().into();
@@ -679,13 +781,17 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     if state.server_id.as_deref() != Some(server.id.as_str()) {
         return text("Loading automation").style(style::muted).into();
     }
-    let page = column![tasks_view(state)]
-        .spacing(SPACE_6)
-        .padding(iced::Padding {
-            right: SPACE_4,
-            bottom: SPACE_7,
-            ..iced::Padding::ZERO
-        });
+    let page = column![
+        tasks_view(state),
+        rule::horizontal(1).style(style::hairline),
+        rules_view(state),
+    ]
+    .spacing(SPACE_6)
+    .padding(iced::Padding {
+        right: SPACE_4,
+        bottom: SPACE_7,
+        ..iced::Padding::ZERO
+    });
     scrollable(page)
         .width(Length::Fill)
         .height(Length::Fill)
@@ -708,6 +814,8 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
     state.server_id = Some(server.id.clone());
     if !state.saving {
         state.automation = automation::of(server);
+        state.rules = Rules::of(&state.automation);
+        state.saved_rules = state.rules.clone();
     }
     Task::none()
 }

@@ -87,6 +87,7 @@ pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
                 _ => {}
             }
         }
+        Event::Notice { title, body } => notify(title, body.clone()),
         Event::BackupCompleted(done) => {
             notify(
                 "Backup finished",

@@ -252,10 +252,11 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         .into()
 }
 
-const VIEWS: [(LogView, &str); 3] = [
+const VIEWS: [(LogView, &str); 4] = [
     (LogView::All, "All"),
     (LogView::Warnings, "Warnings"),
     (LogView::Errors, "Errors"),
+    (LogView::Chat, "Chat"),
 ];
 
 fn toolbar(state: &State) -> Element<'_, Message> {
@@ -342,6 +343,8 @@ fn log_area(state: &State) -> Element<'_, Message> {
             "Loading console output"
         } else if !q.is_empty() {
             "No lines match your search."
+        } else if state.view == LogView::Chat {
+            "No chat messages yet."
         } else if state.view != LogView::All {
             "No lines at this level."
         } else {

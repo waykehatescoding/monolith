@@ -1,4 +1,15 @@
+use once_cell::sync::Lazy;
+use regex::Regex;
+
+use crate::server_runner::re;
 use crate::types::{ConsoleLine, ConsoleLineType};
+
+static CHAT: Lazy<Regex> =
+    Lazy::new(|| re(r"\]:\s(?:\x1b\[[0-9;]*m)*(?:\[Not Secure\] )?(?:<[^>]+> |\[Server\] )"));
+
+pub fn is_chat(text: &str) -> bool {
+    CHAT.is_match(text)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum LogLevel {
@@ -31,6 +42,7 @@ pub enum LogView {
     All,
     Warnings,
     Errors,
+    Chat,
 }
 
 impl LogView {
@@ -39,6 +51,7 @@ impl LogView {
             LogView::All => true,
             LogView::Warnings => level_of(line) >= LogLevel::Warn,
             LogView::Errors => level_of(line) == LogLevel::Error,
+            LogView::Chat => line.kind == ConsoleLineType::Stdout && is_chat(&line.text),
         }
     }
 }
@@ -81,6 +94,18 @@ mod tests {
         assert_eq!(filter_logs(&lines, "", LogView::Warnings).len(), 2);
         assert_eq!(filter_logs(&lines, "", LogView::Errors).len(), 1);
         assert!(filter_logs(&lines, "steve", LogView::Errors).is_empty());
+    }
+
+    #[test]
+    fn detects_chat() {
+        assert!(is_chat("[12:00:00 INFO]: <Steve> hello"));
+        assert!(is_chat(
+            "[12:00:00] [Server thread/INFO]: [Not Secure] <Alex> hi"
+        ));
+        assert!(is_chat("[12:00:00 INFO]: [Server] Restarting soon"));
+        assert!(is_chat("[12:00:00 INFO]: \x1b[0m<Steve> hey"));
+        assert!(!is_chat("[12:00:00 INFO]: Steve joined the game"));
+        assert!(!is_chat("[12:00:00 INFO]: Done (3.1s)!"));
     }
 
     #[test]

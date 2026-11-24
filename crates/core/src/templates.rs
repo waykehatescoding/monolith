@@ -333,29 +333,51 @@ pub async fn import_template(path: PathBuf) -> Result<ServerTemplate, String> {
     Ok(template)
 }
 
-const UNTRUSTED_PROPERTIES: [&str; 13] = [
-    "online-mode",
-    "white-list",
-    "enforce-whitelist",
-    "enforce-secure-profile",
-    "prevent-proxy-connections",
-    "enable-rcon",
-    "rcon.port",
-    "rcon.password",
-    "enable-query",
-    "query.port",
-    "enable-jmx-monitoring",
-    "server-ip",
-    "broadcast-rcon-to-ops",
+const IMPORTED_PROPERTIES: [&str; 32] = [
+    "motd",
+    "max-players",
+    "difficulty",
+    "gamemode",
+    "force-gamemode",
+    "hardcore",
+    "pvp",
+    "allow-flight",
+    "allow-nether",
+    "spawn-protection",
+    "spawn-monsters",
+    "spawn-animals",
+    "spawn-npcs",
+    "generate-structures",
+    "level-type",
+    "generator-settings",
+    "max-world-size",
+    "view-distance",
+    "simulation-distance",
+    "entity-broadcast-range-percentage",
+    "player-idle-timeout",
+    "pause-when-empty-seconds",
+    "max-tick-time",
+    "sync-chunk-writes",
+    "region-file-compression",
+    "max-chained-neighbor-updates",
+    "network-compression-threshold",
+    "enable-command-block",
+    "function-permission-level",
+    "op-permission-level",
+    "initial-enabled-packs",
+    "initial-disabled-packs",
 ];
 
 fn untrusted(mut template: ServerTemplate) -> ServerTemplate {
     template.jvm_args = None;
     template.ops = None;
     template.whitelist = None;
-    for key in UNTRUSTED_PROPERTIES {
-        template.properties.remove(key);
-    }
+    template
+        .properties
+        .retain(|key, _| IMPORTED_PROPERTIES.contains(&key.as_str()));
+    template
+        .files
+        .retain(|rel, _| rel.starts_with("plugins/") || rel.starts_with("config/paper-world"));
     template
 }
 
@@ -524,8 +546,26 @@ mod tests {
         template
             .properties
             .insert("enable-rcon".into(), "true".into());
+        template
+            .properties
+            .insert("online-mode".into(), "false".into());
+        template
+            .properties
+            .insert("management-server-enabled".into(), "true".into());
         template.properties.insert("motd".into(), "hi".into());
+        for rel in [
+            "spigot.yml",
+            "config/paper-global.yml",
+            "plugins/X/config.yml",
+        ] {
+            template.files.insert(rel.into(), "a: 1".into());
+        }
         let template = untrusted(template);
+        assert_eq!(template.properties.len(), 1);
+        assert_eq!(
+            template.files.keys().collect::<Vec<_>>(),
+            ["plugins/X/config.yml"]
+        );
         assert!(template.jvm_args.is_none() && template.ops.is_none());
         assert!(!template.properties.contains_key("enable-rcon"));
         assert_eq!(template.properties["motd"], "hi");

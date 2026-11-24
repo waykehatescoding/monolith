@@ -4,11 +4,12 @@ use iced::widget::{
     button, column, container, rich_text, row, scrollable, span, stack, text, text_input, tooltip,
     Space,
 };
-use iced::{event, keyboard, Alignment, Color, Element, Length, Subscription, Task};
+use iced::{clipboard, event, keyboard, Alignment, Color, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
 use monolith_core::log_filter::{filter_logs, line_level, LogLevel, LogView};
-use monolith_core::server_runner;
+use monolith_core::safety::get_safe_external_url;
 use monolith_core::types::{ConsoleLine, ConsoleLineType, ServerRuntimeStatus};
+use monolith_core::{server_logs, server_runner};
 use monolith_theme::style;
 use monolith_theme::token::{
     AMBER, CORAL, INK, INK_SECONDARY, LOG_INFO, MOSS, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_MD,
@@ -129,6 +130,8 @@ pub struct State {
     search: Option<String>,
     view: LogView,
     completion: Option<Completion>,
+    uploading: bool,
+    upload_url: Option<String>,
 }
 
 #[derive(Debug)]
@@ -153,6 +156,8 @@ impl Default for State {
             search: None,
             view: LogView::All,
             completion: None,
+            uploading: false,
+            upload_url: None,
         }
     }
 }
@@ -173,6 +178,11 @@ pub enum Message {
     Search(String),
     CloseSearch,
     View(LogView),
+    Upload,
+    Uploaded(String, Result<String, String>),
+    CopyLink(String),
+    OpenLink(String),
+    CloseUpload,
 }
 
 pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
@@ -269,6 +279,45 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             state.at_bottom = true;
             Task::batch([operation::focus(INPUT_ID), jump_to_latest()])
+        }
+        Message::Upload => {
+            let Some(server) = state.server_id.as_deref().and_then(|id| ctx.server(id)) else {
+                return Task::none();
+            };
+            state.uploading = true;
+            let id = server.id.clone();
+            let console = state.lines.iter().map(|line| line.text.clone()).collect();
+            Task::perform(
+                server_logs::upload_log(server.server_path.clone().into(), console),
+                move |result| Message::Uploaded(id.clone(), result),
+            )
+        }
+        Message::Uploaded(id, result) => {
+            if state.server_id.as_deref() != Some(id.as_str()) {
+                return Task::none();
+            }
+            state.uploading = false;
+            match result {
+                Ok(url) => state.upload_url = Some(url),
+                Err(reason) => ctx.error(format!("The log was not uploaded. {reason}")),
+            }
+            Task::none()
+        }
+        Message::CopyLink(url) => {
+            ctx.success("Link copied");
+            clipboard::write(url)
+        }
+        Message::OpenLink(url) => {
+            let opened =
+                get_safe_external_url(&url).is_some_and(|url| open::that_detached(url).is_ok());
+            if !opened {
+                ctx.error("The link could not be opened.");
+            }
+            Task::none()
+        }
+        Message::CloseUpload => {
+            state.upload_url = None;
+            Task::none()
         }
         Message::View(view) => {
             state.view = view;
@@ -410,6 +459,9 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let mut layout = column![toolbar(state)]
         .spacing(SPACE_3)
         .height(Length::Fill);
+    if let Some(url) = &state.upload_url {
+        layout = layout.push(upload_bar(url));
+    }
     if let Some(query) = &state.search {
         layout = layout.push(search_bar(state, query));
     }
@@ -441,8 +493,33 @@ fn toolbar(state: &State) -> Element<'_, Message> {
         views,
         Space::new().width(Length::Fill),
         tool(Icon::Search, "Find (Ctrl+F)", Some(Message::Find)),
+        if state.uploading {
+            tool(Icon::Restart, "Uploading", None)
+        } else {
+            tool(Icon::Share, "Upload log to mclo.gs", Some(Message::Upload))
+        },
     ]
     .spacing(SPACE_1)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+fn upload_bar(url: &str) -> Element<'_, Message> {
+    let action = |label, message| {
+        sized(text(label).size(TEXT_SM).font(UI_MEDIUM), BUTTON_SM)
+            .style(style::secondary)
+            .on_press(message)
+    };
+    row![
+        icon_colored(Icon::Link, 16.0, INK_SECONDARY),
+        text(url).size(TEXT_SM).font(MONO).width(Length::Fill),
+        action("Copy", Message::CopyLink(url.to_string())),
+        action("Open", Message::OpenLink(url.to_string())),
+        sized_icon(icon_colored(Icon::Close, 14.0, INK_SECONDARY), BUTTON_SM)
+            .style(style::ghost)
+            .on_press(Message::CloseUpload),
+    ]
+    .spacing(SPACE_2)
     .align_y(Alignment::Center)
     .into()
 }

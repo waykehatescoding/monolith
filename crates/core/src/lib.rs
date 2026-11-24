@@ -30,3 +30,4 @@ pub mod server_transfer;
 pub mod shutdown_policy;
 pub mod types;
 pub mod update_checker;
+pub mod server_logs;

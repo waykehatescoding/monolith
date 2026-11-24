@@ -1,18 +1,21 @@
 use iced::widget::operation::{self, AbsoluteOffset};
 use iced::widget::text::Span;
-use iced::widget::{column, container, rich_text, row, scrollable, span, stack, text, text_input};
+use iced::widget::{
+    button, column, container, rich_text, row, scrollable, span, stack, text, text_input, tooltip,
+    Space,
+};
 use iced::{event, keyboard, Alignment, Color, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
-use monolith_core::log_filter::filter_logs;
+use monolith_core::log_filter::{filter_logs, line_level, LogLevel, LogView};
 use monolith_core::server_runner;
 use monolith_core::types::{ConsoleLine, ConsoleLineType, ServerRuntimeStatus};
 use monolith_theme::style;
 use monolith_theme::token::{
     AMBER, CORAL, INK, INK_SECONDARY, LOG_INFO, MOSS, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_MD,
-    TEXT_SM,
+    TEXT_SM, TEXT_XS,
 };
 use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
-use monolith_theme::widget::sized;
+use monolith_theme::widget::{sized, sized_icon};
 use monolith_theme::{icon_colored, Icon, MONO, UI_MEDIUM};
 
 use crate::ctx::{Ctx, Route, Tab};
@@ -38,6 +41,7 @@ pub struct State {
     at_bottom: bool,
     sending: bool,
     search: Option<String>,
+    view: LogView,
 }
 
 impl Default for State {
@@ -53,6 +57,7 @@ impl Default for State {
             at_bottom: true,
             sending: false,
             search: None,
+            view: LogView::All,
         }
     }
 }
@@ -70,6 +75,7 @@ pub enum Message {
     Find,
     Search(String),
     CloseSearch,
+    View(LogView),
 }
 
 pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
@@ -146,6 +152,11 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             state.at_bottom = true;
             Task::batch([operation::focus(INPUT_ID), jump_to_latest()])
+        }
+        Message::View(view) => {
+            state.view = view;
+            state.at_bottom = true;
+            jump_to_latest()
         }
     }
 }
@@ -229,7 +240,9 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             .center(Length::Fill)
             .into();
     };
-    let mut layout = column![].spacing(SPACE_3).height(Length::Fill);
+    let mut layout = column![toolbar(state)]
+        .spacing(SPACE_3)
+        .height(Length::Fill);
     if let Some(query) = &state.search {
         layout = layout.push(search_bar(state, query));
     }
@@ -237,6 +250,46 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         .push(log_area(state))
         .push(command_bar(state, ctx, id))
         .into()
+}
+
+const VIEWS: [(LogView, &str); 3] = [
+    (LogView::All, "All"),
+    (LogView::Warnings, "Warnings"),
+    (LogView::Errors, "Errors"),
+];
+
+fn toolbar(state: &State) -> Element<'_, Message> {
+    let views = VIEWS
+        .iter()
+        .fold(row![].spacing(SPACE_1), |bar, &(view, label)| {
+            bar.push(
+                button(text(label).size(TEXT_SM).font(UI_MEDIUM))
+                    .padding([4, 10])
+                    .style(style::tab(state.view == view))
+                    .on_press(Message::View(view)),
+            )
+        });
+    row![
+        views,
+        Space::new().width(Length::Fill),
+        tool(Icon::Search, "Find (Ctrl+F)", Some(Message::Find)),
+    ]
+    .spacing(SPACE_1)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+fn tool<'a>(icon: Icon, label: &'a str, on_press: Option<Message>) -> Element<'a, Message> {
+    tooltip(
+        sized_icon(icon_colored(icon, 16.0, INK_SECONDARY), BUTTON_SM)
+            .style(style::ghost)
+            .on_press_maybe(on_press),
+        container(text(label).size(TEXT_XS).color(INK))
+            .padding([4, 8])
+            .style(style::tooltip),
+        tooltip::Position::Bottom,
+    )
+    .into()
 }
 
 fn query(state: &State) -> &str {
@@ -248,7 +301,7 @@ fn search_bar<'a>(state: &'a State, query_text: &'a str) -> Element<'a, Message>
     let count = if q.is_empty() {
         String::new()
     } else {
-        match filter_logs(&state.lines, q, &[]).len() {
+        match filter_logs(&state.lines, q, state.view).len() {
             1 => "1 line".to_string(),
             n => format!("{n} lines"),
         }
@@ -278,10 +331,10 @@ fn search_bar<'a>(state: &'a State, query_text: &'a str) -> Element<'a, Message>
 fn log_area(state: &State) -> Element<'_, Message> {
     let q = query(state);
     let matches;
-    let lines = if q.is_empty() {
+    let lines = if q.is_empty() && state.view == LogView::All {
         &state.lines
     } else {
-        matches = filter_logs(&state.lines, q, &[]);
+        matches = filter_logs(&state.lines, q, state.view);
         &matches
     };
     let body: Element<'_, Message> = if lines.is_empty() {
@@ -289,6 +342,8 @@ fn log_area(state: &State) -> Element<'_, Message> {
             "Loading console output"
         } else if !q.is_empty() {
             "No lines match your search."
+        } else if state.view != LogView::All {
+            "No lines at this level."
         } else {
             "No output yet. Start the server and its log will appear here."
         };
@@ -450,13 +505,10 @@ pub fn legacy_spans(text: &str, base: Color) -> Vec<Span<'static, (), iced::Font
 }
 
 fn level_color(text: &str) -> Color {
-    let head = &text[..text.len().min(64)];
-    if head.contains("ERROR]") || head.contains("FATAL]") || head.contains("SEVERE]") {
-        CORAL
-    } else if head.contains("WARN]") || head.contains("WARNING]") {
-        AMBER
-    } else {
-        LOG_INFO
+    match line_level(text) {
+        LogLevel::Error => CORAL,
+        LogLevel::Warn => AMBER,
+        LogLevel::Info => LOG_INFO,
     }
 }
 

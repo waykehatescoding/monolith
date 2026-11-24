@@ -15,6 +15,7 @@ use monolith_theme::token::{
 };
 use monolith_theme::{icon, icon_colored, style, Icon, MONO, UI_MEDIUM, UI_SEMIBOLD};
 
+use super::listing;
 use crate::ctx::{status_color, Ctx, Route, SettingsPage};
 use crate::demo;
 use crate::ui::busy_button;
@@ -44,6 +45,7 @@ pub struct State {
     error: Option<String>,
     port_fix: Option<u16>,
     started_at: Option<Instant>,
+    listing: listing::State,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +70,7 @@ pub enum Message {
     Done(Busy, SuccessResult),
     Copy(String),
     Tick,
+    Listing(listing::Message),
 }
 
 fn port_of(properties: &[ServerProperty]) -> u16 {
@@ -245,6 +248,10 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             clipboard::write(value)
         }
         Message::Tick => Task::none(),
+        Message::Listing(message) => {
+            let online = ctx.status(&server.id) == ServerRuntimeStatus::Online;
+            listing::update(&mut state.listing, message, &server, online).map(Message::Listing)
+        }
     }
 }
 
@@ -573,15 +580,22 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         );
     }
 
-    page.into()
+    page.push(listing::view(&state.listing, server).map(Message::Listing))
+        .into()
 }
 
 pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
     let Some(id) = ctx.selected.as_deref() else {
         return Task::none();
     };
+    let mut task = Task::none();
     match event {
         Event::ServerStatus(update) if update.server_id == id => match update.status {
+            ServerRuntimeStatus::Online => {
+                if let Some(server) = ctx.selected_server() {
+                    task = listing::refresh(&mut state.listing, server, true).map(Message::Listing);
+                }
+            }
             ServerRuntimeStatus::Starting => {
                 state.error = None;
                 state.port_fix = None;
@@ -591,6 +605,10 @@ pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
             ServerRuntimeStatus::Offline | ServerRuntimeStatus::Crashed => {
                 state.started_at = None;
                 state.tunnel_url = None;
+                if let Some(server) = ctx.selected_server() {
+                    task =
+                        listing::refresh(&mut state.listing, server, false).map(Message::Listing);
+                }
             }
             _ => {}
         },
@@ -604,7 +622,7 @@ pub fn on_event(state: &mut State, event: &Event, ctx: &Ctx) -> Task<Message> {
         }
         _ => {}
     }
-    Task::none()
+    task
 }
 
 pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
@@ -628,7 +646,11 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
             ..State::default()
         };
     }
-    Task::perform(load(server.clone()), Message::Loaded)
+    let online = ctx.status(&server.id) == ServerRuntimeStatus::Online;
+    Task::batch([
+        Task::perform(load(server.clone()), Message::Loaded),
+        listing::refresh(&mut state.listing, server, online).map(Message::Listing),
+    ])
 }
 
 pub fn subscription(state: &State) -> Subscription<Message> {

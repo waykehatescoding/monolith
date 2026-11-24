@@ -28,8 +28,8 @@ use monolith_theme::widget::sized;
 use monolith_theme::{style, MONO, UI_SEMIBOLD};
 
 use super::configs;
-use super::discord;
 use super::console::legacy_spans;
+use super::discord;
 use super::gamerules;
 use super::properties::{self, Kind, CATALOG};
 use crate::ctx::{Confirm, Ctx};

@@ -33,3 +33,4 @@ pub mod update_checker;
 pub mod server_logs;
 pub mod crash_analysis;
 pub mod webhooks;
+pub mod server_ping;

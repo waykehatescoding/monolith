@@ -7,6 +7,7 @@ pub mod discord;
 pub mod files;
 pub mod gamerules;
 pub mod highlight;
+pub mod listing;
 pub mod overview;
 pub mod players;
 pub mod properties;

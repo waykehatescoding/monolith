@@ -414,6 +414,13 @@ async fn apply_settings(id: &str, settings: ServerSettingsUpdate) -> Result<(), 
     if let Some(start_on_launch) = settings.start_on_launch {
         server.start_on_launch = start_on_launch;
     }
+    if let Some(preset) = settings.jvm_preset {
+        server.extra.insert("jvmPreset".into(), preset.into());
+    }
+    if let Some(args) = settings.jvm_args {
+        crate::server_runner::split_args(&args)?;
+        server.extra.insert("jvmArgs".into(), args.into());
+    }
 
     if let Some(enabled) = settings.analytics_enabled {
         let plugin_compatible = server.framework == "Paper" || server.framework == "Purpur";

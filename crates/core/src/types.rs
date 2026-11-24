@@ -213,6 +213,20 @@ impl ServerRecord {
     pub fn auto_restart_enabled(&self) -> bool {
         self.auto_restart.unwrap_or(true)
     }
+
+    pub fn jvm_preset(&self) -> &str {
+        self.extra
+            .get("jvmPreset")
+            .and_then(Value::as_str)
+            .unwrap_or("aikar")
+    }
+
+    pub fn jvm_args(&self) -> &str {
+        self.extra
+            .get("jvmArgs")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -460,6 +474,10 @@ pub struct ServerSettingsUpdate {
     pub restart_times: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_on_launch: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jvm_preset: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub jvm_args: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

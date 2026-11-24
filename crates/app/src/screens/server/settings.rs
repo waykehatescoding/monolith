@@ -10,6 +10,7 @@ use monolith_core::schedule::parse_times;
 use monolith_core::server_create::get_minecraft_versions;
 use monolith_core::server_framework::change_server_framework;
 use monolith_core::server_props::{get_server_properties, save_server_properties};
+use monolith_core::server_runner::{split_args, JVM_PRESETS};
 use monolith_core::server_stats::get_system_info;
 use monolith_core::server_store::{delete_server, update_server_settings};
 use monolith_core::server_transfer::{duplicate_server, export_server};
@@ -44,6 +45,8 @@ pub struct State {
     javas: Vec<JavaChoice>,
     system: SystemInfo,
     java_problem: Option<&'static str>,
+    jvm_preset: String,
+    jvm_args: String,
     saving_general: bool,
     loaded: bool,
     props: Vec<ServerProperty>,
@@ -84,6 +87,8 @@ impl Default for State {
                 max_ram_mb: 6553,
             },
             java_problem: None,
+            jvm_preset: String::new(),
+            jvm_args: String::new(),
             saving_general: false,
             loaded: false,
             props: Vec::new(),
@@ -133,6 +138,8 @@ pub enum Message {
     JavaPath(String),
     BrowseJava,
     JavaBrowsed(Option<String>),
+    JvmPreset(&'static str),
+    JvmArgs(String),
     SaveGeneral,
     GeneralSaved(Result<(), String>),
     Prop(String, String),
@@ -276,6 +283,8 @@ impl State {
         self.java_path = server.java_path.clone().unwrap_or_default();
         self.java_custom = !self.java_path.is_empty();
         self.check_java();
+        self.jvm_preset = server.jvm_preset().to_string();
+        self.jvm_args = server.jvm_args().to_string();
         self.framework = server.framework.clone();
         self.version = Some(server.version.clone());
     }
@@ -292,6 +301,12 @@ impl State {
         self.name.trim() != server.name
             || self.ram_mb != server.ram_mb.max(512)
             || self.effective_java() != server.java_path.as_deref().unwrap_or("")
+            || self.jvm_preset != server.jvm_preset()
+            || self.jvm_args.trim() != server.jvm_args()
+    }
+
+    fn jvm_problem(&self) -> Option<String> {
+        split_args(&self.jvm_args).err()
     }
 
     fn prop_ok(&self, spec: &properties::Spec) -> bool {
@@ -422,6 +437,16 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             Task::none()
         }
+        Message::JvmPreset(label) => {
+            if let Some((id, _)) = JVM_PRESETS.iter().find(|(_, l)| *l == label) {
+                state.jvm_preset = id.to_string();
+            }
+            Task::none()
+        }
+        Message::JvmArgs(args) => {
+            state.jvm_args = args;
+            Task::none()
+        }
         Message::SaveGeneral => {
             let name = state.name.trim().to_string();
             if name.is_empty() {
@@ -432,11 +457,17 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 ctx.error(problem);
                 return Task::none();
             }
+            if let Some(problem) = state.jvm_problem() {
+                ctx.error(problem);
+                return Task::none();
+            }
             state.saving_general = true;
             let update = ServerSettingsUpdate {
                 name: Some(name),
                 ram_mb: Some(state.ram_mb),
                 java_path: Some(state.effective_java().to_string()),
+                jvm_preset: Some(state.jvm_preset.clone()),
+                jvm_args: Some(state.jvm_args.trim().to_string()),
                 ..Default::default()
             };
             Task::perform(save_settings(id, update), Message::GeneralSaved)
@@ -962,6 +993,28 @@ fn general<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Messag
             );
         }
     }
+    let jvm_problem = state.jvm_problem();
+    let mut jvm = column![
+        dropdown(
+            JVM_PRESETS.map(|(_, label)| label),
+            JVM_PRESETS
+                .iter()
+                .find(|(id, _)| *id == state.jvm_preset)
+                .map(|(_, label)| *label),
+            Message::JvmPreset,
+        ),
+        field(
+            "Extra arguments, like -Dfile.encoding=UTF-8",
+            &state.jvm_args,
+            jvm_problem.is_some(),
+            Message::JvmArgs
+        )
+        .font(MONO),
+    ]
+    .spacing(SPACE_2);
+    if let Some(problem) = jvm_problem {
+        jvm = jvm.push(text(problem).size(TEXT_SM).color(CORAL));
+    }
     let java_hint = if state.java_custom {
         "Monolith runs the Java you pick here."
     } else {
@@ -982,12 +1035,20 @@ fn general<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Messag
                 ram,
             ),
             setting("Custom Java", java_hint, java),
+            setting(
+                "Java flags",
+                "Garbage collector settings and extra arguments passed to Java. Quote values with spaces.",
+                jvm,
+            ),
             save_row(
                 "Save changes",
                 "Saving",
                 state.saving_general,
-                (state.general_dirty(server) && !name_empty && state.java_problem.is_none())
-                    .then_some(Message::SaveGeneral),
+                (state.general_dirty(server)
+                    && !name_empty
+                    && state.java_problem.is_none()
+                    && state.jvm_problem().is_none())
+                .then_some(Message::SaveGeneral),
                 name_empty.then_some("Give the server a name"),
             ),
         ],

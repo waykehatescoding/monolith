@@ -148,36 +148,79 @@ fn parse_float_prefix(text: &str) -> Option<f64> {
     text[..end].parse::<f64>().ok()
 }
 
-pub fn build_java_args(ram_mb: u32, jar_file: &str) -> Vec<String> {
+pub const JVM_PRESETS: [(&str, &str); 3] = [
+    ("aikar", "Aikar's flags (recommended)"),
+    ("zgc", "ZGC (Java 21+, large heaps)"),
+    ("minimal", "Minimal"),
+];
+
+const AIKAR_FLAGS: [&str; 19] = [
+    "-XX:+DisableExplicitGC",
+    "-XX:+ParallelRefProcEnabled",
+    "-XX:+PerfDisableSharedMem",
+    "-XX:+UnlockExperimentalVMOptions",
+    "-XX:+UseG1GC",
+    "-XX:G1HeapRegionSize=8M",
+    "-XX:G1HeapWastePercent=5",
+    "-XX:G1MaxNewSizePercent=40",
+    "-XX:G1MixedGCCountTarget=4",
+    "-XX:G1MixedGCLiveThresholdPercent=90",
+    "-XX:G1NewSizePercent=30",
+    "-XX:G1RSetUpdatingPauseTimePercent=5",
+    "-XX:G1ReservePercent=20",
+    "-XX:InitiatingHeapOccupancyPercent=15",
+    "-XX:MaxGCPauseMillis=200",
+    "-XX:MaxTenuringThreshold=1",
+    "-XX:SurvivorRatio=32",
+    "-Dusing.aikars.flags=https://mcflags.emc.gs",
+    "-Daikars.new.flags=true",
+];
+
+pub fn split_args(text: &str) -> Result<Vec<String>, String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut started = false;
+    for c in text.chars() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => current.push(c),
+            None if c == '"' || c == '\'' => {
+                quote = Some(c);
+                started = true;
+            }
+            None if c.is_whitespace() => {
+                if started {
+                    args.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            None => {
+                current.push(c);
+                started = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        return Err("A quote in the Java arguments is never closed.".into());
+    }
+    if started {
+        args.push(current);
+    }
+    Ok(args)
+}
+
+pub fn build_java_args(ram_mb: u32, jar_file: &str, preset: &str, extra: &str) -> Vec<String> {
     let safe_ram = ram_mb.max(256);
     let initial_ram = 256.max(safe_ram.min((safe_ram as f64 * 0.4).floor() as u32));
     let mut args = vec![format!("-Xms{initial_ram}M"), format!("-Xmx{safe_ram}M")];
-    args.extend(
-        [
-            "-XX:+DisableExplicitGC",
-            "-XX:+ParallelRefProcEnabled",
-            "-XX:+PerfDisableSharedMem",
-            "-XX:+UnlockExperimentalVMOptions",
-            "-XX:+UseG1GC",
-            "-XX:G1HeapRegionSize=8M",
-            "-XX:G1HeapWastePercent=5",
-            "-XX:G1MaxNewSizePercent=40",
-            "-XX:G1MixedGCCountTarget=4",
-            "-XX:G1MixedGCLiveThresholdPercent=90",
-            "-XX:G1NewSizePercent=30",
-            "-XX:G1RSetUpdatingPauseTimePercent=5",
-            "-XX:G1ReservePercent=20",
-            "-XX:InitiatingHeapOccupancyPercent=15",
-            "-XX:MaxGCPauseMillis=200",
-            "-XX:MaxTenuringThreshold=1",
-            "-XX:SurvivorRatio=32",
-            "-Dusing.aikars.flags=https://mcflags.emc.gs",
-            "-Daikars.new.flags=true",
-            "-Dterminal.jline=false",
-            "-Dterminal.ansi=true",
-        ]
-        .map(String::from),
-    );
+    match preset {
+        "zgc" => args.extend(["-XX:+UseZGC", "-XX:+ZGenerational"].map(String::from)),
+        "minimal" => {}
+        _ => args.extend(AIKAR_FLAGS.map(String::from)),
+    }
+    args.extend(["-Dterminal.jline=false", "-Dterminal.ansi=true"].map(String::from));
+    args.extend(split_args(extra).unwrap_or_default());
     if !crate::server_create::is_args_file(jar_file) {
         args.push("-jar".to_string());
     }
@@ -779,7 +822,12 @@ async fn start_server_core(server_id: String) -> SuccessResult {
         .clone()
         .filter(|j| !j.is_empty())
         .unwrap_or_else(|| "server.jar".to_string());
-    let args = build_java_args(server.ram_mb, &jar_file);
+    let args = build_java_args(
+        server.ram_mb,
+        &jar_file,
+        server.jvm_preset(),
+        server.jvm_args(),
+    );
 
     let java_executable = match server.java_path.clone().filter(|p| !p.is_empty()) {
         Some(path) => {
@@ -1084,6 +1132,33 @@ mod chat_tests {
         let real = "[12:00:00 INFO]: Server is restarting...";
         assert!(CHAT.is_match(chat) && CHAT.is_match(unsigned));
         assert!(!CHAT.is_match(real) && RESTART_HINTS.iter().any(|p| p.is_match(real)));
+    }
+
+    #[test]
+    fn split_args_respects_quotes() {
+        assert_eq!(
+            split_args(r#"-Da=1  "-Dpath=C:\My Dir" '-Dq=x y' -Dempty="""#).unwrap(),
+            ["-Da=1", r"-Dpath=C:\My Dir", "-Dq=x y", "-Dempty="]
+        );
+        assert!(split_args("  ").unwrap().is_empty());
+        assert!(split_args("\"open").is_err());
+    }
+
+    #[test]
+    fn java_args_follow_preset() {
+        let aikar = build_java_args(4096, "server.jar", "aikar", "");
+        assert_eq!(aikar[..2], ["-Xms1638M", "-Xmx4096M"]);
+        assert!(aikar.contains(&"-XX:+UseG1GC".to_string()));
+        assert_eq!(aikar[aikar.len() - 3..], ["-jar", "server.jar", "nogui"]);
+        let zgc = build_java_args(4096, "server.jar", "zgc", "-Dfoo=\"a b\"");
+        assert!(zgc.contains(&"-XX:+UseZGC".to_string()));
+        assert!(!zgc.contains(&"-XX:+UseG1GC".to_string()));
+        assert_eq!(zgc[zgc.len() - 4], "-Dfoo=a b");
+        assert_eq!(build_java_args(1024, "server.jar", "minimal", "").len(), 7);
+        assert_eq!(
+            build_java_args(1024, "server.jar", "", ""),
+            build_java_args(1024, "server.jar", "aikar", "")
+        );
     }
 
     #[test]

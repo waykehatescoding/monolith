@@ -92,10 +92,61 @@ fn release(server_id: &str) {
     }
 }
 
+fn glob_match(pattern: &[char], text: &[char]) -> bool {
+    match pattern.split_first() {
+        None => text.is_empty(),
+        Some(('*', rest)) => (0..=text.len())
+            .take_while(|&i| i == 0 || text[i - 1] != '/')
+            .any(|i| glob_match(rest, &text[i..])),
+        Some(('?', rest)) => {
+            text.first().is_some_and(|c| *c != '/') && glob_match(rest, &text[1..])
+        }
+        Some((p, rest)) => {
+            text.first().is_some_and(|c| c.eq_ignore_ascii_case(p)) && glob_match(rest, &text[1..])
+        }
+    }
+}
+
+fn is_excluded(relative: &str, is_dir: bool, patterns: &[String]) -> bool {
+    let name = relative.rsplit('/').next().unwrap_or(relative);
+    patterns.iter().any(|raw| {
+        let pattern = raw.trim().replace('\\', "/");
+        let pattern = pattern.trim_start_matches("./").trim_start_matches('/');
+        let (pattern, dir_only) = match pattern.strip_suffix('/') {
+            Some(p) => (p, true),
+            None => (pattern, false),
+        };
+        if pattern.is_empty() || (dir_only && !is_dir) {
+            return false;
+        }
+        let target = if pattern.contains('/') {
+            relative
+        } else {
+            name
+        };
+        glob_match(
+            &pattern.chars().collect::<Vec<_>>(),
+            &target.chars().collect::<Vec<_>>(),
+        )
+    })
+}
+
+fn relative_name(path: &Path, root: &Path) -> Option<String> {
+    let relative = path.strip_prefix(root).ok()?;
+    Some(
+        relative
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/"),
+    )
+}
+
 fn run_archive(
     server_path: &Path,
     backups_dir: &Path,
     zip_path: &Path,
+    exclusions: &[String],
     server_id: &str,
     notify: bool,
     cancel: &AtomicBool,
@@ -104,7 +155,12 @@ fn run_archive(
     let walker = WalkDir::new(server_path)
         .follow_links(true)
         .into_iter()
-        .filter_entry(|entry| !entry.path().starts_with(backups_dir));
+        .filter_entry(|entry| {
+            !entry.path().starts_with(backups_dir)
+                && relative_name(entry.path(), server_path).is_none_or(|relative| {
+                    !is_excluded(&relative, entry.file_type().is_dir(), exclusions)
+                })
+        });
     for entry in walker {
         let entry = match entry {
             Ok(entry) => entry,
@@ -144,14 +200,9 @@ fn run_archive(
         if cancel.load(Ordering::Relaxed) {
             return Err("Backup cancelled".to_string());
         }
-        let Ok(relative) = path.strip_prefix(server_path) else {
+        let Some(name) = relative_name(path, server_path) else {
             continue;
         };
-        let name = relative
-            .components()
-            .map(|c| c.as_os_str().to_string_lossy().into_owned())
-            .collect::<Vec<_>>()
-            .join("/");
         let mut input = match File::open(path) {
             Ok(input) => input,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -319,11 +370,17 @@ async fn create_backup_inner(
         let backups_dir = backups_dir.clone();
         let zip_path = zip_path.clone();
         let cancel = cancel.clone();
+        let exclusions = server
+            .backup_config
+            .as_ref()
+            .map(|config| config.exclusions.clone())
+            .unwrap_or_default();
         tokio::task::spawn_blocking(move || {
             run_archive(
                 &server_path,
                 &backups_dir,
                 &zip_path,
+                &exclusions,
                 &server_id,
                 notify,
                 &cancel,
@@ -637,16 +694,56 @@ fn force_remove(path: &Path) -> std::io::Result<()> {
     })
 }
 
+fn keep_excluded(
+    server_path: &Path,
+    backups_dir: &Path,
+    staging: &Path,
+    exclusions: &[String],
+) -> Result<(), String> {
+    let mut kept = Vec::new();
+    let mut walker = WalkDir::new(server_path).min_depth(1).into_iter();
+    while let Some(entry) = walker.next() {
+        let Ok(entry) = entry else {
+            continue;
+        };
+        let is_dir = entry.file_type().is_dir();
+        if entry.path() == backups_dir {
+            walker.skip_current_dir();
+            continue;
+        }
+        let relative = relative_name(entry.path(), server_path).unwrap_or_default();
+        if is_excluded(&relative, is_dir, exclusions) {
+            if is_dir {
+                walker.skip_current_dir();
+            }
+            kept.push((entry.path().to_path_buf(), relative));
+        }
+    }
+    for (path, relative) in kept {
+        let target = staging.join(&relative);
+        if target.exists() {
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::rename(&path, &target).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 fn restore_from_zip(
     zip_path: &Path,
     server_path: &Path,
     backups_dir: &Path,
     staging: &Path,
+    exclusions: &[String],
 ) -> Result<(), String> {
     let file = File::open(zip_path).map_err(|e| e.to_string())?;
     let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
     fs::create_dir_all(staging).map_err(|e| e.to_string())?;
     archive.extract(staging).map_err(|e| e.to_string())?;
+    keep_excluded(server_path, backups_dir, staging, exclusions)?;
 
     for entry in fs::read_dir(server_path)
         .map_err(|e| e.to_string())?
@@ -714,18 +811,27 @@ pub async fn restore_backup(server_id: String, filename: String) -> SuccessResul
         ));
     }
 
+    let exclusions = server
+        .backup_config
+        .map(|config| config.exclusions)
+        .unwrap_or_default();
     let work = {
         let staging = staging.clone();
         tokio::task::spawn_blocking(move || {
-            restore_from_zip(&zip_path, &server_path, &backups_dir, &staging)
+            restore_from_zip(&zip_path, &server_path, &backups_dir, &staging, &exclusions)
         })
         .await
     };
-    let _ = tokio::fs::remove_dir_all(&staging).await;
 
     match work {
-        Ok(Ok(())) => SuccessResult::ok(),
-        Ok(Err(e)) => SuccessResult::err(&e),
+        Ok(Ok(())) => {
+            let _ = tokio::fs::remove_dir_all(&staging).await;
+            SuccessResult::ok()
+        }
+        Ok(Err(e)) => SuccessResult::err(format!(
+            "{e}. Restored files were kept in {}",
+            staging.display()
+        )),
         Err(e) => SuccessResult::err(e.to_string()),
     }
 }
@@ -798,6 +904,60 @@ mod tests {
         };
         let backups = vec![locked, entry("new", 1, BackupType::Auto)];
         assert!(expired(&backups, Some(1), Some(7), Utc::now()).is_empty());
+    }
+
+    #[test]
+    fn exclusions_match_paths_names_and_folders() {
+        let patterns: Vec<String> = [
+            "plugins/dynmap/web/tiles",
+            "*.log",
+            "cache/",
+            "world/region/r.?.*",
+        ]
+        .iter()
+        .map(|p| p.to_string())
+        .collect();
+        assert!(is_excluded("plugins/dynmap/web/tiles", true, &patterns));
+        assert!(is_excluded("plugins/Dynmap/web/tiles", true, &patterns));
+        assert!(!is_excluded("plugins/dynmap/web", true, &patterns));
+        assert!(is_excluded("logs/latest.log", false, &patterns));
+        assert!(is_excluded("latest.log", false, &patterns));
+        assert!(is_excluded("plugins/x/cache", true, &patterns));
+        assert!(!is_excluded("cache", false, &patterns));
+        assert!(is_excluded("world/region/r.0.mca", false, &patterns));
+        assert!(!is_excluded("world/region/r.10.mca", false, &patterns));
+        assert!(!is_excluded("server.properties", false, &patterns));
+        assert!(!is_excluded("anything", true, &["  ".to_string()]));
+        assert!(is_excluded("a/b", true, &["\\a\\b\\".to_string()]));
+    }
+
+    #[test]
+    fn restore_keeps_excluded_files() {
+        let root = std::env::temp_dir().join(format!(
+            "monolith-keep-{}",
+            Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let server = root.join("server");
+        let staging = root.join("staging");
+        fs::create_dir_all(server.join("plugins/dynmap/web/tiles")).unwrap();
+        fs::create_dir_all(server.join("backups")).unwrap();
+        fs::create_dir_all(staging.join("plugins/dynmap")).unwrap();
+        fs::write(server.join("plugins/dynmap/web/tiles/t.png"), "tile").unwrap();
+        fs::write(server.join("backups/b.zip"), "zip").unwrap();
+        fs::write(server.join("server.properties"), "old").unwrap();
+        fs::write(staging.join("plugins/dynmap/config.txt"), "cfg").unwrap();
+
+        let patterns = vec![
+            "plugins/dynmap/web/tiles".to_string(),
+            "backups".to_string(),
+        ];
+        keep_excluded(&server, &server.join("backups"), &staging, &patterns).unwrap();
+
+        assert!(staging.join("plugins/dynmap/web/tiles/t.png").exists());
+        assert!(staging.join("plugins/dynmap/config.txt").exists());
+        assert!(!staging.join("server.properties").exists());
+        assert!(server.join("backups/b.zip").exists());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

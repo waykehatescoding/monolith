@@ -13,16 +13,24 @@ use monolith_core::types::{
     BackupConfig, BackupEntry, BackupStage, BackupStatus, BackupType, ServerRuntimeStatus,
     ServerSettingsUpdate,
 };
-use monolith_theme::token::BUTTON_MD;
 use monolith_theme::token::*;
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::widget::{sized, sized_icon};
-use monolith_theme::{icon, icon_colored, style, Icon, UI_MEDIUM, UI_SEMIBOLD};
+use monolith_theme::{icon, icon_colored, style, Icon, MONO, UI_MEDIUM, UI_SEMIBOLD};
 
 use crate::ctx::{Confirm, Ctx};
 use crate::ui::busy_button;
 
 const MAX_INTERVAL_HOURS: u32 = 720;
 const MAX_KEEP: u32 = 9999;
+const SUGGESTED_EXCLUSIONS: [&str; 6] = [
+    "plugins/dynmap/web/tiles",
+    "plugins/BlueMap/web/maps",
+    "logs/",
+    "crash-reports/",
+    "cache/",
+    "*.log",
+];
 
 #[derive(Debug, Default, Clone, PartialEq)]
 struct Form {
@@ -30,6 +38,7 @@ struct Form {
     interval: String,
     keep_last: String,
     keep_days: String,
+    exclusions: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -45,6 +54,7 @@ pub struct State {
     saved: Form,
     saving: bool,
     locking: Option<String>,
+    new_exclusion: String,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +75,9 @@ pub enum Message {
     Interval(String),
     KeepLast(String),
     KeepDays(String),
+    NewExclusion(String),
+    AddExclusion(String),
+    RemoveExclusion(usize),
     SaveSchedule,
     ScheduleSaved(Result<(), String>),
 }
@@ -158,6 +171,7 @@ fn sync_config(state: &mut State, ctx: &Ctx) {
         interval: hours.to_string(),
         keep_last: limit(config.keep_last),
         keep_days: limit(config.keep_days),
+        exclusions: config.exclusions,
     };
     state.saved = state.form.clone();
 }
@@ -361,6 +375,24 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.form.keep_days = digits(&value);
             Task::none()
         }
+        Message::NewExclusion(value) => {
+            state.new_exclusion = value;
+            Task::none()
+        }
+        Message::AddExclusion(value) => {
+            let value = value.trim().to_string();
+            if !value.is_empty() && !state.form.exclusions.contains(&value) {
+                state.form.exclusions.push(value);
+            }
+            state.new_exclusion.clear();
+            Task::none()
+        }
+        Message::RemoveExclusion(index) => {
+            if index < state.form.exclusions.len() {
+                state.form.exclusions.remove(index);
+            }
+            Task::none()
+        }
         Message::SaveSchedule => {
             let (Some(id), Some(hours), Ok(keep_last), Ok(keep_days)) = (
                 state.server_id.clone(),
@@ -380,6 +412,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 interval_hours: f64::from(hours),
                 keep_last,
                 keep_days,
+                exclusions: state.form.exclusions.clone(),
                 ..current
             };
             Task::perform(
@@ -593,6 +626,61 @@ fn number_input<'a>(
         .into()
 }
 
+fn exclusions_view(state: &State) -> Element<'_, Message> {
+    let mut list = column![].spacing(SPACE_1);
+    for (index, pattern) in state.form.exclusions.iter().enumerate() {
+        list = list.push(
+            row![
+                text(pattern).size(TEXT_SM).font(MONO).width(Length::Fill),
+                sized_icon(icon(Icon::Close, 14.0), BUTTON_SM)
+                    .style(style::ghost)
+                    .on_press(Message::RemoveExclusion(index)),
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center),
+        );
+    }
+    let new = state.new_exclusion.trim();
+    let add = (!new.is_empty()).then(|| Message::AddExclusion(new.to_string()));
+    let mut suggestions = row![].spacing(SPACE_2);
+    for suggestion in SUGGESTED_EXCLUSIONS {
+        if !state.form.exclusions.iter().any(|p| p == suggestion) {
+            suggestions = suggestions.push(
+                sized(text(suggestion).size(TEXT_SM), BUTTON_SM)
+                    .style(style::secondary)
+                    .on_press(Message::AddExclusion(suggestion.to_string())),
+            );
+        }
+    }
+
+    column![
+        text("Excluded from backups").size(TEXT_MD).font(UI_MEDIUM),
+        list,
+        row![
+            text_input("plugins/dynmap/web/tiles", &state.new_exclusion)
+                .size(TEXT_MD)
+                .padding([8, 12])
+                .width(320)
+                .on_input(Message::NewExclusion)
+                .on_submit_maybe(add.clone())
+                .style(style::input),
+            action(
+                text("Add").size(TEXT_MD).font(UI_MEDIUM).into(),
+                style::secondary,
+                add,
+            ),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center),
+        suggestions.wrap(),
+        text("Use * as a wildcard. A name without a slash matches anywhere, and a trailing / matches folders only. Excluded files stay in place when you restore.")
+            .size(TEXT_SM)
+            .style(style::muted),
+    ]
+    .spacing(SPACE_3)
+    .into()
+}
+
 fn schedule_view(state: &State) -> Element<'_, Message> {
     let form = &state.form;
     let hours_ok = parse_interval(&form.interval).is_some();
@@ -685,6 +773,8 @@ fn schedule_view(state: &State) -> Element<'_, Message> {
         .spacing(SPACE_2)
         .align_y(Alignment::Center),
         retention_hint,
+        Space::new().height(SPACE_2),
+        exclusions_view(state),
         Space::new().height(SPACE_2),
         row![save],
     ]

@@ -227,6 +227,8 @@ pub struct BackupConfig {
     pub keep_last: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub keep_days: Option<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclusions: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

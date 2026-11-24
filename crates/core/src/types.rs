@@ -246,6 +246,8 @@ pub struct BackupEntry {
     pub created_at: String,
     #[serde(rename = "type")]
     pub kind: BackupType,
+    #[serde(default)]
+    pub locked: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

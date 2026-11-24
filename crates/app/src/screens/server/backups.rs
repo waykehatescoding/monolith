@@ -44,6 +44,7 @@ pub struct State {
     form: Form,
     saved: Form,
     saving: bool,
+    locking: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -56,6 +57,8 @@ pub enum Message {
     CancelResult(bool),
     Restore(String),
     Delete(String),
+    Lock(String, bool),
+    Locked(String, Result<(), String>),
     OpenFolder,
     Tick,
     ToggleAuto(bool),
@@ -263,28 +266,65 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             if state.creating {
                 return Task::none();
             }
-            ctx.confirm(
-                Confirm::new(
+            let locked = state
+                .backups
+                .iter()
+                .any(|backup| backup.filename == filename && backup.locked);
+            let (title, body, label) = if locked {
+                (
+                    "Delete a locked backup?",
+                    "You locked this backup so it would be kept. Deleting it removes the file from this computer for good. This cannot be undone.",
+                    "Delete locked backup",
+                )
+            } else {
+                (
                     "Delete this backup?",
                     "The backup file is removed from this computer. This cannot be undone.",
                     "Delete backup",
-                    true,
-                    move || {
-                        let id = id.clone();
-                        let filename = filename.clone();
-                        async move {
-                            let result = backup_manager::delete_backup(id, filename).await;
-                            if result.success {
-                                Ok("Backup deleted".to_string())
-                            } else {
-                                Err(result.error.unwrap_or_else(|| "The delete failed.".into()))
-                            }
-                        }
-                    },
                 )
+            };
+            ctx.confirm(
+                Confirm::new(title, body, label, true, move || {
+                    let id = id.clone();
+                    let filename = filename.clone();
+                    async move {
+                        let result = backup_manager::delete_backup(id, filename).await;
+                        if result.success {
+                            Ok("Backup deleted".to_string())
+                        } else {
+                            Err(result.error.unwrap_or_else(|| "The delete failed.".into()))
+                        }
+                    }
+                })
                 .busy_label("Deleting"),
             );
             Task::none()
+        }
+        Message::Lock(filename, locked) => {
+            let Some(id) = state.server_id.clone() else {
+                return Task::none();
+            };
+            state.locking = Some(filename.clone());
+            Task::perform(
+                backup_manager::set_backup_locked(id.clone(), filename, locked),
+                move |result| {
+                    Message::Locked(
+                        id.clone(),
+                        if result.success {
+                            Ok(())
+                        } else {
+                            Err(result.error.unwrap_or_else(|| "Unknown error".into()))
+                        },
+                    )
+                },
+            )
+        }
+        Message::Locked(id, outcome) => {
+            state.locking = None;
+            if let Err(error) = outcome {
+                ctx.error(format!("Could not change the lock: {error}"));
+            }
+            load(id)
         }
         Message::OpenFolder => {
             let Some(server) = ctx.selected_server() else {
@@ -394,16 +434,23 @@ fn action<'a>(
         .into()
 }
 
-fn entry_row<'a>(backup: &'a BackupEntry, can_restore: bool, busy: bool) -> Element<'a, Message> {
+fn entry_row<'a>(
+    backup: &'a BackupEntry,
+    can_restore: bool,
+    busy: bool,
+    locking: bool,
+) -> Element<'a, Message> {
     let kind = match backup.kind {
         BackupType::Auto => "Automatic",
         BackupType::Manual => "Manual",
     };
+    let mut meta = format!("{} · {}", format_date(&backup.created_at), kind);
+    if backup.locked {
+        meta.push_str(" · Locked");
+    }
     let details = column![
         text(&backup.name).size(TEXT_MD).font(UI_MEDIUM),
-        text(format!("{} · {}", format_date(&backup.created_at), kind))
-            .size(TEXT_SM)
-            .style(style::muted),
+        text(meta).size(TEXT_SM).style(style::muted),
     ]
     .spacing(SPACE_1)
     .width(Length::Fill);
@@ -414,6 +461,14 @@ fn entry_row<'a>(backup: &'a BackupEntry, can_restore: bool, busy: bool) -> Elem
         text(format_size(backup.size))
             .size(TEXT_SM)
             .style(style::muted),
+        action(
+            text(if backup.locked { "Unlock" } else { "Lock" })
+                .size(TEXT_MD)
+                .font(UI_MEDIUM)
+                .into(),
+            style::ghost,
+            (!locking).then(|| Message::Lock(backup.filename.clone(), !backup.locked)),
+        ),
         action(
             text("Restore").size(TEXT_MD).font(UI_MEDIUM).into(),
             style::secondary,
@@ -500,7 +555,13 @@ fn list_view<'a>(state: &'a State, can_restore: bool) -> Element<'a, Message> {
             rows = rows.push(rule::horizontal(1).style(style::hairline));
         }
         rows = rows.push(
-            container(entry_row(backup, can_restore, state.creating)).padding([SPACE_3, SPACE_4]),
+            container(entry_row(
+                backup,
+                can_restore,
+                state.creating,
+                state.locking.as_deref() == Some(backup.filename.as_str()),
+            ))
+            .padding([SPACE_3, SPACE_4]),
         );
     }
     container(rows)

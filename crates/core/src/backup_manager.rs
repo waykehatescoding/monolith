@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -22,6 +22,7 @@ use crate::types::{
 };
 
 const BACKUP_DIR_NAME: &str = "backups";
+const LOCKS_FILE: &str = "locks.json";
 
 static ACTIVE: Lazy<Mutex<HashMap<String, (Arc<AtomicBool>, bool)>>> =
     Lazy::new(|| Mutex::new(HashMap::new()));
@@ -344,6 +345,7 @@ async fn create_backup_inner(
                 size,
                 created_at: iso(Utc::now()),
                 kind,
+                locked: false,
             };
             if notify {
                 events::emit(Event::BackupCompleted(BackupCompletedEvent {
@@ -444,6 +446,7 @@ fn parse_backup(path: &Path, file: &str) -> Option<BackupEntry> {
         size: meta.len(),
         created_at: iso(created),
         kind,
+        locked: false,
     })
 }
 
@@ -459,7 +462,7 @@ fn expired(
         .map(|d| now - chrono::Duration::days(i64::from(d)));
     let mut autos: Vec<&BackupEntry> = backups
         .iter()
-        .filter(|b| b.kind == BackupType::Auto)
+        .filter(|b| b.kind == BackupType::Auto && !b.locked)
         .collect();
     autos.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     autos
@@ -491,10 +494,46 @@ pub async fn get_backups(server_id: String) -> Vec<BackupEntry> {
     list_backups(&Path::new(&server.server_path).join(BACKUP_DIR_NAME))
 }
 
+fn read_locks(backups_dir: &Path) -> BTreeSet<String> {
+    fs::read_to_string(backups_dir.join(LOCKS_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+fn write_locks(backups_dir: &Path, locks: &BTreeSet<String>) -> Result<(), String> {
+    let text = serde_json::to_string_pretty(locks).map_err(|e| e.to_string())?;
+    fs::write(backups_dir.join(LOCKS_FILE), text).map_err(|e| e.to_string())
+}
+
+pub async fn set_backup_locked(server_id: String, filename: String, locked: bool) -> SuccessResult {
+    let Some(server) = server_store::get_server(server_id).await else {
+        return SuccessResult::err("Server not found");
+    };
+    let (backups_dir, file_path) = match resolve_backup_file(&server.server_path, &filename) {
+        Ok(v) => v,
+        Err(e) => return SuccessResult::err(&e),
+    };
+    if !file_path.exists() {
+        return SuccessResult::err("File not found");
+    }
+    let mut locks = read_locks(&backups_dir);
+    if locked {
+        locks.insert(filename);
+    } else {
+        locks.remove(&filename);
+    }
+    match write_locks(&backups_dir, &locks) {
+        Ok(()) => SuccessResult::ok(),
+        Err(e) => SuccessResult::err(e),
+    }
+}
+
 fn list_backups(backups_dir: &Path) -> Vec<BackupEntry> {
     let Ok(read) = fs::read_dir(backups_dir) else {
         return Vec::new();
     };
+    let locks = read_locks(backups_dir);
 
     let mut backups: Vec<BackupEntry> = read
         .flatten()
@@ -503,7 +542,8 @@ fn list_backups(backups_dir: &Path) -> Vec<BackupEntry> {
             if !file.ends_with(".zip") {
                 return None;
             }
-            parse_backup(&entry.path(), &file)
+            let locked = locks.contains(&file);
+            parse_backup(&entry.path(), &file).map(|backup| BackupEntry { locked, ..backup })
         })
         .collect();
     backups.sort_by(|a, b| b.created_at.cmp(&a.created_at));
@@ -524,17 +564,21 @@ pub async fn delete_backup(server_id: String, filename: String) -> SuccessResult
     let Some(server) = server_store::get_server(server_id).await else {
         return SuccessResult::err("Server not found");
     };
-    let (_, file_path) = match resolve_backup_file(&server.server_path, &filename) {
+    let (backups_dir, file_path) = match resolve_backup_file(&server.server_path, &filename) {
         Ok(v) => v,
         Err(e) => return SuccessResult::err(&e),
     };
     if !file_path.exists() {
         return SuccessResult::err("File not found");
     }
-    match tokio::fs::remove_file(&file_path).await {
-        Ok(()) => SuccessResult::ok(),
-        Err(e) => SuccessResult::err(e.to_string()),
+    if let Err(e) = tokio::fs::remove_file(&file_path).await {
+        return SuccessResult::err(e.to_string());
     }
+    let mut locks = read_locks(&backups_dir);
+    if locks.remove(&filename) {
+        let _ = write_locks(&backups_dir, &locks);
+    }
+    SuccessResult::ok()
 }
 
 fn entry_escapes(entry_name: &str) -> bool {
@@ -721,6 +765,7 @@ mod tests {
             size: 0,
             created_at: iso(Utc::now() - chrono::Duration::days(days_ago)),
             kind,
+            locked: false,
         }
     }
 
@@ -743,6 +788,16 @@ mod tests {
             entry("manual", 30, BackupType::Manual),
         ];
         assert_eq!(expired(&backups, None, Some(7), Utc::now()), vec!["old"]);
+    }
+
+    #[test]
+    fn retention_never_removes_locked_backups() {
+        let locked = BackupEntry {
+            locked: true,
+            ..entry("locked", 50, BackupType::Auto)
+        };
+        let backups = vec![locked, entry("new", 1, BackupType::Auto)];
+        assert!(expired(&backups, Some(1), Some(7), Utc::now()).is_empty());
     }
 
     #[test]

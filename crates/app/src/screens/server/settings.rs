@@ -1,6 +1,6 @@
 use iced::widget::{
-    column, container, pick_list, progress_bar, row, rule, scrollable, slider, text, text_editor,
-    text_input, toggler, Space,
+    column, container, pick_list, progress_bar, rich_text, row, rule, scrollable, slider, text,
+    text_editor, text_input, toggler, Space,
 };
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
@@ -18,20 +18,20 @@ use monolith_core::types::{
 };
 use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::token::{
-    CORAL, INK, INK_TERTIARY, LAYER_2, MOSS, RADIUS_CONTROL, SPACE_1, SPACE_2, SPACE_3, SPACE_4,
-    SPACE_5, SPACE_6, SPACE_7, TEXT_MD, TEXT_SM, TEXT_XL,
+    CORAL, INK, INK_SECONDARY, INK_TERTIARY, LAYER_2, MOSS, RADIUS_CONTROL, SPACE_1, SPACE_2,
+    SPACE_3, SPACE_4, SPACE_5, SPACE_6, SPACE_7, TEXT_MD, TEXT_SM, TEXT_XL,
 };
 use monolith_theme::widget::sized;
 use monolith_theme::{style, MONO, UI_SEMIBOLD};
 
+use super::console::legacy_spans;
+use super::properties::{self, Kind, CATALOG};
 use crate::ctx::{Confirm, Ctx};
 use crate::ui::busy_button;
 
 const FRAMEWORKS: [&str; 7] = [
     "Paper", "Purpur", "Fabric", "Quilt", "Forge", "NeoForge", "Vanilla",
 ];
-const DIFFICULTIES: [&str; 4] = ["peaceful", "easy", "normal", "hard"];
-const GAMEMODES: [&str; 4] = ["survival", "creative", "adventure", "spectator"];
 const CONTROL_WIDTH: f32 = 260.0;
 
 pub struct State {
@@ -50,6 +50,7 @@ pub struct State {
     raw: text_editor::Content,
     raw_open: bool,
     raw_error: Option<String>,
+    prop_filter: String,
     saving_props: bool,
     saving_reliability: bool,
     new_time: String,
@@ -86,6 +87,7 @@ impl Default for State {
             raw: text_editor::Content::new(),
             raw_open: false,
             raw_error: None,
+            prop_filter: String::new(),
             saving_props: false,
             saving_reliability: false,
             new_time: String::new(),
@@ -126,8 +128,9 @@ pub enum Message {
     JavaBrowsed(Option<String>),
     SaveGeneral,
     GeneralSaved(Result<(), String>),
-    Prop(&'static str, String),
-    PropToggle(&'static str, bool),
+    Prop(String, String),
+    PropToggle(String, bool),
+    PropFilter(String),
     ToggleRaw,
     RawAction(text_editor::Action),
     SaveProps,
@@ -238,8 +241,14 @@ fn safe_file_name(name: &str) -> String {
     }
 }
 
-fn digits(value: String) -> String {
-    value.chars().filter(char::is_ascii_digit).take(6).collect()
+fn integer(value: String) -> String {
+    value
+        .chars()
+        .enumerate()
+        .filter(|&(i, c)| c.is_ascii_digit() || (i == 0 && c == '-'))
+        .map(|(_, c)| c)
+        .take(12)
+        .collect()
 }
 
 impl State {
@@ -272,26 +281,18 @@ impl State {
             || self.effective_java() != server.java_path.as_deref().unwrap_or("")
     }
 
-    fn number_ok(&self, key: &str, default: &str, min: u32, max: u32) -> bool {
-        prop(&self.props, key, default)
-            .parse::<u32>()
-            .is_ok_and(|n| (min..=max).contains(&n))
+    fn prop_ok(&self, spec: &properties::Spec) -> bool {
+        self.props
+            .iter()
+            .find(|p| p.key == spec.key)
+            .is_none_or(|p| spec.valid(&p.value))
     }
 
     fn props_error(&self) -> Option<&'static str> {
-        if !self.number_ok("server-port", "25565", 1, 65535) {
-            return Some("Port must be a number from 1 to 65535");
-        }
-        if !self.number_ok("max-players", "20", 1, 100_000) {
-            return Some("Max players must be at least 1");
-        }
-        if !self.number_ok("view-distance", "10", 2, 32) {
-            return Some("View distance must be between 2 and 32");
-        }
-        if !self.number_ok("spawn-protection", "16", 0, 100_000) {
-            return Some("Spawn protection must be a whole number");
-        }
-        None
+        CATALOG
+            .iter()
+            .any(|spec| !self.prop_ok(spec))
+            .then_some("Fix the values outlined in red before saving.")
     }
 
     fn check_java(&mut self) {
@@ -441,16 +442,19 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
         Message::Prop(key, value) => {
-            let value = if matches!(key, "motd" | "difficulty" | "gamemode") {
-                value
-            } else {
-                digits(value)
+            let value = match properties::find(&key).map(|spec| &spec.kind) {
+                Some(Kind::Int(..)) => integer(value),
+                _ => value,
             };
-            set_prop(&mut state.props, key, value);
+            set_prop(&mut state.props, &key, value);
             Task::none()
         }
         Message::PropToggle(key, on) => {
-            set_prop(&mut state.props, key, on.to_string());
+            set_prop(&mut state.props, &key, on.to_string());
+            Task::none()
+        }
+        Message::PropFilter(query) => {
+            state.prop_filter = query;
             Task::none()
         }
         Message::ToggleRaw => {
@@ -957,33 +961,16 @@ fn raw_editor(state: &State) -> Element<'_, Message> {
 }
 
 fn gameplay(state: &State) -> Element<'_, Message> {
+    const TITLE: &str = "Server properties";
     if !state.loaded {
         return section(
-            "Gameplay",
+            TITLE,
             vec![text("Reading server.properties...")
                 .size(TEXT_MD)
                 .style(style::muted)
                 .into()],
         );
     }
-    let flag = |key: &'static str, default: &str| prop(&state.props, key, default) == "true";
-    let number = |key: &'static str, default: &'static str, min: u32, max: u32| {
-        field(
-            default,
-            prop(&state.props, key, default),
-            !state.number_ok(key, default, min, max),
-            move |v| Message::Prop(key, v),
-        )
-        .width(120)
-    };
-    let choice = |options: [&'static str; 4], key: &'static str, default: &'static str| {
-        let current = prop(&state.props, key, default);
-        dropdown(
-            options,
-            options.iter().copied().find(|o| *o == current),
-            move |v: &'static str| Message::Prop(key, v.to_string()),
-        )
-    };
     let error = state.props_error();
     let toggle_raw = sized(
         text(if state.raw_open {
@@ -998,82 +985,135 @@ fn gameplay(state: &State) -> Element<'_, Message> {
     .on_press(Message::ToggleRaw);
     let dirty = state.raw_open || state.props != state.saved_props;
     let save = save_row(
-        "Save gameplay",
+        "Save properties",
         "Saving",
         state.saving_props,
         (dirty && (state.raw_open || error.is_none())).then_some(Message::SaveProps),
         if state.raw_open { None } else { error },
     );
     if state.raw_open {
-        return section("Gameplay", vec![raw_editor(state), toggle_raw.into(), save]);
+        return section(TITLE, vec![raw_editor(state), toggle_raw.into(), save]);
     }
 
-    section(
-        "Gameplay",
-        vec![
-            setting(
-                "Message of the day",
-                "Shown under the server name in the multiplayer list.",
-                field(
-                    "A Minecraft Server",
-                    prop(&state.props, "motd", "A Minecraft Server"),
-                    false,
-                    |v| Message::Prop("motd", v),
-                ),
-            ),
-            setting(
-                "Max players",
-                "How many people can be online at once.",
-                number("max-players", "20", 1, 100_000),
-            ),
-            setting(
-                "Difficulty",
-                "How hard mobs and hunger are.",
-                choice(DIFFICULTIES, "difficulty", "easy"),
-            ),
-            setting(
-                "Game mode",
-                "What new players start as.",
-                choice(GAMEMODES, "gamemode", "survival"),
-            ),
-            setting(
-                "Player fighting",
-                "Let players damage each other.",
-                switch(flag("pvp", "true"), |on| Message::PropToggle("pvp", on)),
-            ),
-            setting(
-                "Whitelist",
-                "Only players on the whitelist can join.",
-                switch(flag("white-list", "false"), |on| {
-                    Message::PropToggle("white-list", on)
-                }),
-            ),
-            setting(
-                "Verify accounts",
-                "Turn off only for offline setups. Players without a paid account can then join.",
-                switch(flag("online-mode", "true"), |on| {
-                    Message::PropToggle("online-mode", on)
-                }),
-            ),
-            setting(
-                "View distance",
-                "Chunks sent to each player, from 2 to 32. Lower is faster.",
-                number("view-distance", "10", 2, 32),
-            ),
-            setting(
-                "Spawn protection",
-                "Radius around spawn that only operators can change.",
-                number("spawn-protection", "16", 0, 100_000),
-            ),
-            setting(
-                "Port",
-                "Friends connect through this port. The default is 25565.",
-                number("server-port", "25565", 1, 65535),
-            ),
-            toggle_raw.into(),
-            save,
-        ],
-    )
+    let query = state.prop_filter.trim().to_lowercase();
+    let filter = text_input("Filter properties", &state.prop_filter)
+        .on_input(Message::PropFilter)
+        .size(TEXT_MD)
+        .padding([8, 12])
+        .style(style::input);
+    let mut rows: Vec<Element<'_, Message>> = vec![filter.into()];
+    let mut group = "";
+    for spec in CATALOG.iter().filter(|spec| spec.matches(&query)) {
+        if spec.group != group {
+            group = spec.group;
+            rows.push(subheading(group));
+        }
+        rows.push(setting(spec.label, spec.hint, prop_control(state, spec)));
+        if spec.key == "motd" {
+            rows.push(motd_preview(prop(
+                &state.props,
+                "motd",
+                "A Minecraft Server",
+            )));
+        }
+    }
+    let other: Vec<_> = state
+        .props
+        .iter()
+        .filter(|p| !p.key.is_empty() && properties::find(&p.key).is_none())
+        .filter(|p| query.is_empty() || p.key.to_lowercase().contains(&query))
+        .collect();
+    if !other.is_empty() {
+        rows.push(subheading("Other"));
+    }
+    for p in other {
+        let key = p.key.clone();
+        rows.push(setting(
+            &p.key,
+            "Added by your server software, a mod or a plugin.",
+            field("", &p.value, false, move |v| Message::Prop(key.clone(), v)),
+        ));
+    }
+    if rows.len() == 1 {
+        rows.push(
+            text("No properties match that filter.")
+                .size(TEXT_MD)
+                .style(style::muted)
+                .into(),
+        );
+    }
+    rows.push(toggle_raw.into());
+    rows.push(save);
+    section(TITLE, rows)
+}
+
+fn subheading(title: &str) -> Element<'_, Message> {
+    text(title)
+        .size(TEXT_SM)
+        .font(UI_SEMIBOLD)
+        .color(INK_TERTIARY)
+        .into()
+}
+
+fn prop_control<'a>(state: &'a State, spec: &'static properties::Spec) -> Element<'a, Message> {
+    let key = spec.key;
+    let value = state
+        .props
+        .iter()
+        .find(|p| p.key == key)
+        .map(|p| p.value.as_str());
+    match spec.kind {
+        Kind::Bool(default) => switch(value.map_or(default, |v| v == "true"), move |on| {
+            Message::PropToggle(key.to_string(), on)
+        }),
+        Kind::Choice(default, options) => {
+            let current = value.unwrap_or(default);
+            dropdown(
+                options,
+                options.iter().copied().find(|o| *o == current),
+                move |v: &'static str| Message::Prop(key.to_string(), v.to_string()),
+            )
+            .into()
+        }
+        Kind::Int(default, ..) => field(
+            &default.to_string(),
+            value.unwrap_or(""),
+            !state.prop_ok(spec),
+            move |v| Message::Prop(key.to_string(), v),
+        )
+        .width(140)
+        .into(),
+        Kind::Text(default) => field(default, value.unwrap_or(""), false, move |v| {
+            Message::Prop(key.to_string(), v)
+        })
+        .into(),
+        Kind::Secret => field("Not set", value.unwrap_or(""), false, move |v| {
+            Message::Prop(key.to_string(), v)
+        })
+        .secure(true)
+        .into(),
+    }
+}
+
+fn motd_preview(motd: &str) -> Element<'_, Message> {
+    let motd = motd
+        .replace("\\u00A7", "\u{a7}")
+        .replace("\\u00a7", "\u{a7}");
+    let lines = motd
+        .split("\\n")
+        .take(2)
+        .fold(column![].spacing(2), |col, line| {
+            col.push(
+                rich_text::<(), Message, _, _>(legacy_spans(line, INK_SECONDARY))
+                    .size(TEXT_MD)
+                    .font(MONO),
+            )
+        });
+    container(lines)
+        .padding([SPACE_2, SPACE_3])
+        .width(Length::Fill)
+        .style(style::console)
+        .into()
 }
 
 fn reliability<'a>(state: &'a State, server: &'a ServerRecord) -> Element<'a, Message> {

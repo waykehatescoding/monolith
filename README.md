@@ -1,36 +1,34 @@
 ![Monolith](assets/brand/readme-banner.png)
 
-Monolith is a Minecraft server manager for Windows. It sets up, runs, shares and backs up your servers from one small native app, so you never have to touch a config file unless you want to.
+Monolith is a Minecraft server manager for Windows. Create, run, share and back up servers from one native app.
 
 ![Monolith showing a running server](docs/screenshots/overview.png)
 
 ## Features
 
-- **Create a server in about a minute.** Pick Paper, Purpur, Fabric, Quilt, Forge, NeoForge or Vanilla and a Minecraft version (snapshots and pre-releases included). Monolith downloads the server (running the loader installer for Forge, NeoForge and Quilt) and the right Java runtime for you.
-- **Play with friends.** Copy the join address for your local network, or turn on sharing to get a public address through ngrok.
-- **Live console.** Colour-coded output right on the Overview, with players, TPS, memory and uptime above it, command history, and a view that stays put while you scroll.
-- **Players.** Kick, ban or make someone an operator straight from the list of who's online.
-- **Plugins and mods.** Search, install and update from Modrinth. Default plugin groups (for example "Performance" or "Skript") let you choose what goes on every new server.
-- **Settings without config files.** Common `server.properties` options as plain controls, plus a raw editor, whitelist, ban list and file browser.
-- **Backups.** One-click backups, scheduled backups and safe restores.
-- **Stays up.** Automatic restart after a crash, scheduled daily restarts with in-game warnings, and port conflict detection with a one-click fix.
-- **Analytics.** The bundled Monolith Analytics plugin charts TPS, memory and players over time on Paper and Purpur servers.
-- **Keyboard first.** `Ctrl+K` opens a command palette for servers, actions and settings.
-- **Optional AI assistant.** Bring your own OpenAI-compatible key. It can suggest changes, but nothing runs until you confirm the exact command or edit.
+- **Create** servers on Paper, Purpur, Fabric, Quilt, Forge, NeoForge or Vanilla, from a Modrinth or CurseForge modpack, a saved template, or a copy of another server. Java is downloaded for you.
+- **Console** with real Minecraft colours, `Ctrl+F` search, level and chat filters, Tab completion, old logs, crash reports with a likely cause, and mclo.gs uploads.
+- **Players**: operators with levels, ban reasons and temporary bans, IP bans, and a whitelist you can fill in bulk.
+- **Content** from Modrinth, Hangar, Spigot and optionally CurseForge, with dependency checks and disabling without deleting.
+- **Worlds**: switch, create, import, export and reset worlds, manage data packs, pre-generate with Chunky and trim unvisited chunks.
+- **Backups** on a schedule, on stop and before software changes, with retention, locking, excluded paths and a second copy folder.
+- **Automation**: scheduled tasks, triggers on joins, chat and crashes, restarts that wait for an empty server, a watchdog, automatic server updates and sleep mode.
+- **Network**: UPnP port forwarding, a reachability check, a firewall rule, Bedrock crossplay with Geyser, playit.gg or ngrok tunnels, and a Velocity proxy wizard.
+- **Settings**: every `server.properties` key as a control with a MOTD preview, Bukkit, Spigot, Paper and Purpur config forms, live game rules, server icon and Java GC presets.
+- **Also**: Discord alerts, RCON consoles, spark profiling, disk usage, analytics charts, a file editor with syntax checks, a `Ctrl+K` command palette, and an optional AI assistant that only acts after you confirm.
 
 <p>
+  <img src="docs/screenshots/worlds.png" width="49%" alt="Worlds">
+  <img src="docs/screenshots/automation.png" width="49%" alt="Automation">
+  <img src="docs/screenshots/network.png" width="49%" alt="Network">
   <img src="docs/screenshots/players.png" width="49%" alt="Players">
-  <img src="docs/screenshots/analytics.png" width="49%" alt="Analytics">
 </p>
 
 ## Getting started
 
-1. Download `Monolith-Setup-<version>.exe` from [Releases](https://github.com/waykehatescoding/monolith/releases) and run it. It installs for your user only and doesn't need admin rights.
-2. Open Monolith and choose **Create your first server**.
-3. Press **Start**. The first start asks you to accept the Minecraft EULA once and downloads anything missing.
-4. Copy the join address from the server's page and send it to your friends. Friends on the same network can use it directly; for everyone else, press **Share** and copy the public address.
-
-Already have a server folder or an export zip? Use **Import a server** instead.
+1. Download `Monolith-Setup-<version>.exe` from [Releases](https://github.com/waykehatescoding/monolith/releases) and run it.
+2. Open Monolith, choose **Create your first server**, then press **Start** and accept the EULA.
+3. Copy the join address and send it to your friends. For anyone outside your network, press **Share** or set up the **Network** tab.
 
 ## Requirements
 

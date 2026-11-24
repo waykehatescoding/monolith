@@ -1,5 +1,6 @@
 pub mod analytics;
 pub mod backups;
+pub mod chunky;
 pub mod configs;
 pub mod datapacks;
 pub mod console;

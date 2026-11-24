@@ -11,7 +11,7 @@ use monolith_theme::widget::sized;
 use monolith_theme::{icon_colored, style, Icon, MONO, UI_MEDIUM, UI_SEMIBOLD};
 
 use super::backups::{format_age, format_size};
-use super::datapacks;
+use super::{chunky, datapacks};
 
 use super::properties::{self, Kind};
 use super::settings::{dropdown, field};
@@ -74,6 +74,7 @@ pub struct State {
     new_world: NewWorld,
     creating: bool,
     datapacks: datapacks::State,
+    chunky: chunky::State,
 }
 
 #[derive(Debug, Clone)]
@@ -103,6 +104,7 @@ pub enum Message {
     Create,
     Created(Result<(String, bool), String>),
     Datapacks(datapacks::Message),
+    Chunky(chunky::Message),
 }
 
 fn suggested_name(source: &std::path::Path) -> String {
@@ -152,12 +154,16 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 }
                 Err(error) => state.error = Some(error),
             }
-            match state.worlds.iter().find(|w| w.active) {
-                Some(active) => {
-                    datapacks::show(&mut state.datapacks, &id, &active.name).map(Message::Datapacks)
-                }
-                None => Task::none(),
-            }
+            let Some(active) = state.worlds.iter().find(|w| w.active) else {
+                return Task::none();
+            };
+            Task::batch([
+                datapacks::show(&mut state.datapacks, &id, &active.name).map(Message::Datapacks),
+                chunky::show(&mut state.chunky, ctx, &active.name).map(Message::Chunky),
+            ])
+        }
+        Message::Chunky(message) => {
+            chunky::update(&mut state.chunky, message, ctx).map(Message::Chunky)
         }
         Message::Datapacks(message) => {
             datapacks::update(&mut state.datapacks, message, ctx).map(Message::Datapacks)
@@ -761,6 +767,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let page = column![
         list_view(state, ctx, id),
         datapacks::view(&state.datapacks, ctx).map(Message::Datapacks),
+        chunky::view(&state.chunky, ctx).map(Message::Chunky),
         new_world_view(state, running(ctx, id)),
         import_view(state)
     ]
@@ -781,6 +788,7 @@ pub fn on_event(state: &mut State, event: &Event, _ctx: &Ctx) -> Task<Message> {
     let Some(id) = state.server_id.clone() else {
         return Task::none();
     };
+    chunky::on_event(&mut state.chunky, event);
     match event {
         Event::WorldsChanged { server_id } if *server_id == id => load(id),
         Event::ServerStatus(update)

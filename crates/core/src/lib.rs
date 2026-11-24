@@ -40,3 +40,4 @@ pub mod disk_usage;
 pub mod spark;
 pub mod worlds;
 pub mod datapacks;
+pub mod chunky;

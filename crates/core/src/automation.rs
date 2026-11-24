@@ -22,9 +22,16 @@ const KEY: &str = "automation";
 const WATCHDOG_INTERVAL: chrono::Duration = chrono::Duration::seconds(60);
 const TRIGGER_COOLDOWN: Duration = Duration::from_secs(10);
 
-static JOIN: Lazy<Regex> = Lazy::new(|| pattern(r"\]: (\S+) joined the game"));
-static LEAVE: Lazy<Regex> = Lazy::new(|| pattern(r"\]: (\S+) left the game"));
-static CHAT: Lazy<Regex> = Lazy::new(|| pattern(r"\]: (?:\[Not Secure\] )?<([^>]+)> (.*)$"));
+const PREFIX: &str = r"^\[[^\]]*\](?: \[[^\]]*/INFO\])?: ";
+static JOIN: Lazy<Regex> =
+    Lazy::new(|| pattern(&format!(r"{PREFIX}([A-Za-z0-9_]{{1,16}}) joined the game$")));
+static LEAVE: Lazy<Regex> =
+    Lazy::new(|| pattern(&format!(r"{PREFIX}([A-Za-z0-9_]{{1,16}}) left the game$")));
+static CHAT: Lazy<Regex> = Lazy::new(|| {
+    pattern(&format!(
+        r"{PREFIX}(?:\[Not Secure\] )?<([A-Za-z0-9_]{{1,16}})> (.*)$"
+    ))
+});
 static ANSI: Lazy<Regex> = Lazy::new(|| pattern(r"\x1b\[[0-9;]*[A-Za-z]"));
 
 fn pattern(text: &str) -> Regex {
@@ -491,6 +498,13 @@ impl Scheduler {
     }
 }
 
+fn safe_text(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control() && !matches!(c, '@' | '\u{a7}'))
+        .take(256)
+        .collect()
+}
+
 pub fn match_line(event: &TriggerEvent, line: &str) -> Option<Vec<(&'static str, String)>> {
     let player = |regex: &Regex, name: &str| {
         let player = regex.captures(line)?.get(1)?.as_str().to_string();
@@ -503,7 +517,7 @@ pub fn match_line(event: &TriggerEvent, line: &str) -> Option<Vec<(&'static str,
         TriggerEvent::Leave(name) => player(&LEAVE, name),
         TriggerEvent::Chat(text) => {
             let captures = CHAT.captures(line)?;
-            let message = captures[2].to_string();
+            let message = safe_text(&captures[2]);
             message
                 .to_lowercase()
                 .contains(&text.trim().to_lowercase())
@@ -514,7 +528,7 @@ pub fn match_line(event: &TriggerEvent, line: &str) -> Option<Vec<(&'static str,
                 Ok(regex) => regex.is_match(line),
                 Err(_) => line.contains(text.as_str()),
             };
-            found.then(|| vec![("message", line.to_string())])
+            found.then(|| vec![("message", safe_text(line))])
         }
         _ => None,
     }
@@ -672,6 +686,20 @@ mod tests {
         assert!(match_line(&TriggerEvent::Console(r"joined the \w+".into()), join).is_some());
         assert!(match_line(&TriggerEvent::Console("[unclosed".into()), "a [unclosed b").is_some());
         assert!(match_line(&TriggerEvent::Started, join).is_none());
+    }
+
+    #[test]
+    fn chat_cannot_spoof_events_or_inject_selectors() {
+        let spoof = "[12:00:00 INFO]: <Bob> x]: @a joined the game";
+        assert!(match_line(&TriggerEvent::Join(String::new()), spoof).is_none());
+        let chat = "[12:00:00 INFO]: <Bob> hi @a \u{a7}cred";
+        assert_eq!(
+            match_line(&TriggerEvent::Chat("hi".into()), chat),
+            Some(vec![
+                ("player", "Bob".into()),
+                ("message", "hi a cred".into())
+            ])
+        );
     }
 
     #[test]

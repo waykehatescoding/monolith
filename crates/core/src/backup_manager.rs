@@ -17,8 +17,8 @@ use crate::server_runner;
 use crate::server_store;
 use crate::types::{
     BackupCompletedEvent, BackupConfig, BackupEntry, BackupProgressEvent, BackupStage,
-    BackupStatus, BackupType, CancelBackupResult, CreateBackupResult, ServerSettingsUpdate,
-    SuccessResult,
+    BackupStatus, BackupType, CancelBackupResult, CreateBackupResult, ServerRecord,
+    ServerSettingsUpdate, SuccessResult,
 };
 
 const BACKUP_DIR_NAME: &str = "backups";
@@ -840,13 +840,45 @@ fn restore_from_zip(
 }
 
 pub async fn restore_backup(server_id: String, filename: String) -> SuccessResult {
-    let Some(server) = server_store::get_server(server_id.clone()).await else {
+    restore_backup_into(server_id.clone(), filename, server_id).await
+}
+
+async fn adopt_platform(source: &ServerRecord, target_id: &str) -> Result<(), String> {
+    let Some(jar) = source.jar_file.as_deref().filter(|jar| !jar.is_empty()) else {
+        return Ok(());
+    };
+    let mut servers = server_store::load_server_list().await;
+    let Some(target) = servers.iter_mut().find(|s| s.id == target_id) else {
+        return Ok(());
+    };
+    let target_jar_present = target
+        .jar_file
+        .as_deref()
+        .is_some_and(|own| Path::new(&target.server_path).join(own).exists());
+    if target_jar_present || !Path::new(&target.server_path).join(jar).exists() {
+        return Ok(());
+    }
+    target.framework = source.framework.clone();
+    target.version = source.version.clone();
+    target.jar_file = Some(jar.to_string());
+    server_store::save_server_list(&servers).await
+}
+
+pub async fn restore_backup_into(
+    source_id: String,
+    filename: String,
+    server_id: String,
+) -> SuccessResult {
+    let (Some(source), Some(server)) = (
+        server_store::get_server(source_id.clone()).await,
+        server_store::get_server(server_id.clone()).await,
+    ) else {
         return SuccessResult::err("Server not found");
     };
     if server_runner::is_running(&server_id) {
         return SuccessResult::err("Stop the server before restoring a backup");
     }
-    let (backups_dir, zip_path) = match resolve_backup_file(&server.server_path, &filename) {
+    let (_, zip_path) = match resolve_backup_file(&source.server_path, &filename) {
         Ok(v) => v,
         Err(e) => return SuccessResult::err(&e),
     };
@@ -855,6 +887,7 @@ pub async fn restore_backup(server_id: String, filename: String) -> SuccessResul
     }
 
     let server_path = PathBuf::from(&server.server_path);
+    let backups_dir = server_path.join(BACKUP_DIR_NAME);
     let base = server_path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -904,7 +937,15 @@ pub async fn restore_backup(server_id: String, filename: String) -> SuccessResul
     match work {
         Ok(Ok(())) => {
             let _ = tokio::fs::remove_dir_all(&staging).await;
-            SuccessResult::ok()
+            if source_id == server_id {
+                return SuccessResult::ok();
+            }
+            match adopt_platform(&source, &server_id).await {
+                Ok(()) => SuccessResult::ok(),
+                Err(e) => SuccessResult::err(format!(
+                    "The files were restored, but the server's software could not be updated: {e}"
+                )),
+            }
         }
         Ok(Err(e)) => SuccessResult::err(format!(
             "{e}. Restored files were kept in {}",

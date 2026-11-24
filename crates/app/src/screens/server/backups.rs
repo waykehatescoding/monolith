@@ -2,8 +2,8 @@ use std::path::Path;
 
 use chrono::{DateTime, Local};
 use iced::widget::{
-    button, column, container, progress_bar, row, rule, scrollable, text, text_input, toggler,
-    tooltip, Space,
+    button, column, container, pick_list, progress_bar, row, rule, scrollable, text, text_input,
+    toggler, tooltip, Space,
 };
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::backup_manager;
@@ -44,6 +44,18 @@ struct Form {
     on_stop: bool,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Target {
+    id: String,
+    name: String,
+}
+
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct State {
     server_id: Option<String>,
@@ -59,6 +71,7 @@ pub struct State {
     locking: Option<String>,
     new_exclusion: String,
     choosing_folder: bool,
+    restore_to: Option<(String, Option<Target>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -70,6 +83,10 @@ pub enum Message {
     Cancel,
     CancelResult(bool),
     Restore(String),
+    RestoreTo(String),
+    PickTarget(Target),
+    CancelRestoreTo,
+    ConfirmRestoreTo,
     Delete(String),
     Lock(String, bool),
     Locked(String, Result<(), String>),
@@ -276,6 +293,55 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                             let result = backup_manager::restore_backup(id, filename).await;
                             if result.success {
                                 Ok("Backup restored".to_string())
+                            } else {
+                                Err(result.error.unwrap_or_else(|| "The restore failed.".into()))
+                            }
+                        }
+                    },
+                )
+                .busy_label("Restoring"),
+            );
+            Task::none()
+        }
+        Message::RestoreTo(filename) => {
+            state.restore_to = Some((filename, None));
+            Task::none()
+        }
+        Message::PickTarget(target) => {
+            if let Some((_, selected)) = &mut state.restore_to {
+                *selected = Some(target);
+            }
+            Task::none()
+        }
+        Message::CancelRestoreTo => {
+            state.restore_to = None;
+            Task::none()
+        }
+        Message::ConfirmRestoreTo => {
+            let (Some(source), Some((filename, Some(target)))) =
+                (state.server_id.clone(), state.restore_to.take())
+            else {
+                return Task::none();
+            };
+            ctx.confirm(
+                Confirm::new(
+                    format!("Restore this backup into {}?", target.name),
+                    format!("All of {}'s current files will be replaced with this backup. Monolith saves a safety backup of {} first, so you can undo the restore.", target.name, target.name),
+                    "Restore backup",
+                    true,
+                    move || {
+                        let source = source.clone();
+                        let filename = filename.clone();
+                        let target = target.clone();
+                        async move {
+                            let result = backup_manager::restore_backup_into(
+                                source,
+                                filename,
+                                target.id.clone(),
+                            )
+                            .await;
+                            if result.success {
+                                Ok(format!("Backup restored into {}", target.name))
                             } else {
                                 Err(result.error.unwrap_or_else(|| "The restore failed.".into()))
                             }
@@ -559,6 +625,11 @@ fn entry_row<'a>(
             (!locking).then(|| Message::Lock(backup.filename.clone(), !backup.locked)),
         ),
         action(
+            text("Restore to…").size(TEXT_MD).font(UI_MEDIUM).into(),
+            style::ghost,
+            Some(Message::RestoreTo(backup.filename.clone())),
+        ),
+        action(
             text("Restore").size(TEXT_MD).font(UI_MEDIUM).into(),
             style::secondary,
             can_restore.then(|| Message::Restore(backup.filename.clone())),
@@ -619,7 +690,62 @@ fn progress_view(state: &State) -> Element<'_, Message> {
     .into()
 }
 
-fn list_view<'a>(state: &'a State, can_restore: bool) -> Element<'a, Message> {
+fn restore_to_view<'a>(
+    state: &'a State,
+    ctx: &'a Ctx,
+    selected: &'a Option<Target>,
+) -> Element<'a, Message> {
+    let targets: Vec<Target> = ctx
+        .servers
+        .iter()
+        .filter(|server| state.server_id.as_deref() != Some(server.id.as_str()))
+        .filter(|server| {
+            matches!(
+                ctx.status(&server.id),
+                ServerRuntimeStatus::Offline | ServerRuntimeStatus::Crashed
+            )
+        })
+        .map(|server| Target {
+            id: server.id.clone(),
+            name: server.name.clone(),
+        })
+        .collect();
+    let picker: Element<'a, Message> = if targets.is_empty() {
+        text("No other stopped servers. Stop the server you want to restore into first.")
+            .size(TEXT_SM)
+            .style(style::muted)
+            .width(Length::Fill)
+            .into()
+    } else {
+        pick_list(targets, selected.clone(), Message::PickTarget)
+            .placeholder("Choose a stopped server")
+            .width(Length::Fill)
+            .padding([6, 12])
+            .text_size(TEXT_MD)
+            .style(style::pick)
+            .menu_style(style::pick_menu)
+            .into()
+    };
+    row![
+        text("Restore into").size(TEXT_MD),
+        picker,
+        action(
+            text("Cancel").size(TEXT_MD).font(UI_MEDIUM).into(),
+            style::ghost,
+            Some(Message::CancelRestoreTo),
+        ),
+        action(
+            text("Restore").size(TEXT_MD).font(UI_MEDIUM).into(),
+            style::danger,
+            selected.is_some().then_some(Message::ConfirmRestoreTo),
+        ),
+    ]
+    .spacing(SPACE_3)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+fn list_view<'a>(state: &'a State, ctx: &'a Ctx, can_restore: bool) -> Element<'a, Message> {
     if !state.loaded {
         return container(text("Loading backups").size(TEXT_MD).style(style::muted))
             .padding([SPACE_5, 0.0])
@@ -652,6 +778,20 @@ fn list_view<'a>(state: &'a State, can_restore: bool) -> Element<'a, Message> {
             ))
             .padding([SPACE_3, SPACE_4]),
         );
+        if let Some((_, selected)) = state
+            .restore_to
+            .as_ref()
+            .filter(|(filename, _)| *filename == backup.filename)
+        {
+            rows = rows.push(container(restore_to_view(state, ctx, selected)).padding(
+                iced::Padding {
+                    top: 0.0,
+                    right: SPACE_4,
+                    bottom: SPACE_3,
+                    left: SPACE_4,
+                },
+            ));
+        }
     }
     container(rows)
         .width(Length::Fill)
@@ -952,7 +1092,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         );
     }
     body = body
-        .push(list_view(state, offline))
+        .push(list_view(state, ctx, offline))
         .push(Space::new().height(SPACE_4))
         .push(schedule_view(state));
 

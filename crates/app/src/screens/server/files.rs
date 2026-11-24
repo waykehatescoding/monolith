@@ -17,6 +17,7 @@ use monolith_theme::token::{
 };
 use monolith_theme::{icon_colored, style, Icon, MONO, UI_MEDIUM};
 
+use super::highlight::{self, Highlighter, Syntax};
 use crate::ctx::{Confirm, Ctx};
 
 const MAX_EDIT_BYTES: u64 = 2 * 1024 * 1024;
@@ -1028,7 +1029,8 @@ fn editor_view<'a>(editor: &'a Editor) -> Element<'a, Message> {
         .size(TEXT_SM)
         .padding(SPACE_4)
         .height(Length::Fill)
-        .style(editor_style);
+        .style(editor_style)
+        .highlight_with::<Highlighter>(Syntax::of(&editor.name), highlight::format);
 
     column![header, area].spacing(SPACE_3).into()
 }

@@ -1,6 +1,7 @@
 pub mod analytics;
 pub mod backups;
 pub mod configs;
+pub mod datapacks;
 pub mod console;
 pub mod content;
 pub mod discord;

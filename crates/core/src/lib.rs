@@ -39,3 +39,4 @@ pub mod server_ping;
 pub mod disk_usage;
 pub mod spark;
 pub mod worlds;
+pub mod datapacks;

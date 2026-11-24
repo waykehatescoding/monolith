@@ -11,6 +11,8 @@ use monolith_theme::widget::sized;
 use monolith_theme::{icon_colored, style, Icon, MONO, UI_MEDIUM, UI_SEMIBOLD};
 
 use super::backups::{format_age, format_size};
+use super::datapacks;
+
 use super::properties::{self, Kind};
 use super::settings::{dropdown, field};
 use crate::ctx::{Confirm, Ctx};
@@ -71,6 +73,7 @@ pub struct State {
     reset: Option<Reset>,
     new_world: NewWorld,
     creating: bool,
+    datapacks: datapacks::State,
 }
 
 #[derive(Debug, Clone)]
@@ -99,6 +102,7 @@ pub enum Message {
     NewStructures(bool),
     Create,
     Created(Result<(String, bool), String>),
+    Datapacks(datapacks::Message),
 }
 
 fn suggested_name(source: &std::path::Path) -> String {
@@ -137,17 +141,26 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
     };
     match message {
         Message::Loaded(from, result) => {
-            if from == id {
-                state.loaded = true;
-                match result {
-                    Ok(list) => {
-                        state.worlds = list;
-                        state.error = None;
-                    }
-                    Err(error) => state.error = Some(error),
-                }
+            if from != id {
+                return Task::none();
             }
-            Task::none()
+            state.loaded = true;
+            match result {
+                Ok(list) => {
+                    state.worlds = list;
+                    state.error = None;
+                }
+                Err(error) => state.error = Some(error),
+            }
+            match state.worlds.iter().find(|w| w.active) {
+                Some(active) => {
+                    datapacks::show(&mut state.datapacks, &id, &active.name).map(Message::Datapacks)
+                }
+                None => Task::none(),
+            }
+        }
+        Message::Datapacks(message) => {
+            datapacks::update(&mut state.datapacks, message, ctx).map(Message::Datapacks)
         }
         Message::Activate(name) => {
             state.switching = Some(name.clone());
@@ -747,6 +760,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     };
     let page = column![
         list_view(state, ctx, id),
+        datapacks::view(&state.datapacks, ctx).map(Message::Datapacks),
         new_world_view(state, running(ctx, id)),
         import_view(state)
     ]

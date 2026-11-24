@@ -3057,7 +3057,7 @@ dependencies = [
 
 [[package]]
 name = "monolith"
-version = "0.0.6"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "embed-resource",
@@ -3079,7 +3079,7 @@ dependencies = [
 
 [[package]]
 name = "monolith-core"
-version = "0.0.6"
+version = "0.1.0"
 dependencies = [
  "chrono",
  "dirs 6.0.0",
@@ -3106,7 +3106,7 @@ dependencies = [
 
 [[package]]
 name = "monolith-setup"
-version = "0.0.6"
+version = "0.1.0"
 dependencies = [
  "dirs 6.0.0",
  "embed-resource",
@@ -3121,7 +3121,7 @@ dependencies = [
 
 [[package]]
 name = "monolith-theme"
-version = "0.0.6"
+version = "0.1.0"
 dependencies = [
  "iced",
  "image",
@@ -7050,7 +7050,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.0.6"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "ico",

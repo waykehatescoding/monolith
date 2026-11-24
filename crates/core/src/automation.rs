@@ -10,13 +10,14 @@ use crate::backup_manager::create_backup_of_type;
 use crate::events::{emit, Event};
 use crate::schedule;
 use crate::server_runner::{
-    is_running, player_count, restart_server, send_command, send_console_line, start_server,
-    stop_server,
+    force_restart, is_running, ping, player_count, restart_server, send_command, send_console_line,
+    start_server, stop_server,
 };
 use crate::server_store::{load_server_list, save_server_list};
 use crate::types::{BackupType, ConsoleLineType, ServerRecord, SuccessResult};
 
 const KEY: &str = "automation";
+const WATCHDOG_INTERVAL: chrono::Duration = chrono::Duration::seconds(60);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -25,6 +26,8 @@ pub struct Automation {
     pub wait_for_empty: bool,
     pub max_wait_minutes: u32,
     pub idle_stop_minutes: u32,
+    pub watchdog: bool,
+    pub watchdog_failures: u32,
 }
 
 impl Default for Automation {
@@ -34,6 +37,8 @@ impl Default for Automation {
             wait_for_empty: false,
             max_wait_minutes: 60,
             idle_stop_minutes: 0,
+            watchdog: false,
+            watchdog_failures: 3,
         }
     }
 }
@@ -304,6 +309,7 @@ pub struct Scheduler {
     remaining: HashMap<String, i64>,
     waiting: HashMap<String, (NaiveDateTime, i64)>,
     empty_since: HashMap<String, NaiveDateTime>,
+    watchdog: HashMap<String, (NaiveDateTime, u32)>,
 }
 
 impl Scheduler {
@@ -314,6 +320,7 @@ impl Scheduler {
             let settings = of(server);
             self.restart(server, &settings, now).await;
             self.stop_when_empty(server, &settings, now);
+            self.watch(server, &settings, now);
         }
     }
 
@@ -395,6 +402,41 @@ impl Scheduler {
             ),
         });
         tokio::spawn(stop_server(id.clone()));
+    }
+
+    fn watch(&mut self, server: &ServerRecord, settings: &Automation, now: NaiveDateTime) {
+        let id = &server.id;
+        if !settings.watchdog || player_count(id).is_none() {
+            self.watchdog.remove(id);
+            return;
+        }
+        let (last, failures) = self
+            .watchdog
+            .entry(id.clone())
+            .or_insert((now - WATCHDOG_INTERVAL, 0));
+        if now - *last < WATCHDOG_INTERVAL {
+            return;
+        }
+        let Some(answered) = ping(id) else {
+            return;
+        };
+        *last = now;
+        *failures = if answered { 0 } else { *failures + 1 };
+        if *failures < settings.watchdog_failures.max(1) {
+            return;
+        }
+        self.watchdog.remove(id);
+        send_console_line(
+            id,
+            "The server stopped responding, forcing a restart",
+            ConsoleLineType::System,
+        );
+        if force_restart(id) {
+            emit(Event::Notice {
+                title: "Server not responding",
+                body: format!("{} stopped responding and was restarted.", server.name),
+            });
+        }
     }
 }
 

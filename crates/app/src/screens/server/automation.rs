@@ -238,6 +238,8 @@ struct Rules {
     wait_for_empty: bool,
     max_wait: String,
     idle_stop: String,
+    watchdog: bool,
+    failures: String,
 }
 
 impl Rules {
@@ -249,6 +251,8 @@ impl Rules {
                 0 => String::new(),
                 minutes => minutes.to_string(),
             },
+            watchdog: automation.watchdog,
+            failures: automation.watchdog_failures.to_string(),
         }
     }
 
@@ -258,7 +262,10 @@ impl Rules {
             "" => 0,
             value => minutes(value)?,
         };
+        let failures = failures(&self.failures)?;
         Some(Automation {
+            watchdog: self.watchdog,
+            watchdog_failures: failures,
             wait_for_empty: self.wait_for_empty,
             max_wait_minutes: max_wait,
             idle_stop_minutes: idle_stop,
@@ -269,6 +276,10 @@ impl Rules {
 
 fn minutes(value: &str) -> Option<u32> {
     value.trim().parse().ok().filter(|m| (1..=1440).contains(m))
+}
+
+fn failures(value: &str) -> Option<u32> {
+    value.trim().parse().ok().filter(|n| (1..=60).contains(n))
 }
 
 fn digits(value: &str) -> String {
@@ -311,6 +322,8 @@ pub enum Message {
     WaitForEmpty(bool),
     MaxWait(String),
     IdleStop(String),
+    Watchdog(bool),
+    Failures(String),
     SaveRules,
 }
 
@@ -485,6 +498,14 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::IdleStop(value) => {
             state.rules.idle_stop = digits(&value);
+            Task::none()
+        }
+        Message::Watchdog(on) => {
+            state.rules.watchdog = on;
+            Task::none()
+        }
+        Message::Failures(value) => {
+            state.rules.failures = digits(&value);
             Task::none()
         }
         Message::SaveRules => match state.rules.apply(&state.automation) {
@@ -739,14 +760,17 @@ fn rules_view(state: &State) -> Element<'_, Message> {
     let rules = &state.rules;
     let max_wait_ok = minutes(&rules.max_wait).is_some();
     let idle_ok = rules.idle_stop.is_empty() || minutes(&rules.idle_stop).is_some();
+    let failures_ok = failures(&rules.failures).is_some();
     let note = if !max_wait_ok || !idle_ok {
         Some("Use between 1 and 1440 minutes")
+    } else if !failures_ok {
+        Some("Use between 1 and 60 missed checks")
     } else {
         None
     };
     let dirty = *rules != state.saved_rules;
     section(
-        "Restarts and empty servers",
+        "Restarts and health",
         vec![
             setting(
                 "Wait for an empty server",
@@ -762,6 +786,16 @@ fn rules_view(state: &State) -> Element<'_, Message> {
                 "Stop when empty",
                 "Stop the server after this many minutes with nobody online. Leave empty to keep it running.",
                 field("Off", &rules.idle_stop, !idle_ok, Message::IdleStop),
+            ),
+            setting(
+                "Restart when unresponsive",
+                "Every minute Monolith checks that the server still answers commands. If it stops answering, it is killed and restarted.",
+                switch(rules.watchdog, Message::Watchdog),
+            ),
+            setting(
+                "Missed checks before restart",
+                "How many checks in a row may go unanswered.",
+                field("3", &rules.failures, !failures_ok, Message::Failures),
             ),
             save_row(
                 "Save",

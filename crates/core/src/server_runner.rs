@@ -53,6 +53,8 @@ struct StatsState {
     user_bypass_until: u64,
     disable_in_server: bool,
     task: Option<JoinHandle<()>>,
+    last_ping_at: u64,
+    last_reply_at: u64,
 }
 
 static RUNNING: Lazy<Mutex<HashMap<String, Running>>> = Lazy::new(|| Mutex::new(HashMap::new()));
@@ -87,6 +89,7 @@ static STATS_FILTERS: Lazy<Vec<Regex>> = Lazy::new(|| {
         r"(?i)^\[.*\]: Max memory:",
         r"(?i)^\[.*\]: Allocated memory:",
         r"(?i)^\[.*\]: Current Memory Usage:",
+        r"(?i)^\[.*\]: There (are|is) \d+.*players? online",
     ]
     .iter()
     .map(|p| re(p))
@@ -114,7 +117,8 @@ static MEM_FREE: Lazy<Regex> = Lazy::new(|| {
 });
 static MEM_ALLOC: Lazy<Regex> = Lazy::new(|| re(r"(?i)Allocated memory:\s*([\d,]+)\s*MB"));
 static MEM_MAX: Lazy<Regex> = Lazy::new(|| re(r"(?i)Max memory:\s*([\d,]+)\s*MB"));
-static STATS_COMMAND: Lazy<Regex> = Lazy::new(|| re(r"(?i)^\s*(tps|memory)\s*$"));
+static STATS_COMMAND: Lazy<Regex> = Lazy::new(|| re(r"(?i)^\s*(tps|memory|list)\s*$"));
+static LIST_REPLY: Lazy<Regex> = Lazy::new(|| re(r"(?i)\]: There (are|is) \d+.*players? online"));
 static RESTART_COMMAND: Lazy<Regex> = Lazy::new(|| re(r"(?i)^\s*restart\s*$"));
 
 fn now_ms() -> u64 {
@@ -365,6 +369,10 @@ fn parse_stats_from_line(server_id: &str, line: &str) {
             return;
         };
 
+        if LIST_REPLY.is_match(&normalized) {
+            state.last_reply_at = now_ms();
+        }
+
         if DONE.is_match(&normalized) {
             let was_ready = state.ready;
             state.ready = true;
@@ -509,6 +517,8 @@ fn start_stats_polling(server_id: &str, ram_mb: u32, framework: &str) {
                 user_bypass_until: 0,
                 disable_in_server: false,
                 task: None,
+                last_ping_at: 0,
+                last_reply_at: 0,
             },
         );
     }
@@ -1121,6 +1131,34 @@ pub async fn get_server_logs(server_id: String) -> Vec<ConsoleLine> {
         .unwrap_or_default()
 }
 
+pub fn ping(server_id: &str) -> Option<bool> {
+    let answered = {
+        let mut stats = STATS.lock().ok()?;
+        let state = stats.get_mut(server_id).filter(|state| state.ready)?;
+        let answered = state.last_reply_at >= state.last_ping_at;
+        state.last_ping_at = now_ms();
+        state.internal_poll_until = state.last_ping_at + 12_000;
+        answered
+    };
+    write_server_command(server_id, "list");
+    Some(answered)
+}
+
+pub fn force_restart(server_id: &str) -> bool {
+    let kill = RUNNING
+        .lock()
+        .ok()
+        .and_then(|r| r.get(server_id).map(|s| s.kill.clone()));
+    let Some(kill) = kill else {
+        return false;
+    };
+    if let Ok(mut set) = RESTARTING.lock() {
+        set.insert(server_id.to_string());
+    }
+    kill.notify_one();
+    true
+}
+
 pub fn player_count(server_id: &str) -> Option<u32> {
     STATS
         .lock()
@@ -1141,6 +1179,19 @@ mod chat_tests {
         let real = "[12:00:00 INFO]: Server is restarting...";
         assert!(CHAT.is_match(chat) && CHAT.is_match(unsigned));
         assert!(!CHAT.is_match(real) && RESTART_HINTS.iter().any(|p| p.is_match(real)));
+    }
+
+    #[test]
+    fn recognises_list_replies() {
+        for line in [
+            "[12:00:00 INFO]: There are 0 of a max of 20 players online: ",
+            "[12:00:00] [Server thread/INFO]: There are 2 out of maximum 20 players online.",
+            "[12:00:00 INFO]: There are 1/20 players online:",
+        ] {
+            assert!(LIST_REPLY.is_match(line), "{line}");
+            assert!(STATS_FILTERS.iter().any(|p| p.is_match(line)), "{line}");
+        }
+        assert!(!LIST_REPLY.is_match("[12:00:00 INFO]: <Steve> There are 5 players online"));
     }
 
     #[test]

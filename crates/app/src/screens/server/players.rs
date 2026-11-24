@@ -2,11 +2,12 @@ use std::time::Duration;
 
 use chrono::TimeDelta;
 use iced::widget::{
-    button, column, container, pick_list, row, scrollable, text, text_input, toggler, Space,
+    button, checkbox, column, container, pick_list, row, scrollable, text, text_input, toggler,
+    Space,
 };
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
-use monolith_core::server_props::{self, ListEntry, BANNED_PLAYERS, WHITELIST};
+use monolith_core::server_props::{self, ListEntry, BANNED_PLAYERS, OPS, WHITELIST};
 use monolith_core::server_runner;
 use monolith_core::types::{ServerProperty, ServerRuntimeStatus, SuccessResult};
 use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
@@ -19,6 +20,7 @@ use monolith_theme::{style, UI_MEDIUM, UI_SEMIBOLD};
 use crate::ctx::{Confirm, Ctx};
 
 const WHITELIST_KEY: &str = "white-list";
+const OP_LEVELS: [u8; 4] = [1, 2, 3, 4];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum BanLength {
@@ -111,7 +113,9 @@ pub struct State {
     whitelist_on: bool,
     whitelist: Vec<ListEntry>,
     banned: Vec<ListEntry>,
+    ops: Vec<ListEntry>,
     whitelist_input: String,
+    op_input: String,
     ban_input: String,
     ban_reason: String,
     ban_length: BanLength,
@@ -120,10 +124,22 @@ pub struct State {
     refresh_ticks: u8,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct Lists {
+    whitelist: Vec<ListEntry>,
+    banned: Vec<ListEntry>,
+    ops: Vec<ListEntry>,
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
-    Loaded(String, bool, Vec<ListEntry>, Vec<ListEntry>),
+    Loaded(String, bool, Lists),
     WhitelistInput(String),
+    OpInput(String),
+    AddOp,
+    RemoveOp(String),
+    OpLevel(String, u8),
+    OpBypass(String, bool),
     BanInput(String),
     BanReason(String),
     BanLength(BanLength),
@@ -164,9 +180,12 @@ async fn load(id: String) -> Message {
     let on = properties
         .iter()
         .any(|p| p.key == WHITELIST_KEY && p.value == "true");
-    let whitelist = server_props::get_list(id.clone(), WHITELIST).await;
-    let banned = server_props::get_list(id.clone(), BANNED_PLAYERS).await;
-    Message::Loaded(id, on, whitelist, banned)
+    let lists = Lists {
+        whitelist: server_props::get_list(id.clone(), WHITELIST).await,
+        banned: server_props::get_list(id.clone(), BANNED_PLAYERS).await,
+        ops: server_props::get_list(id.clone(), OPS).await,
+    };
+    Message::Loaded(id, on, lists)
 }
 
 fn reload(id: String) -> Task<Message> {
@@ -181,8 +200,8 @@ async fn resolve(id: String, name: String) -> Result<ListEntry, String> {
     let mut resolved = server_props::resolve_players(id, vec![name.clone()]).await;
     match resolved.pop() {
         Some((_, Ok(entry))) => Ok(entry),
-        Some((_, Err(e))) => Err(format!("Could not add {name}: {e}.")),
-        None => Err(format!("Could not add {name}.")),
+        Some((_, Err(e))) => Err(format!("Could not find {name}: {e}.")),
+        None => Err(format!("Could not find {name}.")),
     }
 }
 
@@ -303,6 +322,67 @@ async fn unban(id: String, live: bool, name: String) -> Result<String, String> {
     )
 }
 
+async fn add_op(id: String, name: String, live: bool) -> Result<String, String> {
+    if live {
+        let done = format!("{name} is now an operator.");
+        return command(id, format!("op {name}"), done).await;
+    }
+    let mut entry = resolve(id.clone(), name).await?;
+    entry.level = Some(
+        server_props::get_server_properties(id.clone())
+            .await
+            .iter()
+            .find(|p| p.key == "op-permission-level")
+            .and_then(|p| p.value.trim().parse().ok())
+            .filter(|level| OP_LEVELS.contains(level))
+            .unwrap_or(4),
+    );
+    entry.bypasses_player_limit = Some(false);
+    let done = format!("{} is now an operator.", entry.name());
+    let mut list = server_props::get_list(id.clone(), OPS).await;
+    list.retain(|e| !e.name().eq_ignore_ascii_case(entry.name()));
+    list.push(entry);
+    outcome(server_props::save_list(id, OPS, list).await, done)
+}
+
+async fn remove_op(id: String, name: String, live: bool) -> Result<String, String> {
+    let done = format!("{name} is no longer an operator.");
+    if live {
+        return command(id, format!("deop {name}"), done).await;
+    }
+    let mut list = server_props::get_list(id.clone(), OPS).await;
+    list.retain(|e| !e.name().eq_ignore_ascii_case(&name));
+    outcome(server_props::save_list(id, OPS, list).await, done)
+}
+
+async fn edit_op(
+    id: String,
+    name: String,
+    level: Option<u8>,
+    bypass: Option<bool>,
+) -> Result<String, String> {
+    let mut list = server_props::get_list(id.clone(), OPS).await;
+    let Some(entry) = list
+        .iter_mut()
+        .find(|e| e.name().eq_ignore_ascii_case(&name))
+    else {
+        return Err(format!("{name} is no longer an operator."));
+    };
+    entry.level = level.or(entry.level);
+    entry.bypasses_player_limit = bypass.or(entry.bypasses_player_limit);
+    let done = format!("Saved {name}'s operator settings.");
+    outcome(server_props::save_list(id, OPS, list).await, done)
+}
+
+fn op_detail(entry: &ListEntry) -> String {
+    let level = format!("Level {}", entry.level.unwrap_or(4));
+    if entry.bypasses_player_limit == Some(true) {
+        format!("{level} · Can join when full")
+    } else {
+        level
+    }
+}
+
 pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
     let Some(id) = ctx.selected.clone() else {
         return Task::none();
@@ -313,6 +393,10 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             message,
             Message::AddWhitelist
                 | Message::RemoveWhitelist(_)
+                | Message::AddOp
+                | Message::RemoveOp(_)
+                | Message::OpLevel(..)
+                | Message::OpBypass(..)
                 | Message::AddBan
                 | Message::Unban(_)
                 | Message::ToggleWhitelist(_)
@@ -322,10 +406,16 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         return Task::none();
     }
     match message {
-        Message::Loaded(loaded_id, on, whitelist, banned) => {
+        Message::Loaded(loaded_id, on, lists) => {
             if state.server_id.as_deref() == Some(loaded_id.as_str()) {
+                let Lists {
+                    whitelist,
+                    banned,
+                    ops,
+                } = lists;
                 state.whitelist_on = on;
                 state.whitelist = whitelist;
+                state.ops = ops;
                 let pending = state.ban_input.trim();
                 if !pending.is_empty() && has_name(&banned, pending) {
                     state.ban_input.clear();
@@ -341,6 +431,53 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         Message::WhitelistInput(value) => {
             state.whitelist_input = value;
             Task::none()
+        }
+        Message::OpInput(value) => {
+            state.op_input = value;
+            Task::none()
+        }
+        Message::AddOp => {
+            let name = state.op_input.trim().to_string();
+            if !valid_name(&name) {
+                ctx.error("Player names are 3 to 16 letters, numbers or underscores.");
+                return Task::none();
+            }
+            if has_name(&state.ops, &name) {
+                ctx.info(format!("{name} is already an operator."));
+                return Task::none();
+            }
+            state.op_input.clear();
+            state.busy = true;
+            if live {
+                state.refresh_ticks = 6;
+            }
+            Task::perform(add_op(id, name, live), Message::Done)
+        }
+        Message::RemoveOp(name) => {
+            let title = format!("Remove {name} as operator?");
+            let body = format!("{name} will lose access to server commands.");
+            ctx.confirm(
+                Confirm::new(title, body, "Remove operator", true, move || {
+                    remove_op(id.clone(), name.clone(), live)
+                })
+                .busy_label("Removing"),
+            );
+            state.refresh_ticks = 20;
+            Task::none()
+        }
+        Message::OpLevel(name, level) => {
+            if live {
+                return Task::none();
+            }
+            state.busy = true;
+            Task::perform(edit_op(id, name, Some(level), None), Message::Done)
+        }
+        Message::OpBypass(name, bypass) => {
+            if live {
+                return Task::none();
+            }
+            state.busy = true;
+            Task::perform(edit_op(id, name, None, Some(bypass)), Message::Done)
         }
         Message::BanInput(value) => {
             state.ban_input = value;
@@ -664,6 +801,84 @@ fn whitelist_section(state: &State) -> Element<'_, Message> {
     )
 }
 
+fn ops_section(state: &State, live: bool) -> Element<'_, Message> {
+    let add = row![
+        text_input("Player name", &state.op_input)
+            .on_input_maybe((!state.busy).then_some(Message::OpInput))
+            .on_submit_maybe((!state.busy).then_some(Message::AddOp))
+            .padding([6, 12])
+            .width(Length::Fill)
+            .style(style::input),
+        sized(
+            text("Add operator").size(TEXT_MD).font(UI_MEDIUM),
+            BUTTON_MD
+        )
+        .style(style::primary)
+        .on_press_maybe((!state.busy).then_some(Message::AddOp)),
+    ]
+    .spacing(SPACE_2);
+
+    let list: Element<'_, Message> = if state.ops.is_empty() {
+        empty(
+            "No operators",
+            "Operators can run server commands from inside the game.",
+        )
+    } else {
+        state
+            .ops
+            .iter()
+            .fold(column![].spacing(SPACE_1), |list, entry| {
+                let name = entry.name().to_string();
+                let remove = action(
+                    "Remove",
+                    Message::RemoveOp(name.clone()),
+                    style::ghost,
+                    !state.busy,
+                );
+                if live {
+                    return list.push(detail_row(
+                        entry.name(),
+                        Some(op_detail(entry)),
+                        vec![remove],
+                    ));
+                }
+                let level = {
+                    let name = name.clone();
+                    pick_list(OP_LEVELS, Some(entry.level.unwrap_or(4)), move |level| {
+                        Message::OpLevel(name.clone(), level)
+                    })
+                    .padding([4, 10])
+                    .style(style::pick)
+                    .menu_style(style::pick_menu)
+                };
+                let bypass = checkbox(entry.bypasses_player_limit.unwrap_or(false))
+                    .label("Join when full")
+                    .size(18)
+                    .text_size(TEXT_SM)
+                    .on_toggle_maybe(
+                        (!state.busy).then_some(move |on| Message::OpBypass(name.clone(), on)),
+                    )
+                    .style(style::check);
+                list.push(name_row(
+                    entry.name(),
+                    vec![bypass.into(), level.into(), remove],
+                ))
+            })
+            .into()
+    };
+
+    let hint = if live {
+        "Levels can only be changed while the server is stopped."
+    } else {
+        "Level 4 has full control. Lower levels limit which commands can be used."
+    };
+    section(
+        "Operators",
+        hint,
+        column![add, list].spacing(SPACE_4).into(),
+    )
+}
+
 fn ban_section(state: &State, live: bool) -> Element<'_, Message> {
     let add = row![
         text_input("Player name", &state.ban_input)
@@ -759,6 +974,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         column![
             online_section(ctx, id, state.busy),
             whitelist_section(state),
+            ops_section(state, is_online(ctx, id)),
             ban_section(state, is_online(ctx, id)),
             Space::new().height(SPACE_6),
         ]

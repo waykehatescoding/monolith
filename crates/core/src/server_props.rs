@@ -58,6 +58,7 @@ pub async fn write_properties(server_path: &Path, properties: &[ServerProperty])
 
 pub const WHITELIST: &str = "whitelist.json";
 pub const BANNED_PLAYERS: &str = "banned-players.json";
+pub const OPS: &str = "ops.json";
 
 const PROFILE_API: &str = "https://api.mojang.com/users/profiles/minecraft/";
 
@@ -75,6 +76,14 @@ pub struct ListEntry {
     pub expires: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<u8>,
+    #[serde(
+        default,
+        rename = "bypassesPlayerLimit",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub bypasses_player_limit: Option<bool>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -268,6 +277,8 @@ mod tests {
             r#"[{"uuid":"u","name":"Steve","level":4,"bypassesPlayerLimit":false,"custom":1}]"#;
         let entries: Vec<ListEntry> = serde_json::from_str(text).unwrap();
         assert_eq!(entries[0].name(), "Steve");
+        assert_eq!(entries[0].level, Some(4));
+        assert_eq!(entries[0].bypasses_player_limit, Some(false));
         let back: Value = serde_json::to_value(&entries).unwrap();
         assert_eq!(back, serde_json::from_str::<Value>(text).unwrap());
     }

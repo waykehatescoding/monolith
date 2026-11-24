@@ -1,18 +1,18 @@
 use iced::widget::operation::{self, AbsoluteOffset};
-use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
-use monolith_theme::widget::sized;
 use iced::widget::text::Span;
-use iced::widget::{
-    column, container, row, rich_text, scrollable, span, stack, text, text_input,
-};
+use iced::widget::{column, container, rich_text, row, scrollable, span, stack, text, text_input};
 use iced::{event, keyboard, Alignment, Color, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
+use monolith_core::log_filter::filter_logs;
 use monolith_core::server_runner;
 use monolith_core::types::{ConsoleLine, ConsoleLineType, ServerRuntimeStatus};
 use monolith_theme::style;
 use monolith_theme::token::{
-    CORAL, INK, LOG_INFO, MOSS, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_MD, TEXT_SM,
+    AMBER, CORAL, INK, INK_SECONDARY, LOG_INFO, MOSS, SPACE_1, SPACE_2, SPACE_3, SPACE_4, TEXT_MD,
+    TEXT_SM,
 };
+use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
+use monolith_theme::widget::sized;
 use monolith_theme::{icon_colored, Icon, MONO, UI_MEDIUM};
 
 use crate::ctx::{Ctx, Route, Tab};
@@ -21,6 +21,8 @@ const MAX_LINES: usize = 2000;
 const HISTORY_LIMIT: usize = 100;
 const LOG_ID: &str = "console-log";
 const INPUT_ID: &str = "console-input";
+const SEARCH_ID: &str = "console-search";
+const MATCH_BG: Color = Color::from_rgba(0.91, 0.71, 0.38, 0.35);
 const RENDER_LIMIT: usize = 500;
 const BOTTOM_SLACK: f32 = 4.0;
 
@@ -35,6 +37,7 @@ pub struct State {
     draft: String,
     at_bottom: bool,
     sending: bool,
+    search: Option<String>,
 }
 
 impl Default for State {
@@ -49,6 +52,7 @@ impl Default for State {
             draft: String::new(),
             at_bottom: true,
             sending: false,
+            search: None,
         }
     }
 }
@@ -63,6 +67,9 @@ pub enum Message {
     JumpToLatest,
     ArrowKey(bool),
     ArrowResolved(bool, bool),
+    Find,
+    Search(String),
+    CloseSearch,
 }
 
 pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
@@ -118,6 +125,27 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             step_history(state, up);
             operation::move_cursor_to_end(INPUT_ID)
+        }
+        Message::Find => {
+            if ctx.route != Route::Server(Tab::Overview) || state.server_id.is_none() {
+                return Task::none();
+            }
+            state.search.get_or_insert_with(String::new);
+            Task::batch([
+                operation::focus(SEARCH_ID),
+                operation::select_all(SEARCH_ID),
+            ])
+        }
+        Message::Search(query) => {
+            state.search = Some(query);
+            Task::none()
+        }
+        Message::CloseSearch => {
+            if state.search.take().is_none() {
+                return Task::none();
+            }
+            state.at_bottom = true;
+            Task::batch([operation::focus(INPUT_ID), jump_to_latest()])
         }
     }
 }
@@ -201,17 +229,66 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
             .center(Length::Fill)
             .into();
     };
-    column![log_area(state), command_bar(state, ctx, id)]
-        .spacing(SPACE_3)
-        .height(Length::Fill)
+    let mut layout = column![].spacing(SPACE_3).height(Length::Fill);
+    if let Some(query) = &state.search {
+        layout = layout.push(search_bar(state, query));
+    }
+    layout
+        .push(log_area(state))
+        .push(command_bar(state, ctx, id))
         .into()
 }
 
+fn query(state: &State) -> &str {
+    state.search.as_deref().map(str::trim).unwrap_or("")
+}
+
+fn search_bar<'a>(state: &'a State, query_text: &'a str) -> Element<'a, Message> {
+    let q = query(state);
+    let count = if q.is_empty() {
+        String::new()
+    } else {
+        match filter_logs(&state.lines, q, &[]).len() {
+            1 => "1 line".to_string(),
+            n => format!("{n} lines"),
+        }
+    };
+    let field = text_input("Find in console", query_text)
+        .id(SEARCH_ID)
+        .on_input(Message::Search)
+        .on_submit(Message::CloseSearch)
+        .size(TEXT_MD)
+        .padding([SPACE_2, SPACE_3])
+        .style(style::input)
+        .width(Length::Fill);
+    let close = sized(icon_colored(Icon::Close, 14.0, INK_SECONDARY), BUTTON_SM)
+        .style(style::ghost)
+        .on_press(Message::CloseSearch);
+    row![
+        icon_colored(Icon::Search, 16.0, INK_SECONDARY),
+        field,
+        text(count).size(TEXT_SM).style(style::muted).font(MONO),
+        close
+    ]
+    .spacing(SPACE_2)
+    .align_y(Alignment::Center)
+    .into()
+}
+
 fn log_area(state: &State) -> Element<'_, Message> {
-    let lines = &state.lines;
+    let q = query(state);
+    let matches;
+    let lines = if q.is_empty() {
+        &state.lines
+    } else {
+        matches = filter_logs(&state.lines, q, &[]);
+        &matches
+    };
     let body: Element<'_, Message> = if lines.is_empty() {
         let note = if state.loading {
             "Loading console output"
+        } else if !q.is_empty() {
+            "No lines match your search."
         } else {
             "No output yet. Start the server and its log will appear here."
         };
@@ -223,15 +300,21 @@ fn log_area(state: &State) -> Element<'_, Message> {
         let list = lines
             .iter()
             .skip(skip)
-            .fold(column![].spacing(2), |list, line| list.push(line_view(line)));
-        scrollable(container(list).padding([SPACE_3, SPACE_4]).width(Length::Fill))
-            .id(LOG_ID)
-            .anchor_bottom()
-            .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
-            .style(style::scroll)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+            .fold(column![].spacing(2), |list, line| {
+                list.push(line_view(line, q))
+            });
+        scrollable(
+            container(list)
+                .padding([SPACE_3, SPACE_4])
+                .width(Length::Fill),
+        )
+        .id(LOG_ID)
+        .anchor_bottom()
+        .on_scroll(|viewport| Message::Scrolled(viewport.absolute_offset().y))
+        .style(style::scroll)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
     };
     let surface = container(body)
         .style(style::console)
@@ -247,7 +330,9 @@ fn log_area(state: &State) -> Element<'_, Message> {
                 text("Jump to latest").size(TEXT_SM).font(UI_MEDIUM)
             ]
             .spacing(SPACE_1)
-            .align_y(Alignment::Center), BUTTON_SM)
+            .align_y(Alignment::Center),
+            BUTTON_SM,
+        )
         .style(style::secondary)
         .on_press(Message::JumpToLatest),
     )
@@ -257,13 +342,14 @@ fn log_area(state: &State) -> Element<'_, Message> {
     stack![surface, pill].into()
 }
 
-fn line_view<'a>(line: &ConsoleLine) -> Element<'a, Message> {
+fn line_view<'a>(line: &ConsoleLine, query: &str) -> Element<'a, Message> {
     let base = match line.kind {
-        ConsoleLineType::Stdout => LOG_INFO,
+        ConsoleLineType::Stdout => level_color(&line.text),
         ConsoleLineType::Stderr => CORAL,
         ConsoleLineType::System => MOSS,
     };
-    rich_text::<(), Message, _, _>(ansi_spans(&line.text, base))
+    let text = legacy_to_ansi(&line.text);
+    rich_text::<(), Message, _, _>(highlight(ansi_spans(&text, base), query))
         .size(TEXT_SM)
         .font(MONO)
         .width(Length::Fill)
@@ -293,9 +379,12 @@ fn command_bar<'a>(state: &'a State, ctx: &'a Ctx, id: &str) -> Element<'a, Mess
         field = field.on_input(Message::Input).on_submit(Message::Submit);
     }
     let can_send = enabled && !state.sending && !state.input.trim().is_empty();
-    let send = sized(text(if state.sending { "Sending" } else { "Send" }).font(UI_MEDIUM), BUTTON_MD)
-        .style(style::primary)
-        .on_press_maybe(can_send.then_some(Message::Submit));
+    let send = sized(
+        text(if state.sending { "Sending" } else { "Send" }).font(UI_MEDIUM),
+        BUTTON_MD,
+    )
+    .style(style::primary)
+    .on_press_maybe(can_send.then_some(Message::Submit));
     row![field, send]
         .spacing(SPACE_2)
         .align_y(Alignment::Center)
@@ -332,6 +421,15 @@ pub fn on_show(state: &mut State, ctx: &Ctx) -> Task<Message> {
 pub fn subscription(_state: &State) -> Subscription<Message> {
     event::listen_with(|event, status, _| match event {
         iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            physical_key: keyboard::key::Physical::Code(keyboard::key::Code::KeyF),
+            modifiers,
+            ..
+        }) if modifiers.command() && !modifiers.alt() => Some(Message::Find),
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
+            key: keyboard::Key::Named(keyboard::key::Named::Escape),
+            ..
+        }) => Some(Message::CloseSearch),
+        iced::Event::Keyboard(keyboard::Event::KeyPressed {
             key: keyboard::Key::Named(named),
             ..
         }) if status == event::Status::Ignored => match named {
@@ -341,6 +439,111 @@ pub fn subscription(_state: &State) -> Subscription<Message> {
         },
         _ => None,
     })
+}
+
+const LEGACY: [char; 16] = [
+    '0', '4', '2', '6', '1', '5', '3', '7', '8', 'c', 'a', 'e', '9', 'd', 'b', 'f',
+];
+
+pub fn legacy_spans(text: &str, base: Color) -> Vec<Span<'static, (), iced::Font>> {
+    ansi_spans(&legacy_to_ansi(text), base)
+}
+
+fn level_color(text: &str) -> Color {
+    let head = &text[..text.len().min(64)];
+    if head.contains("ERROR]") || head.contains("FATAL]") || head.contains("SEVERE]") {
+        CORAL
+    } else if head.contains("WARN]") || head.contains("WARNING]") {
+        AMBER
+    } else {
+        LOG_INFO
+    }
+}
+
+fn legacy_to_ansi(input: &str) -> std::borrow::Cow<'_, str> {
+    if !input.contains('§') {
+        return input.into();
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '§' {
+            out.push(c);
+            continue;
+        }
+        let Some(code) = chars.next() else { break };
+        let sgr = match code.to_ascii_lowercase() {
+            'x' => {
+                let hex: String = (0..6)
+                    .filter_map(|_| {
+                        chars.next_if_eq(&'§')?;
+                        chars.next()
+                    })
+                    .collect();
+                match u32::from_str_radix(&hex, 16) {
+                    Ok(rgb) if hex.len() == 6 => {
+                        format!("38;2;{};{};{}", rgb >> 16, rgb >> 8 & 0xff, rgb & 0xff)
+                    }
+                    _ => continue,
+                }
+            }
+            'r' => "0".into(),
+            c => match LEGACY.iter().position(|&l| l == c) {
+                Some(i) if i < 8 => (30 + i).to_string(),
+                Some(i) => (82 + i).to_string(),
+                None => continue,
+            },
+        };
+        out.push_str("[");
+        out.push_str(&sgr);
+        out.push('m');
+    }
+    out.into()
+}
+
+fn highlight(
+    spans: Vec<Span<'static, (), iced::Font>>,
+    query: &str,
+) -> Vec<Span<'static, (), iced::Font>> {
+    if query.is_empty() {
+        return spans;
+    }
+    let needle = query.to_ascii_lowercase();
+    let mut out = Vec::with_capacity(spans.len());
+    for piece in spans {
+        let text = piece.text.to_string();
+        let lower = text.to_ascii_lowercase();
+        let mut last = 0;
+        for (start, _) in lower.match_indices(&needle) {
+            if start < last {
+                continue;
+            }
+            let end = start + needle.len();
+            if start > last {
+                out.push(Span {
+                    text: text[last..start].to_owned().into(),
+                    ..piece.clone()
+                });
+            }
+            out.push(
+                Span {
+                    text: text[start..end].to_owned().into(),
+                    ..piece.clone()
+                }
+                .background(MATCH_BG),
+            );
+            last = end;
+        }
+        if last == 0 {
+            out.push(piece);
+        } else if last < text.len() {
+            out.push(Span {
+                text: text[last..].to_owned().into(),
+                ..piece
+            });
+        }
+    }
+    out
 }
 
 fn ansi_spans(input: &str, base: Color) -> Vec<Span<'static, (), iced::Font>> {
@@ -392,9 +595,13 @@ fn segments(input: &str) -> impl Iterator<Item = (&str, Option<&str>)> {
 
 fn apply_sgr(codes: &str, current: Color, base: Color) -> Color {
     let mut color = current;
-    let mut args = codes
-        .split(';')
-        .map(|code| if code.is_empty() { Some(0) } else { code.parse::<u8>().ok() });
+    let mut args = codes.split(';').map(|code| {
+        if code.is_empty() {
+            Some(0)
+        } else {
+            code.parse::<u8>().ok()
+        }
+    });
     while let Some(code) = args.next() {
         let Some(value) = code else { continue };
         match value {
@@ -474,5 +681,28 @@ mod tests {
             Color::from_rgb8(10, 20, 30)
         );
         assert_eq!(apply_sgr("1", base, base), base);
+    }
+
+    #[test]
+    fn legacy_codes_become_ansi() {
+        assert_eq!(legacy_to_ansi("§cHi§r"), "[91mHi[0m");
+        assert_eq!(legacy_to_ansi("§4a§lb"), "[31mab");
+        assert_eq!(legacy_to_ansi("§x§f§f§0§0§8§0X"), "[38;2;255;0;128mX");
+        assert_eq!(legacy_to_ansi("plain"), "plain");
+    }
+
+    #[test]
+    fn levels_pick_colours() {
+        assert_eq!(level_color("[12:00:00 WARN]: Can't keep up!"), AMBER);
+        assert_eq!(level_color("[12:00:00] [Server thread/ERROR]: boom"), CORAL);
+        assert_eq!(level_color("[12:00:00 INFO]: Done"), LOG_INFO);
+    }
+
+    #[test]
+    fn highlight_splits_matches() {
+        let spans = highlight(ansi_spans("Steve joined steve", LOG_INFO), "steve");
+        let texts: Vec<_> = spans.iter().map(|s| s.text.to_string()).collect();
+        assert_eq!(texts, ["Steve", " joined ", "steve"]);
+        assert!(spans[0].highlight.is_some() && spans[1].highlight.is_none());
     }
 }

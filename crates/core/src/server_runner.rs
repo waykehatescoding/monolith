@@ -173,6 +173,8 @@ pub fn build_java_args(ram_mb: u32, jar_file: &str) -> Vec<String> {
             "-XX:SurvivorRatio=32",
             "-Dusing.aikars.flags=https://mcflags.emc.gs",
             "-Daikars.new.flags=true",
+            "-Dterminal.jline=false",
+            "-Dterminal.ansi=true",
         ]
         .map(String::from),
     );

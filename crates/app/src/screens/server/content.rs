@@ -94,6 +94,7 @@ impl fmt::Display for SortChoice {
 pub struct VersionChoice {
     id: String,
     label: String,
+    required: Vec<String>,
 }
 
 impl fmt::Display for VersionChoice {
@@ -112,6 +113,7 @@ impl From<&ModrinthVersionOption> for VersionChoice {
         Self {
             id: version.id.clone(),
             label: format!("{}{}", version.version_number, kind),
+            required: version.required.clone(),
         }
     }
 }
@@ -1269,6 +1271,23 @@ fn drawer<'a>(state: &'a State, detail: &'a Detail) -> Element<'a, Message> {
         .into(),
     };
     body = body.push(version_picker);
+    let missing = detail
+        .selected
+        .iter()
+        .flat_map(|v| &v.required)
+        .filter(|id| !is_installed(state, id))
+        .count();
+    if missing > 0 {
+        body = body.push(
+            text(if missing == 1 {
+                "Also installs 1 required dependency.".to_string()
+            } else {
+                format!("Also installs {missing} required dependencies.")
+            })
+            .size(TEXT_SM)
+            .style(style::muted),
+        );
+    }
 
     let installing = state.busy.contains(&hit.project_id);
     let label = if installing {

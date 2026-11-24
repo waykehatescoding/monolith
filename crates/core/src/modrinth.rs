@@ -267,7 +267,21 @@ pub(crate) fn version_option(version: &Value) -> ModrinthVersionOption {
             .unwrap_or("No primary file")
             .to_string(),
         file_size: file.and_then(|f| f.get("size")).and_then(Value::as_u64),
+        required: required_dependencies(version),
     }
+}
+
+fn required_dependencies(version: &Value) -> Vec<String> {
+    version
+        .get("dependencies")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|d| d.get("dependency_type").and_then(Value::as_str) == Some("required"))
+        .filter_map(|d| d.get("project_id").and_then(Value::as_str))
+        .filter(|id| !id.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 fn build_facets(
@@ -444,4 +458,25 @@ pub async fn list_modrinth_versions(
         versions = fetch_modrinth_versions(&project_id, None, None).await?;
     }
     Ok(versions.iter().map(version_option).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn version_option_lists_required_dependencies() {
+        let option = version_option(&serde_json::json!({
+            "id": "v1",
+            "version_type": "release",
+            "files": [{ "filename": "a.jar", "primary": true }],
+            "dependencies": [
+                { "project_id": "P7BTp6Z7", "dependency_type": "required" },
+                { "project_id": "opt", "dependency_type": "optional" },
+                { "project_id": null, "version_id": "x", "dependency_type": "required" }
+            ]
+        }));
+        assert_eq!(option.required, vec!["P7BTp6Z7".to_string()]);
+        assert_eq!(option.file_name, "a.jar");
+    }
 }

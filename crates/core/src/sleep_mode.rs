@@ -20,7 +20,10 @@ use crate::server_store::get_server;
 use crate::types::{ConsoleLineType, ServerRecord, ServerRuntimeStatus};
 
 const MAX_HANDSHAKE: usize = 1024;
-const MAX_PACKET: usize = 2 * 1024 * 1024;
+const MAX_STATUS_REQUEST: usize = 1;
+const MAX_PING: usize = 9;
+const MAX_LOGIN: usize = 512;
+const MAX_CONNECTIONS: usize = 32;
 const CONNECTION_TIMEOUT: Duration = Duration::from_secs(10);
 const LINGER: Duration = Duration::from_secs(2);
 const KICK: &str = "Starting the server, rejoin in about a minute";
@@ -161,13 +164,13 @@ pub async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
     let handshake = parse_handshake(&body).ok_or_else(invalid)?;
     match handshake.next_state {
         1 => {
-            if read_frame(stream, None, MAX_PACKET).await? != [0] {
+            if read_frame(stream, None, MAX_STATUS_REQUEST).await? != [0] {
                 return Ok(false);
             }
             let mut payload = Vec::new();
             write_string(&mut payload, &status_json(status, handshake.protocol));
             stream.write_all(&packet(0, &payload)).await?;
-            let ping = read_frame(stream, None, MAX_PACKET).await?;
+            let ping = read_frame(stream, None, MAX_PING).await?;
             if ping.len() == 9 && ping[0] == 1 {
                 stream.write_all(&packet(1, &ping[1..])).await?;
                 stream.flush().await?;
@@ -176,7 +179,7 @@ pub async fn handle<S: AsyncRead + AsyncWrite + Unpin>(
             Ok(false)
         }
         2 | 3 => {
-            let _ = tokio::time::timeout(LINGER, read_frame(stream, None, MAX_PACKET)).await;
+            let _ = tokio::time::timeout(LINGER, read_frame(stream, None, MAX_LOGIN)).await;
             let mut payload = Vec::new();
             write_string(&mut payload, &json!({ "text": KICK }).to_string());
             stream.write_all(&packet(0, &payload)).await?;
@@ -243,6 +246,7 @@ async fn start(server: &ServerRecord) -> Result<(), String> {
 
 async fn listen(server: ServerRecord, listener: TcpListener, status: Arc<Status>) {
     let (wake, mut woken) = mpsc::channel::<()>(1);
+    let slots = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
         tokio::select! {
             accepted = listener.accept() => {
@@ -250,8 +254,12 @@ async fn listen(server: ServerRecord, listener: TcpListener, status: Arc<Status>
                     tokio::time::sleep(Duration::from_millis(100)).await;
                     continue;
                 };
+                let Ok(slot) = slots.clone().try_acquire_owned() else {
+                    continue;
+                };
                 let (status, wake) = (status.clone(), wake.clone());
                 tokio::spawn(async move {
+                    let _slot = slot;
                     let login = tokio::time::timeout(CONNECTION_TIMEOUT, handle(&mut stream, &status)).await;
                     if let Ok(Ok(true)) = login {
                         let _ = wake.try_send(());
@@ -398,7 +406,7 @@ mod tests {
     }
 
     async fn reply<S: AsyncRead + Unpin>(stream: &mut S) -> (i32, Vec<u8>) {
-        let body = read_frame(stream, None, MAX_PACKET)
+        let body = read_frame(stream, None, 2 * 1024 * 1024)
             .await
             .unwrap_or_default();
         let mut slice = &body[..];

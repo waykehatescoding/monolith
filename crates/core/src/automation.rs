@@ -23,10 +23,16 @@ const WATCHDOG_INTERVAL: chrono::Duration = chrono::Duration::seconds(60);
 const TRIGGER_COOLDOWN: Duration = Duration::from_secs(10);
 
 const PREFIX: &str = r"^\[[^\]]*\](?: \[[^\]]*/INFO\])?: ";
-static JOIN: Lazy<Regex> =
-    Lazy::new(|| pattern(&format!(r"{PREFIX}([A-Za-z0-9_]{{1,16}}) joined the game$")));
-static LEAVE: Lazy<Regex> =
-    Lazy::new(|| pattern(&format!(r"{PREFIX}([A-Za-z0-9_]{{1,16}}) left the game$")));
+static JOIN: Lazy<Regex> = Lazy::new(|| {
+    pattern(&format!(
+        r"{PREFIX}(?:System chat: )?([A-Za-z0-9_]{{1,16}}) joined the game$"
+    ))
+});
+static LEAVE: Lazy<Regex> = Lazy::new(|| {
+    pattern(&format!(
+        r"{PREFIX}(?:System chat: )?([A-Za-z0-9_]{{1,16}}) left the game$"
+    ))
+});
 static CHAT: Lazy<Regex> = Lazy::new(|| {
     pattern(&format!(
         r"{PREFIX}(?:\[Not Secure\] )?<([A-Za-z0-9_]{{1,16}})> (.*)$"
@@ -673,6 +679,11 @@ mod tests {
         );
         assert!(match_line(&TriggerEvent::Join("steve".into()), join).is_some());
         assert!(match_line(&TriggerEvent::Join("Alex".into()), join).is_none());
+        let paper_26 = "[10:11:45] [Server thread/INFO]: System chat: notwayke joined the game";
+        assert_eq!(
+            match_line(&any, paper_26),
+            Some(vec![("player", "notwayke".into())])
+        );
         assert!(match_line(&TriggerEvent::Leave(String::new()), join).is_none());
         assert_eq!(
             match_line(&TriggerEvent::Chat("hello".into()), chat),

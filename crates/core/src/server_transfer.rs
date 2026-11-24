@@ -432,7 +432,11 @@ pub async fn import_server(zip_path: String, custom_name: String) -> ImportServe
     }
 }
 
-pub(crate) fn copy_server_files(from: &Path, to: &Path, progress: impl Fn(f64)) -> Result<(), String> {
+pub(crate) fn copy_server_files(
+    from: &Path,
+    to: &Path,
+    progress: impl Fn(f64),
+) -> Result<(), String> {
     let entries: Vec<walkdir::DirEntry> = WalkDir::new(from)
         .min_depth(1)
         .into_iter()

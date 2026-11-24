@@ -25,7 +25,7 @@ static CLIENT: Lazy<reqwest::Client> = Lazy::new(|| {
         .unwrap_or_default()
 });
 static PLAYER: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^\[[^\]]*\](?: \[[^\]]*/INFO\])?: ([A-Za-z0-9_]{1,16}) (joined|left) the game$")
+    Regex::new(r"^\[[^\]]*\](?: \[[^\]]*/INFO\])?: (?:System chat: )?([A-Za-z0-9_]{1,16}) (joined|left) the game$")
         .expect("static regex")
 });
 static ANSI: Lazy<Regex> =
@@ -429,6 +429,10 @@ mod tests {
         assert_eq!(
             player_change("\x1b[0m[12:00:00 INFO]: Steve joined the game\x1b[0m\r"),
             Some((Kind::Joined, "Steve".to_string()))
+        );
+        assert_eq!(
+            player_change("[10:11:45] [Server thread/INFO]: System chat: notwayke left the game"),
+            Some((Kind::Left, "notwayke".to_string()))
         );
         assert_eq!(
             player_change("[12:00:00 INFO]: <Steve> Bob joined the game"),

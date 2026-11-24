@@ -104,8 +104,8 @@ static RESTART_HINTS: Lazy<Vec<Regex>> = Lazy::new(|| {
     ]
 });
 static CHAT: Lazy<Regex> = Lazy::new(|| re(r"\]: (\[Not Secure\] )?<[^>]+>"));
-static JOIN: Lazy<Regex> = Lazy::new(|| re(r"\]: (\S+) joined the game"));
-static LEAVE: Lazy<Regex> = Lazy::new(|| re(r"\]: (\S+) left the game"));
+static JOIN: Lazy<Regex> = Lazy::new(|| re(r"\]: (?:System chat: )?(\S+) joined the game"));
+static LEAVE: Lazy<Regex> = Lazy::new(|| re(r"\]: (?:System chat: )?(\S+) left the game"));
 static TPS: Lazy<Regex> = Lazy::new(|| re(r"TPS from last .+?:\s+\*?([\d.,]+)"));
 static MAX_PLAYERS: Lazy<Regex> = Lazy::new(|| re(r"(?i)of a max of (\d+) players"));
 static MEM_CURRENT: Lazy<Regex> =
@@ -1202,6 +1202,14 @@ mod chat_tests {
         let real = "[12:00:00 INFO]: Server is restarting...";
         assert!(CHAT.is_match(chat) && CHAT.is_match(unsigned));
         assert!(!CHAT.is_match(real) && RESTART_HINTS.iter().any(|p| p.is_match(real)));
+    }
+
+    #[test]
+    fn reads_system_chat_joins() {
+        let line = "[10:11:45 INFO]: System chat: notwayke joined the game";
+        assert_eq!(&JOIN.captures(line).unwrap()[1], "notwayke");
+        let line = "[10:13:54 INFO]: System chat: notwayke left the game";
+        assert_eq!(&LEAVE.captures(line).unwrap()[1], "notwayke");
     }
 
     #[test]

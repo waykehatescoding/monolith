@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1
+
+- Players who join Paper 26.3 servers now show as online. Join and leave triggers and Discord alerts also work again on these servers.
+
 ## 0.1.0
 
 - Console: Ctrl+F search, real log colours including § codes, level filter, chat-only view, Tab completion, clickable links, save to file, old log and crash report browser, crash cause explanations, and mclo.gs upload.

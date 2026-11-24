@@ -1,9 +1,12 @@
 use crate::server_runner::update_player_capacity_string;
 use crate::server_store;
 use crate::types::{ServerProperty, SuccessResult};
-use serde::Serialize;
-use serde_json::Value;
+use futures_util::StreamExt;
+use md5::{Digest, Md5};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::path::Path;
+use std::time::Duration;
 
 fn to_result(res: std::io::Result<()>) -> SuccessResult {
     match res {
@@ -53,72 +56,126 @@ pub async fn write_properties(server_path: &Path, properties: &[ServerProperty])
     to_result(tokio::fs::write(server_path.join("server.properties"), content).await)
 }
 
-async fn read_names(path: &Path) -> Vec<String> {
-    let Ok(content) = tokio::fs::read_to_string(path).await else {
-        return Vec::new();
-    };
-    match serde_json::from_str::<Vec<Value>>(&content) {
-        Ok(entries) if entries.iter().all(Value::is_object) => entries
-            .iter()
-            .filter_map(|e| e.get("name").and_then(Value::as_str).map(String::from))
-            .collect(),
-        _ => Vec::new(),
+pub const WHITELIST: &str = "whitelist.json";
+pub const BANNED_PLAYERS: &str = "banned-players.json";
+
+const PROFILE_API: &str = "https://api.mojang.com/users/profiles/minecraft/";
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ListEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(flatten)]
+    pub extra: Map<String, Value>,
+}
+
+impl ListEntry {
+    pub fn player(name: impl Into<String>, uuid: impl Into<String>) -> Self {
+        Self {
+            uuid: Some(uuid.into()),
+            name: Some(name.into()),
+            ..Self::default()
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        self.name.as_deref().unwrap_or_default()
     }
 }
 
-#[derive(Serialize)]
-struct WhitelistEntry<'a> {
-    uuid: &'a str,
-    name: &'a str,
+pub async fn read_list(path: &Path) -> Vec<ListEntry> {
+    let Ok(content) = tokio::fs::read_to_string(path).await else {
+        return Vec::new();
+    };
+    serde_json::from_str(&content).unwrap_or_default()
 }
 
-#[derive(Serialize)]
-struct BanEntry<'a> {
-    uuid: &'a str,
-    name: &'a str,
-    created: &'a str,
-    source: &'a str,
-    expires: &'a str,
-    reason: &'a str,
-}
-
-async fn write_json<T: Serialize>(path: &Path, data: Vec<T>) -> SuccessResult {
-    match serde_json::to_string_pretty(&data) {
+pub async fn write_list(path: &Path, entries: &[ListEntry]) -> SuccessResult {
+    match serde_json::to_string_pretty(entries) {
         Ok(text) => to_result(tokio::fs::write(path, text).await),
         Err(e) => SuccessResult::err(e.to_string()),
     }
 }
 
-pub async fn read_whitelist(server_path: &Path) -> Vec<String> {
-    read_names(&server_path.join("whitelist.json")).await
+pub fn offline_uuid(name: &str) -> String {
+    let hash: [u8; 16] = Md5::digest(format!("OfflinePlayer:{name}")).into();
+    uuid::Builder::from_md5_bytes(hash)
+        .into_uuid()
+        .hyphenated()
+        .to_string()
 }
 
-pub async fn write_whitelist(server_path: &Path, players: &[String]) -> SuccessResult {
-    let data = players
+#[derive(Deserialize)]
+struct Profile {
+    id: String,
+    name: String,
+}
+
+async fn lookup(client: &reqwest::Client, name: &str) -> Result<ListEntry, String> {
+    let response = client
+        .get(format!("{PROFILE_API}{name}"))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| e.without_url().to_string())?;
+    match response.status().as_u16() {
+        200 => {
+            let profile: Profile = response.json().await.map_err(|e| e.to_string())?;
+            let uuid = uuid::Uuid::parse_str(&profile.id)
+                .map_err(|_| "Mojang returned an invalid id".to_string())?;
+            Ok(ListEntry::player(
+                profile.name,
+                uuid.hyphenated().to_string(),
+            ))
+        }
+        204 | 404 => Err("no such Minecraft account".into()),
+        429 => Err("too many lookups, try again in a minute".into()),
+        code => Err(format!("account lookup failed with HTTP {code}")),
+    }
+}
+
+async fn online_mode(id: String) -> bool {
+    !get_server_properties(id)
+        .await
         .iter()
-        .map(|name| WhitelistEntry { uuid: "", name })
-        .collect();
-    write_json(&server_path.join("whitelist.json"), data).await
+        .any(|p| p.key == "online-mode" && p.value.trim() == "false")
 }
 
-pub async fn read_banlist(server_path: &Path) -> Vec<String> {
-    read_names(&server_path.join("banned-players.json")).await
-}
-
-pub async fn write_banlist(server_path: &Path, players: &[String]) -> SuccessResult {
-    let created = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let data = players
-        .iter()
-        .map(|name| BanEntry {
-            uuid: "",
-            name,
-            created: &created,
-            source: "Monolith",
-            expires: "forever",
-            reason: "Banned by operator",
+pub async fn resolve_players(
+    id: String,
+    names: Vec<String>,
+) -> Vec<(String, Result<ListEntry, String>)> {
+    if !online_mode(id).await {
+        return names
+            .into_iter()
+            .map(|name| {
+                let entry = ListEntry::player(name.clone(), offline_uuid(&name));
+                (name, Ok(entry))
+            })
+            .collect();
+    }
+    let client = reqwest::Client::new();
+    futures_util::stream::iter(names)
+        .map(|name| {
+            let client = &client;
+            async move {
+                let result = lookup(client, &name).await;
+                (name, result)
+            }
         })
-        .collect();
-    write_json(&server_path.join("banned-players.json"), data).await
+        .buffered(4)
+        .collect()
+        .await
 }
 
 pub async fn get_server_properties(id: String) -> Vec<ServerProperty> {
@@ -142,30 +199,16 @@ pub async fn save_server_properties(id: String, properties: Vec<ServerProperty>)
     result
 }
 
-pub async fn get_whitelist(id: String) -> Vec<String> {
+pub async fn get_list(id: String, file: &str) -> Vec<ListEntry> {
     match server_store::get_server(id).await {
-        Some(server) => read_whitelist(Path::new(&server.server_path)).await,
+        Some(server) => read_list(&Path::new(&server.server_path).join(file)).await,
         None => Vec::new(),
     }
 }
 
-pub async fn save_whitelist(id: String, players: Vec<String>) -> SuccessResult {
+pub async fn save_list(id: String, file: &str, entries: Vec<ListEntry>) -> SuccessResult {
     match server_store::get_server(id).await {
-        Some(server) => write_whitelist(Path::new(&server.server_path), &players).await,
-        None => SuccessResult::err("Server not found"),
-    }
-}
-
-pub async fn get_banlist(id: String) -> Vec<String> {
-    match server_store::get_server(id).await {
-        Some(server) => read_banlist(Path::new(&server.server_path)).await,
-        None => Vec::new(),
-    }
-}
-
-pub async fn save_banlist(id: String, players: Vec<String>) -> SuccessResult {
-    match server_store::get_server(id).await {
-        Some(server) => write_banlist(Path::new(&server.server_path), &players).await,
+        Some(server) => write_list(&Path::new(&server.server_path).join(file), &entries).await,
         None => SuccessResult::err("Server not found"),
     }
 }
@@ -183,5 +226,28 @@ pub async fn accept_eula(server_id: String) -> SuccessResult {
     match server_store::save_server_list(&servers).await {
         Ok(()) => SuccessResult::ok(),
         Err(e) => SuccessResult::err(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offline_uuid_matches_java() {
+        assert_eq!(
+            offline_uuid("Notch"),
+            "b50ad385-829d-3141-a216-7e7d7539ba7f"
+        );
+    }
+
+    #[test]
+    fn list_entry_keeps_unknown_fields() {
+        let text =
+            r#"[{"uuid":"u","name":"Steve","level":4,"bypassesPlayerLimit":false,"custom":1}]"#;
+        let entries: Vec<ListEntry> = serde_json::from_str(text).unwrap();
+        assert_eq!(entries[0].name(), "Steve");
+        let back: Value = serde_json::to_value(&entries).unwrap();
+        assert_eq!(back, serde_json::from_str::<Value>(text).unwrap());
     }
 }

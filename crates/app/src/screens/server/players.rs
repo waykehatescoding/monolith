@@ -3,8 +3,9 @@ use std::time::Duration;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, toggler, Space};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
+use monolith_core::server_props::{self, ListEntry, BANNED_PLAYERS, WHITELIST};
+use monolith_core::server_runner;
 use monolith_core::types::{ServerProperty, ServerRuntimeStatus, SuccessResult};
-use monolith_core::{server_props, server_runner};
 use monolith_theme::token::{BUTTON_MD, BUTTON_SM};
 use monolith_theme::token::{
     SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, TEXT_LG, TEXT_MD, TEXT_SM,
@@ -21,8 +22,8 @@ pub struct State {
     server_id: Option<String>,
     loaded: bool,
     whitelist_on: bool,
-    whitelist: Vec<String>,
-    banned: Vec<String>,
+    whitelist: Vec<ListEntry>,
+    banned: Vec<ListEntry>,
     whitelist_input: String,
     ban_input: String,
     ban_reason: String,
@@ -32,7 +33,7 @@ pub struct State {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Loaded(String, bool, Vec<String>, Vec<String>),
+    Loaded(String, bool, Vec<ListEntry>, Vec<ListEntry>),
     WhitelistInput(String),
     BanInput(String),
     BanReason(String),
@@ -72,8 +73,8 @@ async fn load(id: String) -> Message {
     let on = properties
         .iter()
         .any(|p| p.key == WHITELIST_KEY && p.value == "true");
-    let whitelist = server_props::get_whitelist(id.clone()).await;
-    let banned = server_props::get_banlist(id.clone()).await;
+    let whitelist = server_props::get_list(id.clone(), WHITELIST).await;
+    let banned = server_props::get_list(id.clone(), BANNED_PLAYERS).await;
     Message::Loaded(id, on, whitelist, banned)
 }
 
@@ -85,17 +86,52 @@ async fn command(id: String, command: String, done: String) -> Result<String, St
     outcome(server_runner::send_command(id, command).await, done)
 }
 
+async fn resolve(id: String, name: String) -> Result<ListEntry, String> {
+    let mut resolved = server_props::resolve_players(id, vec![name.clone()]).await;
+    match resolved.pop() {
+        Some((_, Ok(entry))) => Ok(entry),
+        Some((_, Err(e))) => Err(format!("Could not add {name}: {e}.")),
+        None => Err(format!("Could not add {name}.")),
+    }
+}
+
+fn has_name(list: &[ListEntry], name: &str) -> bool {
+    list.iter().any(|e| e.name().eq_ignore_ascii_case(name))
+}
+
 async fn save_whitelist(
     id: String,
-    list: Vec<String>,
+    list: Vec<ListEntry>,
     live: bool,
     done: String,
 ) -> Result<String, String> {
-    let result = server_props::save_whitelist(id.clone(), list).await;
+    let result = server_props::save_list(id.clone(), WHITELIST, list).await;
     if result.success && live {
         server_runner::send_command(id, "whitelist reload".into()).await;
     }
     outcome(result, done)
+}
+
+async fn add_whitelist(id: String, name: String, live: bool) -> Result<String, String> {
+    let entry = resolve(id.clone(), name).await?;
+    let mut list = server_props::get_list(id.clone(), WHITELIST).await;
+    let done = format!("{} can now join.", entry.name());
+    if !has_name(&list, entry.name()) {
+        list.push(entry);
+    }
+    save_whitelist(id, list, live, done).await
+}
+
+async fn remove_whitelist(id: String, name: String, live: bool) -> Result<String, String> {
+    let mut list = server_props::get_list(id.clone(), WHITELIST).await;
+    list.retain(|e| !e.name().eq_ignore_ascii_case(&name));
+    save_whitelist(
+        id,
+        list,
+        live,
+        format!("{name} removed from the whitelist."),
+    )
+    .await
 }
 
 async fn set_whitelist_enabled(id: String, on: bool, live: bool) -> Result<String, String> {
@@ -132,11 +168,26 @@ async fn ban(id: String, live: bool, name: String, reason: String) -> Result<Str
         };
         return outcome(server_runner::send_command(id, line).await, done);
     }
-    let mut list = server_props::get_banlist(id.clone()).await;
-    if !list.contains(&name) {
-        list.push(name);
-    }
-    outcome(server_props::save_banlist(id, list).await, done)
+    let mut entry = resolve(id.clone(), name).await?;
+    entry.created = Some(
+        chrono::Utc::now()
+            .format("%Y-%m-%d %H:%M:%S %z")
+            .to_string(),
+    );
+    entry.source = Some("Monolith".into());
+    entry.expires = Some("forever".into());
+    entry.reason = Some(if reason.is_empty() {
+        "Banned by an operator.".into()
+    } else {
+        reason
+    });
+    let mut list = server_props::get_list(id.clone(), BANNED_PLAYERS).await;
+    list.retain(|e| !e.name().eq_ignore_ascii_case(entry.name()));
+    list.push(entry);
+    outcome(
+        server_props::save_list(id, BANNED_PLAYERS, list).await,
+        done,
+    )
 }
 
 async fn unban(id: String, live: bool, name: String) -> Result<String, String> {
@@ -147,9 +198,12 @@ async fn unban(id: String, live: bool, name: String) -> Result<String, String> {
             done,
         );
     }
-    let mut list = server_props::get_banlist(id.clone()).await;
-    list.retain(|n| n != &name);
-    outcome(server_props::save_banlist(id, list).await, done)
+    let mut list = server_props::get_list(id.clone(), BANNED_PLAYERS).await;
+    list.retain(|e| !e.name().eq_ignore_ascii_case(&name));
+    outcome(
+        server_props::save_list(id, BANNED_PLAYERS, list).await,
+        done,
+    )
 }
 
 pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
@@ -175,8 +229,8 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             if state.server_id.as_deref() == Some(loaded_id.as_str()) {
                 state.whitelist_on = on;
                 state.whitelist = whitelist;
-                let pending = state.ban_input.trim().to_lowercase();
-                if !pending.is_empty() && banned.iter().any(|n| n.to_lowercase() == pending) {
+                let pending = state.ban_input.trim();
+                if !pending.is_empty() && has_name(&banned, pending) {
                     state.ban_input.clear();
                     state.ban_reason.clear();
                 }
@@ -208,38 +262,24 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 ctx.error("Player names are 3 to 16 letters, numbers or underscores.");
                 return Task::none();
             }
-            if state
-                .whitelist
-                .iter()
-                .any(|n| n.eq_ignore_ascii_case(&name))
-            {
+            if has_name(&state.whitelist, &name) {
                 ctx.info(format!("{name} is already on the whitelist."));
                 return Task::none();
             }
-            let mut list = state.whitelist.clone();
-            list.push(name.clone());
             state.whitelist_input.clear();
             state.busy = true;
-            let done = format!("{name} can now join.");
-            Task::perform(save_whitelist(id, list, live, done), Message::Done)
+            Task::perform(add_whitelist(id, name, live), Message::Done)
         }
         Message::RemoveWhitelist(name) => {
-            let list: Vec<String> = state
-                .whitelist
-                .iter()
-                .filter(|n| **n != name)
-                .cloned()
-                .collect();
             let title = format!("Remove {name} from the whitelist?");
             let body = if state.whitelist_on {
                 format!("{name} will not be able to join until you add them again.")
             } else {
                 format!("{name} will no longer be listed.")
             };
-            let done = format!("{name} removed from the whitelist.");
             ctx.confirm(
                 Confirm::new(title, body, "Remove player", true, move || {
-                    save_whitelist(id.clone(), list.clone(), live, done.clone())
+                    remove_whitelist(id.clone(), name.clone(), live)
                 })
                 .busy_label("Removing"),
             );
@@ -460,12 +500,12 @@ fn whitelist_section(state: &State) -> Element<'_, Message> {
         state
             .whitelist
             .iter()
-            .fold(column![].spacing(SPACE_1), |list, name| {
+            .fold(column![].spacing(SPACE_1), |list, entry| {
                 list.push(name_row(
-                    name,
+                    entry.name(),
                     vec![action(
                         "Remove",
-                        Message::RemoveWhitelist(name.clone()),
+                        Message::RemoveWhitelist(entry.name().to_string()),
                         style::ghost,
                         !state.busy,
                     )],
@@ -510,12 +550,12 @@ fn ban_section(state: &State) -> Element<'_, Message> {
         state
             .banned
             .iter()
-            .fold(column![].spacing(SPACE_1), |list, name| {
+            .fold(column![].spacing(SPACE_1), |list, entry| {
                 list.push(name_row(
-                    name,
+                    entry.name(),
                     vec![action(
                         "Unban",
-                        Message::Unban(name.clone()),
+                        Message::Unban(entry.name().to_string()),
                         style::ghost,
                         !state.busy,
                     )],
@@ -526,7 +566,7 @@ fn ban_section(state: &State) -> Element<'_, Message> {
 
     section(
         "Banned players",
-        "A reason is recorded only while the server is running.",
+        "The reason is shown to the player when they try to join.",
         column![add, list].spacing(SPACE_4).into(),
     )
 }

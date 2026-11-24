@@ -107,6 +107,16 @@ pub async fn write_list(path: &Path, entries: &[ListEntry]) -> SuccessResult {
     }
 }
 
+const TIME_FORMAT: &str = "%Y-%m-%d %H:%M:%S %z";
+
+pub fn minecraft_time(time: chrono::DateTime<chrono::Utc>) -> String {
+    time.format(TIME_FORMAT).to_string()
+}
+
+pub fn parse_minecraft_time(text: &str) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    chrono::DateTime::parse_from_str(text, TIME_FORMAT).ok()
+}
+
 pub fn offline_uuid(name: &str) -> String {
     let hash: [u8; 16] = Md5::digest(format!("OfflinePlayer:{name}")).into();
     uuid::Builder::from_md5_bytes(hash)
@@ -239,6 +249,17 @@ mod tests {
             offline_uuid("Notch"),
             "b50ad385-829d-3141-a216-7e7d7539ba7f"
         );
+    }
+
+    #[test]
+    fn minecraft_time_round_trips() {
+        let time = chrono::DateTime::parse_from_rfc3339("2026-01-01T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let text = minecraft_time(time);
+        assert_eq!(text, "2026-01-01 12:00:00 +0000");
+        assert_eq!(parse_minecraft_time(&text).unwrap(), time);
+        assert!(parse_minecraft_time("forever").is_none());
     }
 
     #[test]

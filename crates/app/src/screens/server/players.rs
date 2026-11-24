@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use iced::widget::{button, column, container, row, scrollable, text, text_input, toggler, Space};
+use chrono::TimeDelta;
+use iced::widget::{
+    button, column, container, pick_list, row, scrollable, text, text_input, toggler, Space,
+};
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
 use monolith_core::server_props::{self, ListEntry, BANNED_PLAYERS, WHITELIST};
@@ -17,6 +20,90 @@ use crate::ctx::{Confirm, Ctx};
 
 const WHITELIST_KEY: &str = "white-list";
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BanLength {
+    #[default]
+    Permanent,
+    Hour,
+    Day,
+    Week,
+    Month,
+    Custom,
+}
+
+impl BanLength {
+    const ALL: [BanLength; 6] = [
+        BanLength::Permanent,
+        BanLength::Hour,
+        BanLength::Day,
+        BanLength::Week,
+        BanLength::Month,
+        BanLength::Custom,
+    ];
+}
+
+impl std::fmt::Display for BanLength {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            BanLength::Permanent => "Permanent",
+            BanLength::Hour => "1 hour",
+            BanLength::Day => "1 day",
+            BanLength::Week => "7 days",
+            BanLength::Month => "30 days",
+            BanLength::Custom => "Custom",
+        })
+    }
+}
+
+fn parse_length(text: &str) -> Option<TimeDelta> {
+    let text = text.trim().to_ascii_lowercase();
+    let unit = text.chars().last()?;
+    let amount: i64 = text[..text.len() - unit.len_utf8()].trim().parse().ok()?;
+    if amount <= 0 {
+        return None;
+    }
+    match unit {
+        'm' => TimeDelta::try_minutes(amount),
+        'h' => TimeDelta::try_hours(amount),
+        'd' => TimeDelta::try_days(amount),
+        'w' => TimeDelta::try_weeks(amount),
+        _ => None,
+    }
+}
+
+fn ban_duration(length: BanLength, custom: &str) -> Result<Option<TimeDelta>, String> {
+    Ok(match length {
+        BanLength::Permanent => None,
+        BanLength::Hour => Some(TimeDelta::hours(1)),
+        BanLength::Day => Some(TimeDelta::days(1)),
+        BanLength::Week => Some(TimeDelta::days(7)),
+        BanLength::Month => Some(TimeDelta::days(30)),
+        BanLength::Custom => Some(
+            parse_length(custom)
+                .ok_or("Enter a custom length like 30m, 12h, 3d or 2w.".to_string())?,
+        ),
+    })
+}
+
+fn ban_detail(entry: &ListEntry) -> String {
+    let until = match entry.expires.as_deref() {
+        None | Some("forever") => "Permanent".to_string(),
+        Some(text) => match server_props::parse_minecraft_time(text) {
+            Some(time) if time < chrono::Utc::now() => "Expired".to_string(),
+            Some(time) => format!(
+                "Until {}",
+                time.with_timezone(&chrono::Local)
+                    .format("%-d %b %Y, %H:%M")
+            ),
+            None => format!("Until {text}"),
+        },
+    };
+    match entry.reason.as_deref().map(str::trim) {
+        Some(reason) if !reason.is_empty() => format!("{until} · {reason}"),
+        _ => until,
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct State {
     server_id: Option<String>,
@@ -27,6 +114,8 @@ pub struct State {
     whitelist_input: String,
     ban_input: String,
     ban_reason: String,
+    ban_length: BanLength,
+    ban_custom: String,
     busy: bool,
     refresh_ticks: u8,
 }
@@ -37,11 +126,13 @@ pub enum Message {
     WhitelistInput(String),
     BanInput(String),
     BanReason(String),
+    BanLength(BanLength),
+    BanCustom(String),
     ToggleWhitelist(bool),
     AddWhitelist,
     RemoveWhitelist(String),
     AddBan,
-    ConfirmBan(String, String),
+    ConfirmBan(String, String, Option<TimeDelta>),
     Unban(String),
     Command(String, String),
     ConfirmKick(String),
@@ -158,7 +249,13 @@ async fn set_whitelist_enabled(id: String, on: bool, live: bool) -> Result<Strin
     outcome(result, done.into())
 }
 
-async fn ban(id: String, live: bool, name: String, reason: String) -> Result<String, String> {
+async fn ban(
+    id: String,
+    live: bool,
+    name: String,
+    reason: String,
+    duration: Option<TimeDelta>,
+) -> Result<String, String> {
     let done = format!("{name} is banned.");
     if live {
         let line = if reason.is_empty() {
@@ -169,13 +266,13 @@ async fn ban(id: String, live: bool, name: String, reason: String) -> Result<Str
         return outcome(server_runner::send_command(id, line).await, done);
     }
     let mut entry = resolve(id.clone(), name).await?;
-    entry.created = Some(
-        chrono::Utc::now()
-            .format("%Y-%m-%d %H:%M:%S %z")
-            .to_string(),
-    );
+    let now = chrono::Utc::now();
+    entry.created = Some(server_props::minecraft_time(now));
     entry.source = Some("Monolith".into());
-    entry.expires = Some("forever".into());
+    entry.expires = Some(match duration {
+        Some(duration) => server_props::minecraft_time(now + duration),
+        None => "forever".into(),
+    });
     entry.reason = Some(if reason.is_empty() {
         "Banned by an operator.".into()
     } else {
@@ -233,6 +330,8 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 if !pending.is_empty() && has_name(&banned, pending) {
                     state.ban_input.clear();
                     state.ban_reason.clear();
+                    state.ban_custom.clear();
+                    state.ban_length = BanLength::Permanent;
                 }
                 state.banned = banned;
                 state.loaded = true;
@@ -249,6 +348,14 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::BanReason(value) => {
             state.ban_reason = value;
+            Task::none()
+        }
+        Message::BanLength(value) => {
+            state.ban_length = value;
+            Task::none()
+        }
+        Message::BanCustom(value) => {
+            state.ban_custom = value;
             Task::none()
         }
         Message::ToggleWhitelist(on) => {
@@ -292,15 +399,34 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 ctx.error("Player names are 3 to 16 letters, numbers or underscores.");
                 return Task::none();
             }
+            let duration = match ban_duration(state.ban_length, &state.ban_custom) {
+                Ok(duration) => duration,
+                Err(message) => {
+                    ctx.error(message);
+                    return Task::none();
+                }
+            };
+            if live && duration.is_some() {
+                ctx.error("Temporary bans can only be set while the server is stopped.");
+                return Task::none();
+            }
             let reason = state.ban_reason.trim().to_string();
-            update(state, Message::ConfirmBan(name, reason), ctx)
+            update(state, Message::ConfirmBan(name, reason, duration), ctx)
         }
-        Message::ConfirmBan(name, reason) => {
+        Message::ConfirmBan(name, reason, duration) => {
             let title = format!("Ban {name}?");
-            let body = format!("{name} will be kicked and unable to rejoin until you unban them.");
+            let body = match duration {
+                Some(duration) => format!(
+                    "{name} will be unable to join until {}.",
+                    (chrono::Local::now() + duration).format("%-d %b %Y, %H:%M")
+                ),
+                None => {
+                    format!("{name} will be kicked and unable to rejoin until you unban them.")
+                }
+            };
             ctx.confirm(
                 Confirm::new(title, body, "Ban player", true, move || {
-                    ban(id.clone(), live, name.clone(), reason.clone())
+                    ban(id.clone(), live, name.clone(), reason.clone(), duration)
                 })
                 .busy_label("Banning"),
             );
@@ -391,8 +517,25 @@ fn empty<'a>(title: &'a str, hint: &'a str) -> Element<'a, Message> {
 }
 
 fn name_row<'a>(name: &'a str, actions: Vec<Element<'a, Message>>) -> Element<'a, Message> {
+    detail_row(name, None, actions)
+}
+
+fn detail_row<'a>(
+    name: &'a str,
+    detail: Option<String>,
+    actions: Vec<Element<'a, Message>>,
+) -> Element<'a, Message> {
+    let label = match detail {
+        Some(detail) => column![
+            text(name).size(TEXT_MD),
+            text(detail).size(TEXT_SM).style(style::muted),
+        ]
+        .spacing(SPACE_1)
+        .into(),
+        None => Element::from(text(name).size(TEXT_MD)),
+    };
     row![
-        text(name).size(TEXT_MD).width(Length::Fill),
+        container(label).width(Length::Fill),
         row(actions).spacing(SPACE_1),
     ]
     .spacing(SPACE_3)
@@ -439,7 +582,7 @@ fn online_section<'a>(ctx: &'a Ctx, id: &str, busy: bool) -> Element<'a, Message
                         ),
                         action(
                             "Ban",
-                            Message::ConfirmBan(name.clone(), String::new()),
+                            Message::ConfirmBan(name.clone(), String::new(), None),
                             style::danger,
                             true,
                         ),
@@ -521,7 +664,7 @@ fn whitelist_section(state: &State) -> Element<'_, Message> {
     )
 }
 
-fn ban_section(state: &State) -> Element<'_, Message> {
+fn ban_section(state: &State, live: bool) -> Element<'_, Message> {
     let add = row![
         text_input("Player name", &state.ban_input)
             .on_input_maybe((!state.busy).then_some(Message::BanInput))
@@ -541,6 +684,36 @@ fn ban_section(state: &State) -> Element<'_, Message> {
     ]
     .spacing(SPACE_2);
 
+    let length: Element<'_, Message> = if live {
+        text(
+            "Bans made while the server is running are permanent. Stop the server to set a length.",
+        )
+        .size(TEXT_SM)
+        .style(style::muted)
+        .into()
+    } else {
+        let mut length =
+            row![
+                pick_list(BanLength::ALL, Some(state.ban_length), Message::BanLength)
+                    .padding([6, 12])
+                    .style(style::pick)
+                    .menu_style(style::pick_menu)
+            ]
+            .spacing(SPACE_2)
+            .align_y(Alignment::Center);
+        if state.ban_length == BanLength::Custom {
+            length = length.push(
+                text_input("e.g. 12h, 3d, 2w", &state.ban_custom)
+                    .on_input_maybe((!state.busy).then_some(Message::BanCustom))
+                    .on_submit_maybe((!state.busy).then_some(Message::AddBan))
+                    .padding([6, 12])
+                    .width(Length::Fixed(160.0))
+                    .style(style::input),
+            );
+        }
+        length.into()
+    };
+
     let list: Element<'_, Message> = if state.banned.is_empty() {
         empty(
             "Nobody is banned",
@@ -551,8 +724,9 @@ fn ban_section(state: &State) -> Element<'_, Message> {
             .banned
             .iter()
             .fold(column![].spacing(SPACE_1), |list, entry| {
-                list.push(name_row(
+                list.push(detail_row(
                     entry.name(),
+                    Some(ban_detail(entry)),
                     vec![action(
                         "Unban",
                         Message::Unban(entry.name().to_string()),
@@ -567,7 +741,7 @@ fn ban_section(state: &State) -> Element<'_, Message> {
     section(
         "Banned players",
         "The reason is shown to the player when they try to join.",
-        column![add, list].spacing(SPACE_4).into(),
+        column![add, length, list].spacing(SPACE_4).into(),
     )
 }
 
@@ -585,7 +759,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         column![
             online_section(ctx, id, state.busy),
             whitelist_section(state),
-            ban_section(state),
+            ban_section(state, is_online(ctx, id)),
             Space::new().height(SPACE_6),
         ]
         .spacing(SPACE_5)
@@ -624,5 +798,33 @@ pub fn subscription(state: &State) -> Subscription<Message> {
         iced::time::every(Duration::from_secs(1)).map(|_| Message::Tick)
     } else {
         Subscription::none()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_custom_lengths() {
+        assert_eq!(parse_length("30m"), Some(TimeDelta::minutes(30)));
+        assert_eq!(parse_length(" 12H "), Some(TimeDelta::hours(12)));
+        assert_eq!(parse_length("3d"), Some(TimeDelta::days(3)));
+        assert_eq!(parse_length("2w"), Some(TimeDelta::weeks(2)));
+        assert_eq!(parse_length("0d"), None);
+        assert_eq!(parse_length("d"), None);
+        assert_eq!(parse_length("5y"), None);
+        assert_eq!(parse_length(""), None);
+    }
+
+    #[test]
+    fn describes_bans() {
+        let mut entry = ListEntry::player("Steve", "");
+        entry.expires = Some("forever".into());
+        entry.reason = Some("Griefing".into());
+        assert_eq!(ban_detail(&entry), "Permanent · Griefing");
+        entry.expires = Some("2000-01-01 00:00:00 +0000".into());
+        entry.reason = None;
+        assert_eq!(ban_detail(&entry), "Expired");
     }
 }

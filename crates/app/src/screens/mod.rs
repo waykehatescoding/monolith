@@ -13,7 +13,7 @@ use monolith_core::events::Event;
 use crate::ctx::Ctx;
 use server::settings as server_settings;
 use server::{analytics, backups, console, content, files, overview, players};
-use settings::{defaults, general, sharing};
+use settings::{defaults, general, sharing, templates};
 
 macro_rules! registry {
     ($($field:ident => $variant:ident),* $(,)?) => {
@@ -69,4 +69,5 @@ registry! {
     onboarding => Onboarding,
     system => System,
     remote => Remote,
+    templates => Templates,
 }

@@ -18,7 +18,7 @@ use crate::demo;
 use crate::screens::server::{
     analytics, backups, console, content, files, overview, players, settings as server_settings,
 };
-use crate::screens::settings::{defaults, general, sharing};
+use crate::screens::settings::{defaults, general, sharing, templates};
 use crate::screens::{self, assistant, create, onboarding, palette, remote};
 use crate::ui::confirm;
 use crate::ui::overlay::modal;
@@ -557,6 +557,9 @@ impl App {
             Route::Settings(SettingsPage::Assistant) => {
                 assistant::on_show(&mut screens.assistant, ctx).map(S::Assistant)
             }
+            Route::Settings(SettingsPage::Templates) => {
+                templates::on_show(&mut screens.templates, ctx).map(S::Templates)
+            }
             Route::Empty => onboarding::on_show(&mut screens.onboarding, ctx).map(S::Onboarding),
             Route::Remote => remote::on_show(&mut screens.remote, ctx).map(S::Remote),
         };
@@ -853,6 +856,9 @@ impl App {
             SettingsPage::Sharing => mapped(sharing::view(&screens.sharing, ctx), S::Sharing),
             SettingsPage::Assistant => {
                 mapped(assistant::view(&screens.assistant, ctx), S::Assistant)
+            }
+            SettingsPage::Templates => {
+                mapped(templates::view(&screens.templates, ctx), S::Templates)
             }
         };
         column![

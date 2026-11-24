@@ -14,3 +14,4 @@ pub mod profiler;
 pub mod properties;
 pub mod settings;
 pub mod storage;
+pub mod template;

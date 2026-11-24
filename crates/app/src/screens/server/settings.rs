@@ -34,6 +34,7 @@ use super::gamerules;
 use super::profiler;
 use super::properties::{self, Kind, CATALOG};
 use super::storage;
+use super::template;
 use crate::ctx::{Confirm, Ctx};
 use crate::ui::busy_button;
 use std::path::PathBuf;
@@ -81,6 +82,7 @@ pub struct State {
     copy_name: Option<String>,
     duplicating: Option<f64>,
     configs: configs::State,
+    template: template::State,
     gamerules: gamerules::State,
     discord: discord::State,
     storage: storage::State,
@@ -130,6 +132,7 @@ impl Default for State {
             copy_name: None,
             duplicating: None,
             configs: configs::State::default(),
+            template: template::State::default(),
             gamerules: gamerules::State::default(),
             discord: discord::State::default(),
             storage: storage::State::default(),
@@ -197,6 +200,7 @@ pub enum Message {
     Duplicated(Result<(String, String), String>),
     Delete,
     Configs(configs::Message),
+    Template(template::Message),
     Gamerules(gamerules::Message),
     Discord(discord::Message),
     Storage(storage::Message),
@@ -901,6 +905,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 Err(error) => ctx.error(format!("Could not duplicate the server: {error}")),
             }
             Task::none()
+        }
+        Message::Template(message) => {
+            template::update(&mut state.template, message, ctx).map(Message::Template)
         }
         Message::Configs(message) => {
             configs::update(&mut state.configs, message, ctx).map(Message::Configs)
@@ -1758,6 +1765,8 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         .push(platform(state, server, ctx))
         .push(divider())
         .push(duplicate(state, ctx, server))
+        .push(divider())
+        .push(template::view(&state.template, server).map(Message::Template))
         .push(divider())
         .push(danger(state, ctx, server))
         .spacing(SPACE_7)

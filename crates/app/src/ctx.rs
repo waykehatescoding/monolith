@@ -51,12 +51,14 @@ pub enum SettingsPage {
     Assistant,
     Updates,
     About,
+    Templates,
 }
 
 impl SettingsPage {
-    pub const ALL: [SettingsPage; 6] = [
+    pub const ALL: [SettingsPage; 7] = [
         SettingsPage::General,
         SettingsPage::Defaults,
+        SettingsPage::Templates,
         SettingsPage::Sharing,
         SettingsPage::Assistant,
         SettingsPage::Updates,
@@ -71,6 +73,7 @@ impl SettingsPage {
             SettingsPage::Assistant => "Assistant",
             SettingsPage::Updates => "Updates",
             SettingsPage::About => "About",
+            SettingsPage::Templates => "Templates",
         }
     }
 }
@@ -102,6 +105,7 @@ impl Route {
             "settings-assistant" => Route::Settings(SettingsPage::Assistant),
             "settings-updates" => Route::Settings(SettingsPage::Updates),
             "settings-about" => Route::Settings(SettingsPage::About),
+            "settings-templates" => Route::Settings(SettingsPage::Templates),
             "empty" => Route::Empty,
             "remote" => Route::Remote,
             _ => return None,

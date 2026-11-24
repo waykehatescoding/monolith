@@ -20,6 +20,7 @@ use monolith_core::server_create::{create_server, get_minecraft_versions};
 use monolith_core::server_runner::start_server;
 use monolith_core::server_stats::get_system_info;
 use monolith_core::server_transfer::import_server;
+use monolith_core::templates::{apply_template, list_templates, ServerTemplate};
 use monolith_core::types::{
     CreateServerParams, CreateServerResult, DefaultPlugin, DefaultPluginSource, MinecraftVersion,
     ModrinthSearchHit, ServerCreationProgress, ServerCreationStage, ServerRecord,
@@ -39,6 +40,7 @@ enum Step {
     Name,
     Platform,
     Modpack,
+    Template,
     Memory,
     Plugins,
     Review,
@@ -133,6 +135,8 @@ pub struct State {
     pack_searching: bool,
     pack_loading: Option<String>,
     pack_error: Option<String>,
+    templates: Option<Vec<ServerTemplate>>,
+    template: Option<ServerTemplate>,
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +157,7 @@ pub enum Message {
     Plugin(String),
     Analytics(bool),
     OpenDefaults,
+    OpenTemplates,
     Create,
     Created(CreateServerResult),
     Address(String),
@@ -173,6 +178,10 @@ pub enum Message {
     PackFilePicked(Option<PathBuf>),
     PackLoaded(Result<(PathBuf, ModpackInfo), String>),
     PackInstalled(ServerRecord, Result<Vec<String>, String>),
+    UseTemplate,
+    TemplatesLoaded(Vec<ServerTemplate>),
+    PickTemplate(ServerTemplate),
+    TemplateApplied(ServerRecord, Result<Vec<String>, String>),
 }
 
 fn plugin_key(plugin: &DefaultPlugin) -> &str {
@@ -260,13 +269,13 @@ impl State {
     }
 
     fn plugin_step(&self) -> bool {
-        self.platform.plugins() && self.modpack.is_none()
+        self.platform.plugins() && self.modpack.is_none() && self.template.is_none()
     }
 
     fn next_step(&self) -> Step {
         match self.step {
             Step::Name => Step::Platform,
-            Step::Platform | Step::Modpack => Step::Memory,
+            Step::Platform | Step::Modpack | Step::Template => Step::Memory,
             Step::Memory if self.plugin_step() => Step::Plugins,
             Step::Memory | Step::Plugins => Step::Review,
             other => other,
@@ -276,8 +285,9 @@ impl State {
     fn previous_step(&self) -> Step {
         match self.step {
             Step::Platform => Step::Name,
-            Step::Modpack => Step::Platform,
+            Step::Modpack | Step::Template => Step::Platform,
             Step::Memory if self.modpack.is_some() => Step::Modpack,
+            Step::Memory if self.template.is_some() => Step::Template,
             Step::Memory => Step::Platform,
             Step::Plugins => Step::Memory,
             Step::Review if self.plugin_step() => Step::Plugins,
@@ -348,6 +358,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 Step::Name => state.name_ready(ctx),
                 Step::Platform => state.version.is_some(),
                 Step::Modpack => state.modpack.is_some(),
+                Step::Template => state.template.is_some(),
                 Step::Memory | Step::Plugins => true,
                 _ => false,
             };
@@ -361,6 +372,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             if state.step == Step::Modpack {
                 state.modpack = None;
                 state.pack_error = None;
+            }
+            if state.step == Step::Template {
+                state.template = None;
             }
             state.step = state.previous_step();
             Task::none()
@@ -443,10 +457,15 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             ctx.navigate(Route::Settings(SettingsPage::Defaults));
             Task::none()
         }
+        Message::OpenTemplates => {
+            ctx.navigate(Route::Settings(SettingsPage::Templates));
+            Task::none()
+        }
         Message::Create => {
-            let (framework, version) = match &state.modpack {
-                Some((_, info)) => (info.framework.clone(), info.game_version.clone()),
-                None => match state.version.clone() {
+            let (framework, version) = match (&state.modpack, &state.template) {
+                (Some((_, info)), _) => (info.framework.clone(), info.game_version.clone()),
+                (None, Some(template)) => (template.framework.clone(), template.version.clone()),
+                (None, None) => match state.version.clone() {
                     Some(version) => (state.platform.name().to_string(), version),
                     None => return Task::none(),
                 },
@@ -478,6 +497,13 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                         return Task::perform(install_modpack(server_path, path), move |result| {
                             Message::PackInstalled(server.clone(), result)
                         });
+                    }
+                    if let Some(template) = state.template.clone() {
+                        state.progress = None;
+                        return Task::perform(
+                            apply_template(server.id.clone(), template),
+                            move |result| Message::TemplateApplied(server.clone(), result),
+                        );
                     }
                     state.finish(server, false, ctx)
                 }
@@ -666,6 +692,33 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             state.finish(server, false, ctx);
             Task::none()
         }
+        Message::UseTemplate => {
+            state.step = Step::Template;
+            Task::perform(list_templates(), Message::TemplatesLoaded)
+        }
+        Message::TemplatesLoaded(templates) => {
+            state.templates = Some(templates);
+            Task::none()
+        }
+        Message::PickTemplate(template) => {
+            state.ram = template.ram_mb;
+            state.template = Some(template);
+            Task::none()
+        }
+        Message::TemplateApplied(server, result) => {
+            match result {
+                Ok(failed) if !failed.is_empty() => ctx.info(format!(
+                    "These could not be installed from the template: {}. Add them from the Content tab.",
+                    failed.join(", ")
+                )),
+                Ok(_) => {}
+                Err(error) => ctx.error(format!(
+                    "The server was created, but the template was not fully applied. {error}"
+                )),
+            }
+            state.finish(server, false, ctx);
+            Task::none()
+        }
         Message::Imported(result) => {
             match result.server {
                 Some(server) if result.success => state.finish(server, true, ctx),
@@ -717,6 +770,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         Step::Name => name_step(state, ctx),
         Step::Platform => platform_step(state),
         Step::Modpack => modpack_step(state),
+        Step::Template => template_step(state),
         Step::Memory => memory_step(state),
         Step::Plugins => plugins_step(state),
         Step::Review => review_step(state),
@@ -917,13 +971,22 @@ fn platform_step(state: &State) -> Column<'_, Message> {
         link("Start from a modpack", Message::UseModpack),
     ]
     .align_y(Alignment::Center);
+    let template = row![
+        text("Have a saved setup?")
+            .size(TEXT_SM)
+            .style(style::muted),
+        link("Start from a template", Message::UseTemplate),
+    ]
+    .align_y(Alignment::Center);
 
     step_layout(
         heading(
             "Choose a platform".into(),
             "The platform decides what your server can run. Paper is a safe pick.",
         ),
-        column![choices, version, modpack].spacing(SPACE_5).into(),
+        column![choices, version, column![modpack, template]]
+            .spacing(SPACE_5)
+            .into(),
         footer(
             primary("Continue", state.version.is_some().then_some(Message::Next)),
             true,
@@ -1042,6 +1105,60 @@ fn modpack_step(state: &State) -> Column<'_, Message> {
                 (state.modpack.is_some() && state.pack_loading.is_none())
                     .then_some(Message::Next),
             ),
+            true,
+        ),
+    )
+}
+
+fn template_step(state: &State) -> Column<'_, Message> {
+    let content: Element<Message> = match &state.templates {
+        None => text("Loading templates")
+            .size(TEXT_SM)
+            .style(style::muted)
+            .into(),
+        Some(templates) if templates.is_empty() => column![
+            text("You have no templates yet. Open a server's settings and choose Save as template, or import one in Settings.")
+                .size(TEXT_SM)
+                .style(style::muted),
+            link("Open templates", Message::OpenTemplates),
+        ]
+        .spacing(SPACE_2)
+        .into(),
+        Some(templates) => templates
+            .iter()
+            .fold(column![].spacing(SPACE_1), |list, template| {
+                let selected = state.template.as_ref().is_some_and(|t| t.id == template.id);
+                list.push(
+                    button(
+                        column![
+                            text(&template.name).size(TEXT_MD).font(UI_MEDIUM),
+                            text(format!(
+                                "{} {}, {}",
+                                template.framework,
+                                template.version,
+                                format_gb(template.ram_mb)
+                            ))
+                            .size(TEXT_SM)
+                            .style(style::muted)
+                        ]
+                        .spacing(2),
+                    )
+                    .width(Length::Fill)
+                    .padding([SPACE_2, SPACE_3])
+                    .style(style::sidebar_item(selected))
+                    .on_press(Message::PickTemplate(template.clone())),
+                )
+            })
+            .into(),
+    };
+    step_layout(
+        heading(
+            "Start from a template".into(),
+            "Monolith uses the template's platform and memory, then copies its settings and installs its content.",
+        ),
+        content,
+        footer(
+            primary("Continue", state.template.is_some().then_some(Message::Next)),
             true,
         ),
     )
@@ -1211,9 +1328,10 @@ fn review_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
 }
 
 fn review_step(state: &State) -> Column<'_, Message> {
-    let (framework, version) = match &state.modpack {
-        Some((_, info)) => (info.framework.as_str(), info.game_version.clone()),
-        None => (
+    let (framework, version) = match (&state.modpack, &state.template) {
+        (Some((_, info)), _) => (info.framework.as_str(), info.game_version.clone()),
+        (None, Some(template)) => (template.framework.as_str(), template.version.clone()),
+        (None, None) => (
             state.platform.name(),
             state.version.clone().unwrap_or_default(),
         ),
@@ -1225,6 +1343,9 @@ fn review_step(state: &State) -> Column<'_, Message> {
         review_row("Memory", format_gb(state.ram)),
     ]
     .spacing(SPACE_3);
+    if let Some(template) = &state.template {
+        rows = rows.push(review_row("Template", template.name.clone()));
+    }
     if let Some((_, info)) = &state.modpack {
         rows = rows.push(review_row(
             "Modpack",

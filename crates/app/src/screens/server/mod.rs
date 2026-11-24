@@ -1,4 +1,5 @@
 pub mod analytics;
+pub mod automation;
 pub mod backups;
 pub mod chunky;
 pub mod configs;

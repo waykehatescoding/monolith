@@ -16,8 +16,8 @@ use crate::ctx::{
 };
 use crate::demo;
 use crate::screens::server::{
-    analytics, backups, console, content, files, overview, players, settings as server_settings,
-    worlds,
+    analytics, automation, backups, console, content, files, overview, players,
+    settings as server_settings, worlds,
 };
 use crate::screens::settings::{defaults, general, sharing, templates};
 use crate::screens::{self, assistant, create, onboarding, palette, remote};
@@ -115,7 +115,7 @@ impl App {
             tasks.extend([
                 Task::future(lifecycle::startup()).discard(),
                 Task::future(lifecycle::run_auto_backups()).discard(),
-                Task::future(lifecycle::run_scheduled_restarts()).discard(),
+                Task::future(lifecycle::run_automation()).discard(),
                 Task::future(webhooks::run()).discard(),
             ]);
         }
@@ -541,6 +541,9 @@ impl App {
                     Tab::Analytics => {
                         analytics::on_show(&mut screens.analytics, ctx).map(S::Analytics)
                     }
+                    Tab::Automation => {
+                        automation::on_show(&mut screens.automation, ctx).map(S::Automation)
+                    }
                     Tab::Settings => server_settings::on_show(&mut screens.server_settings, ctx)
                         .map(S::ServerSettings),
                 };
@@ -822,6 +825,7 @@ impl App {
             Tab::Worlds => mapped(worlds::view(&screens.worlds, ctx), S::Worlds),
             Tab::Backups => mapped(backups::view(&screens.backups, ctx), S::Backups),
             Tab::Analytics => mapped(analytics::view(&screens.analytics, ctx), S::Analytics),
+            Tab::Automation => mapped(automation::view(&screens.automation, ctx), S::Automation),
             Tab::Settings => mapped(
                 server_settings::view(&screens.server_settings, ctx),
                 S::ServerSettings,

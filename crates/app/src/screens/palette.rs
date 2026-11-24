@@ -95,6 +95,7 @@ fn tab_icon(tab: Tab) -> Icon {
         Tab::Worlds => Icon::Globe,
         Tab::Backups => Icon::Archive,
         Tab::Analytics => Icon::Chart,
+        Tab::Automation => Icon::Clock,
         Tab::Settings => Icon::Settings,
     }
 }

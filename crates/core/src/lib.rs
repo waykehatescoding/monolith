@@ -1,6 +1,7 @@
 pub mod ai_assistant;
 pub mod ai_settings;
 pub mod app_preferences;
+pub mod automation;
 pub mod backup_manager;
 pub mod config_files;
 pub mod content_sources;

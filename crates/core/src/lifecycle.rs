@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::time::Duration;
 
 use crate::{
-    app_preferences, backup_manager, ngrok_manager, schedule, server_runner, server_store,
-    shutdown_policy,
+    app_preferences, automation, backup_manager, ngrok_manager, schedule, server_runner,
+    server_store, shutdown_policy,
 };
 
 const SCHEDULE_TICK: Duration = Duration::from_secs(5);
@@ -39,13 +39,15 @@ pub async fn run_auto_backups() {
     }
 }
 
-pub async fn run_scheduled_restarts() {
+pub async fn run_automation() {
     let mut interval = tokio::time::interval(SCHEDULE_TICK);
     let mut remaining: HashMap<String, i64> = HashMap::new();
     loop {
         interval.tick().await;
         let now = chrono::Local::now().naive_local();
-        for server in server_store::load_server_list().await {
+        let servers = server_store::load_server_list().await;
+        automation::run_tasks(&servers, now);
+        for server in servers {
             let current = match schedule::seconds_until_next(now, &server.restart_times) {
                 Some(current) if server_runner::is_running(&server.id) => current,
                 _ => {

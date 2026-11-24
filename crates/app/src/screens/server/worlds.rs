@@ -4,14 +4,14 @@ use iced::widget::{column, container, row, rule, scrollable, text, toggler};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
 use monolith_core::types::ServerRuntimeStatus;
-use monolith_core::worlds::{self, World};
+use monolith_core::worlds::{self, Dimension, World};
 use monolith_theme::token::*;
 use monolith_theme::widget::sized;
 use monolith_theme::{icon_colored, style, Icon, MONO, UI_MEDIUM, UI_SEMIBOLD};
 
 use super::backups::{format_age, format_size};
-use super::settings::field;
-use crate::ctx::Ctx;
+use super::settings::{dropdown, field};
+use crate::ctx::{Confirm, Ctx};
 use crate::ui::busy_button;
 
 #[derive(Debug)]
@@ -21,8 +21,17 @@ struct Import {
     make_active: bool,
 }
 
+#[derive(Debug)]
+struct Reset {
+    world: String,
+    dimension: Dimension,
+    change_seed: bool,
+    seed: String,
+}
+
 #[derive(Debug, Default)]
 pub struct State {
+    reset: Option<Reset>,
     server_id: Option<String>,
     worlds: Vec<World>,
     loaded: bool,
@@ -48,6 +57,12 @@ pub enum Message {
     CancelImport,
     Import,
     Imported(Result<String, String>),
+    OpenReset(String),
+    ResetDimension(Dimension),
+    ResetChangeSeed(bool),
+    ResetSeed(String),
+    CancelReset,
+    ConfirmReset,
 }
 
 fn suggested_name(source: &std::path::Path) -> String {
@@ -221,7 +236,128 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             Task::none()
         }
+        Message::OpenReset(world) => {
+            state.reset = Some(Reset {
+                world,
+                dimension: Dimension::All,
+                change_seed: false,
+                seed: String::new(),
+            });
+            Task::none()
+        }
+        Message::ResetDimension(dimension) => {
+            if let Some(reset) = &mut state.reset {
+                reset.dimension = dimension;
+            }
+            Task::none()
+        }
+        Message::ResetChangeSeed(on) => {
+            if let Some(reset) = &mut state.reset {
+                reset.change_seed = on;
+            }
+            Task::none()
+        }
+        Message::ResetSeed(seed) => {
+            if let Some(reset) = &mut state.reset {
+                reset.seed = seed;
+            }
+            Task::none()
+        }
+        Message::CancelReset => {
+            state.reset = None;
+            Task::none()
+        }
+        Message::ConfirmReset => {
+            let Some(reset) = state.reset.take() else {
+                return Task::none();
+            };
+            let seed = (reset.dimension == Dimension::All && reset.change_seed)
+                .then(|| reset.seed.trim().to_string());
+            let (title, part) = match reset.dimension {
+                Dimension::All => (format!("Reset {}?", reset.world), "The whole world"),
+                Dimension::Nether => (
+                    format!("Reset the Nether of {}?", reset.world),
+                    "The Nether",
+                ),
+                Dimension::End => (format!("Reset the End of {}?", reset.world), "The End"),
+            };
+            let body = format!(
+                "{part} is deleted and generated again the next time the server starts. Monolith backs up the server first as \"Before world reset\", so you can restore it from Backups."
+            );
+            let world = reset.world;
+            let dimension = reset.dimension;
+            ctx.confirm(
+                Confirm::new(title, body, "Reset", true, move || {
+                    let id = id.clone();
+                    let world = world.clone();
+                    let seed = seed.clone();
+                    async move {
+                        worlds::reset_world(id, world.clone(), dimension, seed).await?;
+                        Ok(format!(
+                            "{world} reset. It is generated again on the next start."
+                        ))
+                    }
+                })
+                .busy_label("Backing up and resetting"),
+            );
+            Task::none()
+        }
     }
+}
+
+fn reset_view<'a>(reset: &'a Reset, stopped: bool) -> Element<'a, Message> {
+    let mut form = column![row![
+        text("Reset").size(TEXT_MD).width(80),
+        dropdown(
+            &Dimension::ALL[..],
+            Some(reset.dimension),
+            Message::ResetDimension
+        )
+        .width(200),
+    ]
+    .spacing(SPACE_3)
+    .align_y(Alignment::Center)]
+    .spacing(SPACE_3);
+    if reset.dimension == Dimension::All {
+        form = form.push(
+            toggler(reset.change_seed)
+                .label("Use a new seed")
+                .size(18)
+                .text_size(TEXT_MD)
+                .spacing(SPACE_2)
+                .style(style::switch)
+                .on_toggle(Message::ResetChangeSeed),
+        );
+        if reset.change_seed {
+            form = form.push(
+                row![
+                    text("Seed").size(TEXT_MD).width(80),
+                    field("Random", &reset.seed, false, Message::ResetSeed).width(280),
+                ]
+                .spacing(SPACE_3)
+                .align_y(Alignment::Center),
+            );
+        }
+    }
+    if !stopped {
+        form = form.push(
+            text("Stop the server to reset its world.")
+                .size(TEXT_SM)
+                .style(style::muted),
+        );
+    }
+    form.push(
+        row![
+            sized(text("Cancel").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
+                .style(style::ghost)
+                .on_press(Message::CancelReset),
+            sized(text("Reset").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
+                .style(style::danger)
+                .on_press_maybe(stopped.then_some(Message::ConfirmReset)),
+        ]
+        .spacing(SPACE_2),
+    )
+    .into()
 }
 
 fn import_view(state: &State) -> Element<'_, Message> {
@@ -343,6 +479,11 @@ fn world_row<'a>(state: &'a State, world: &'a World) -> Element<'a, Message> {
     .spacing(SPACE_4)
     .align_y(Alignment::Center);
     if world.generated {
+        line = line.push(
+            sized(text("Reset").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
+                .style(style::ghost)
+                .on_press(Message::OpenReset(world.name.clone())),
+        );
         line = line.push(busy_button(
             "Export",
             "Exporting",
@@ -399,6 +540,16 @@ fn list_view<'a>(state: &'a State, ctx: &'a Ctx, id: &'a str) -> Element<'a, Mes
                 rows = rows.push(rule::horizontal(1).style(style::hairline));
             }
             rows = rows.push(container(world_row(state, world)).padding([SPACE_3, SPACE_4]));
+            if let Some(reset) = state.reset.as_ref().filter(|r| r.world == world.name) {
+                rows = rows.push(container(reset_view(reset, !running(ctx, id))).padding(
+                    iced::Padding {
+                        top: 0.0,
+                        right: SPACE_4,
+                        bottom: SPACE_3,
+                        left: 56.0,
+                    },
+                ));
+            }
         }
         container(rows)
             .width(Length::Fill)

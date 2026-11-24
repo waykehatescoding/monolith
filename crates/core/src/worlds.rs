@@ -7,16 +7,39 @@ use walkdir::WalkDir;
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
+use crate::backup_manager::create_backup_of_type;
 use crate::events::{emit, Event};
 use crate::server_props::{read_properties, write_properties};
+use crate::server_runner::is_running;
 use crate::server_stats::calculate_folder_size;
 use crate::server_store::get_server;
 use crate::server_transfer::{
     copy_server_files, safe_join, MAX_IMPORT_ENTRIES, MAX_IMPORT_UNCOMPRESSED_BYTES,
 };
-use crate::types::ServerProperty;
+use crate::types::{BackupType, ServerProperty};
 
 const SUFFIXES: [&str; 2] = ["_nether", "_the_end"];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Dimension {
+    All,
+    Nether,
+    End,
+}
+
+impl Dimension {
+    pub const ALL: [Dimension; 3] = [Dimension::All, Dimension::Nether, Dimension::End];
+}
+
+impl std::fmt::Display for Dimension {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Dimension::All => "Whole world",
+            Dimension::Nether => "Nether only",
+            Dimension::End => "End only",
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct World {
@@ -162,6 +185,62 @@ pub async fn set_active_world(server_id: String, name: String) -> Result<(), Str
     let name = check_name(&name)?;
     let path = server_path(&server_id).await?;
     set_properties(&path, &[("level-name", &name)]).await?;
+    emit(Event::WorldsChanged { server_id });
+    Ok(())
+}
+
+fn reset_targets(server: &Path, name: &str, dimension: Dimension) -> Vec<PathBuf> {
+    let [world, nether, end] = variants(name);
+    let world = server.join(world);
+    let paths = match dimension {
+        Dimension::All => vec![world, server.join(nether), server.join(end)],
+        Dimension::Nether => vec![server.join(nether), world.join("DIM-1")],
+        Dimension::End => vec![server.join(end), world.join("DIM1")],
+    };
+    paths.into_iter().filter(|path| path.is_dir()).collect()
+}
+
+pub async fn backup_before(server_id: &str, what: &str) -> Result<(), String> {
+    if is_running(server_id) {
+        return Err("Stop the server first".into());
+    }
+    let backup = create_backup_of_type(
+        server_id,
+        Some(&format!("Before {what}")),
+        BackupType::Manual,
+    )
+    .await;
+    if backup.success {
+        Ok(())
+    } else {
+        Err(format!(
+            "Could not back up the server first: {}",
+            backup.error.unwrap_or_else(|| "Unknown error".into())
+        ))
+    }
+}
+
+pub async fn reset_world(
+    server_id: String,
+    name: String,
+    dimension: Dimension,
+    seed: Option<String>,
+) -> Result<(), String> {
+    let name = check_name(&name)?;
+    let path = server_path(&server_id).await?;
+    let targets = reset_targets(&path, &name, dimension);
+    if targets.is_empty() && seed.is_none() {
+        return Err("There is nothing to reset yet".into());
+    }
+    backup_before(&server_id, "world reset").await?;
+    for target in targets {
+        tokio::fs::remove_dir_all(&target)
+            .await
+            .map_err(|e| format!("Could not delete {}: {e}", target.display()))?;
+    }
+    if let Some(seed) = seed {
+        set_properties(&path, &[("level-seed", seed.trim())]).await?;
+    }
     emit(Event::WorldsChanged { server_id });
     Ok(())
 }
@@ -479,6 +558,28 @@ mod tests {
         copy_world(&server.join("world"), &server, "copy2").unwrap();
         assert!(server.join("copy2_nether/level.dat").is_file());
         assert!(copy_world(&server.join("world"), &server.join("world"), "inner").is_err());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn reset_targets_cover_paper_and_vanilla_layouts() {
+        let dir = temp_dir();
+        for folder in ["world/DIM-1", "world/DIM1", "world_nether", "world/region"] {
+            fs::create_dir_all(dir.join(folder)).unwrap();
+        }
+        assert_eq!(
+            reset_targets(&dir, "world", Dimension::Nether),
+            vec![dir.join("world_nether"), dir.join("world").join("DIM-1")]
+        );
+        assert_eq!(
+            reset_targets(&dir, "world", Dimension::End),
+            vec![dir.join("world").join("DIM1")]
+        );
+        assert_eq!(
+            reset_targets(&dir, "world", Dimension::All),
+            vec![dir.join("world"), dir.join("world_nether")]
+        );
+        assert!(reset_targets(&dir, "other", Dimension::All).is_empty());
         fs::remove_dir_all(&dir).unwrap();
     }
 }

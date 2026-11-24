@@ -41,3 +41,4 @@ pub mod spark;
 pub mod worlds;
 pub mod datapacks;
 pub mod chunky;
+pub mod region;

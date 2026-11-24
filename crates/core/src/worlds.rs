@@ -9,6 +9,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::backup_manager::create_backup_of_type;
 use crate::events::{emit, Event};
+use crate::region::{self, TrimReport};
 use crate::server_props::{read_properties, write_properties};
 use crate::server_runner::is_running;
 use crate::server_stats::calculate_folder_size;
@@ -243,6 +244,31 @@ pub async fn reset_world(
     }
     emit(Event::WorldsChanged { server_id });
     Ok(())
+}
+
+pub async fn trim_world(
+    server_id: String,
+    name: String,
+    minutes: u32,
+    apply: bool,
+) -> Result<TrimReport, String> {
+    let name = check_name(&name)?;
+    let path = server_path(&server_id).await?;
+    let folders = world_folders(&path, &name);
+    if folders.is_empty() {
+        return Err("World not found".into());
+    }
+    if apply {
+        backup_before(&server_id, "trimming chunks").await?;
+    }
+    let ticks = i64::from(minutes) * 60 * 20;
+    let report = tokio::task::spawn_blocking(move || region::trim(&folders, ticks, apply))
+        .await
+        .map_err(|e| e.to_string())??;
+    if apply {
+        emit(Event::WorldsChanged { server_id });
+    }
+    Ok(report)
 }
 
 pub async fn create_world(

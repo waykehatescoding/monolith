@@ -3,9 +3,11 @@ use std::path::PathBuf;
 use iced::widget::{column, container, row, rule, scrollable, text, toggler};
 use iced::{Alignment, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
+use monolith_core::region::TrimReport;
 use monolith_core::server_runner::start_server;
 use monolith_core::types::ServerRuntimeStatus;
 use monolith_core::worlds::{self, Dimension, World};
+
 use monolith_theme::token::*;
 use monolith_theme::widget::sized;
 use monolith_theme::{icon_colored, style, Icon, MONO, UI_MEDIUM, UI_SEMIBOLD};
@@ -59,6 +61,25 @@ fn level_types() -> (&'static str, &'static [&'static str]) {
     }
 }
 
+#[derive(Debug)]
+struct Trim {
+    world: Option<String>,
+    minutes: String,
+    checking: bool,
+    preview: Option<(String, u32, TrimReport)>,
+}
+
+impl Default for Trim {
+    fn default() -> Self {
+        Self {
+            world: None,
+            minutes: "5".into(),
+            checking: false,
+            preview: None,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct State {
     server_id: Option<String>,
@@ -75,6 +96,7 @@ pub struct State {
     creating: bool,
     datapacks: datapacks::State,
     chunky: chunky::State,
+    trim: Trim,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +127,11 @@ pub enum Message {
     Created(Result<(String, bool), String>),
     Datapacks(datapacks::Message),
     Chunky(chunky::Message),
+    TrimWorld(String),
+    TrimMinutes(String),
+    TrimCheck,
+    TrimChecked(String, u32, Result<TrimReport, String>),
+    TrimApply,
 }
 
 fn suggested_name(source: &std::path::Path) -> String {
@@ -154,6 +181,18 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 }
                 Err(error) => state.error = Some(error),
             }
+            state.trim.preview = None;
+            let generated: Vec<&World> = state.worlds.iter().filter(|w| w.generated).collect();
+            if !generated
+                .iter()
+                .any(|w| Some(&w.name) == state.trim.world.as_ref())
+            {
+                state.trim.world = generated
+                    .iter()
+                    .find(|w| w.active)
+                    .or(generated.first())
+                    .map(|w| w.name.clone());
+            }
             let Some(active) = state.worlds.iter().find(|w| w.active) else {
                 return Task::none();
             };
@@ -161,6 +200,62 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 datapacks::show(&mut state.datapacks, &id, &active.name).map(Message::Datapacks),
                 chunky::show(&mut state.chunky, ctx, &active.name).map(Message::Chunky),
             ])
+        }
+        Message::TrimWorld(world) => {
+            state.trim.world = Some(world);
+            state.trim.preview = None;
+            Task::none()
+        }
+        Message::TrimMinutes(value) => {
+            state.trim.minutes = value.chars().filter(char::is_ascii_digit).take(6).collect();
+            state.trim.preview = None;
+            Task::none()
+        }
+        Message::TrimCheck => {
+            let (Some(world), Ok(minutes)) = (state.trim.world.clone(), state.trim.minutes.parse())
+            else {
+                return Task::none();
+            };
+            state.trim.checking = true;
+            state.trim.preview = None;
+            Task::perform(
+                worlds::trim_world(id, world.clone(), minutes, false),
+                move |result| Message::TrimChecked(world.clone(), minutes, result),
+            )
+        }
+        Message::TrimChecked(world, minutes, result) => {
+            state.trim.checking = false;
+            match result {
+                Ok(report) => state.trim.preview = Some((world, minutes, report)),
+                Err(error) => ctx.error(format!("Could not read the region files: {error}")),
+            }
+            Task::none()
+        }
+        Message::TrimApply => {
+            let Some((world, minutes, report)) = state.trim.preview.clone() else {
+                return Task::none();
+            };
+            ctx.confirm(
+                Confirm::new(
+                    format!("Trim {} chunks from {world}?", report.removed),
+                    format!("Chunks players spent less than {minutes} minutes in are deleted from {world}, along with their entities and points of interest. Minecraft generates them again when someone visits, so builds in those chunks are lost. Monolith backs up the server first as \"Before trimming chunks\"."),
+                    "Trim chunks",
+                    true,
+                    move || {
+                        let (id, world) = (id.clone(), world.clone());
+                        async move {
+                            let done = worlds::trim_world(id, world, minutes, true).await?;
+                            Ok(format!(
+                                "Removed {} chunks and freed {}",
+                                done.removed,
+                                format_size(done.bytes_freed)
+                            ))
+                        }
+                    },
+                )
+                .busy_label("Backing up and trimming"),
+            );
+            Task::none()
         }
         Message::Chunky(message) => {
             chunky::update(&mut state.chunky, message, ctx).map(Message::Chunky)
@@ -421,6 +516,88 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
     }
+}
+
+fn trim_view(state: &State, stopped: bool) -> Element<'_, Message> {
+    let trim = &state.trim;
+    let names: Vec<String> = state
+        .worlds
+        .iter()
+        .filter(|w| w.generated)
+        .map(|w| w.name.clone())
+        .collect();
+    let valid = trim.minutes.parse::<u32>().is_ok();
+    let label = |value| text(value).size(TEXT_MD).width(140);
+    let mut form = column![
+        row![
+            label("World"),
+            dropdown(names, trim.world.clone(), Message::TrimWorld).width(280),
+        ]
+        .spacing(SPACE_3)
+        .align_y(Alignment::Center),
+        row![
+            label("Visited less than"),
+            field("5", &trim.minutes, !valid, Message::TrimMinutes).width(100),
+            text("minutes").size(TEXT_MD),
+        ]
+        .spacing(SPACE_3)
+        .align_y(Alignment::Center),
+        row![busy_button(
+            "Check",
+            "Reading region files",
+            trim.checking,
+            (valid && trim.world.is_some()).then_some(Message::TrimCheck),
+            style::secondary,
+            BUTTON_MD,
+        )],
+    ]
+    .spacing(SPACE_3);
+    if let Some((world, _, report)) = &trim.preview {
+        let summary = if report.removed == 0 {
+            format!(
+                "Nothing to trim in {world}. All {} chunks were visited for longer.",
+                report.chunks
+            )
+        } else {
+            format!(
+                "{} of {} chunks in {world} would be removed, freeing {}.",
+                report.removed,
+                report.chunks,
+                format_size(report.bytes_freed)
+            )
+        };
+        form = form.push(text(summary).size(TEXT_MD));
+        if report.removed > 0 {
+            if !stopped {
+                form = form.push(
+                    text("Stop the server to trim chunks.")
+                        .size(TEXT_SM)
+                        .style(style::muted),
+                );
+            }
+            form = form.push(row![sized(
+                text("Trim chunks").size(TEXT_MD).font(UI_MEDIUM),
+                BUTTON_MD
+            )
+            .style(style::danger)
+            .on_press_maybe(stopped.then_some(Message::TrimApply))]);
+        }
+    }
+    column![
+        column![
+            text("Trim unvisited chunks").size(TEXT_LG).font(UI_SEMIBOLD),
+            text("Shrinks the world by deleting chunks players barely spent time in, using the InhabitedTime Minecraft stores for each chunk. Deleted chunks are generated again when someone visits.")
+                .size(TEXT_SM)
+                .style(style::muted),
+        ]
+        .spacing(SPACE_1),
+        container(form)
+            .padding(SPACE_4)
+            .width(Length::Fill)
+            .style(style::panel),
+    ]
+    .spacing(SPACE_3)
+    .into()
 }
 
 fn new_world_view<'a>(state: &'a State, running: bool) -> Element<'a, Message> {
@@ -768,6 +945,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
         list_view(state, ctx, id),
         datapacks::view(&state.datapacks, ctx).map(Message::Datapacks),
         chunky::view(&state.chunky, ctx).map(Message::Chunky),
+        trim_view(state, !running(ctx, id)),
         new_world_view(state, running(ctx, id)),
         import_view(state)
     ]

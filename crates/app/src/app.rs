@@ -17,6 +17,7 @@ use crate::ctx::{
 use crate::demo;
 use crate::screens::server::{
     analytics, backups, console, content, files, overview, players, settings as server_settings,
+    worlds,
 };
 use crate::screens::settings::{defaults, general, sharing, templates};
 use crate::screens::{self, assistant, create, onboarding, palette, remote};
@@ -535,6 +536,7 @@ impl App {
                     Tab::Files => files::on_show(&mut screens.files, ctx).map(S::Files),
                     Tab::Players => players::on_show(&mut screens.players, ctx).map(S::Players),
                     Tab::Content => content::on_show(&mut screens.content, ctx).map(S::Content),
+                    Tab::Worlds => worlds::on_show(&mut screens.worlds, ctx).map(S::Worlds),
                     Tab::Backups => backups::on_show(&mut screens.backups, ctx).map(S::Backups),
                     Tab::Analytics => {
                         analytics::on_show(&mut screens.analytics, ctx).map(S::Analytics)
@@ -817,6 +819,7 @@ impl App {
             Tab::Files => mapped(files::view(&screens.files, ctx), S::Files),
             Tab::Players => mapped(players::view(&screens.players, ctx), S::Players),
             Tab::Content => mapped(content::view(&screens.content, ctx), S::Content),
+            Tab::Worlds => mapped(worlds::view(&screens.worlds, ctx), S::Worlds),
             Tab::Backups => mapped(backups::view(&screens.backups, ctx), S::Backups),
             Tab::Analytics => mapped(analytics::view(&screens.analytics, ctx), S::Analytics),
             Tab::Settings => mapped(

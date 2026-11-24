@@ -15,3 +15,4 @@ pub mod properties;
 pub mod settings;
 pub mod storage;
 pub mod template;
+pub mod worlds;

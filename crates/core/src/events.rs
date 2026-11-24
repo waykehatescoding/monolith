@@ -29,6 +29,9 @@ pub enum Event {
         server_id: String,
         percent: f64,
     },
+    WorldsChanged {
+        server_id: String,
+    },
 }
 
 static BUS: Lazy<broadcast::Sender<Event>> = Lazy::new(|| broadcast::channel(1024).0);

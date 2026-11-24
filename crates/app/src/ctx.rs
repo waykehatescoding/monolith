@@ -14,17 +14,19 @@ pub enum Tab {
     Files,
     Players,
     Content,
+    Worlds,
     Backups,
     Analytics,
     Settings,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 7] = [
+    pub const ALL: [Tab; 8] = [
         Tab::Overview,
         Tab::Files,
         Tab::Players,
         Tab::Content,
+        Tab::Worlds,
         Tab::Backups,
         Tab::Analytics,
         Tab::Settings,
@@ -36,6 +38,7 @@ impl Tab {
             Tab::Files => "Files",
             Tab::Players => "Players",
             Tab::Content => "Content",
+            Tab::Worlds => "Worlds",
             Tab::Backups => "Backups",
             Tab::Analytics => "Analytics",
             Tab::Settings => "Settings",
@@ -95,6 +98,7 @@ impl Route {
             "files" => Route::Server(Tab::Files),
             "players" => Route::Server(Tab::Players),
             "content" => Route::Server(Tab::Content),
+            "worlds" => Route::Server(Tab::Worlds),
             "backups" => Route::Server(Tab::Backups),
             "analytics" => Route::Server(Tab::Analytics),
             "server-settings" => Route::Server(Tab::Settings),

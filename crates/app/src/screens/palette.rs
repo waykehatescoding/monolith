@@ -92,6 +92,7 @@ fn tab_icon(tab: Tab) -> Icon {
         Tab::Files => Icon::File,
         Tab::Players => Icon::Users,
         Tab::Content => Icon::Package,
+        Tab::Worlds => Icon::Globe,
         Tab::Backups => Icon::Archive,
         Tab::Analytics => Icon::Chart,
         Tab::Settings => Icon::Settings,

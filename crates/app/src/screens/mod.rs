@@ -12,7 +12,7 @@ use monolith_core::events::Event;
 
 use crate::ctx::Ctx;
 use server::settings as server_settings;
-use server::{analytics, backups, console, content, files, overview, players};
+use server::{analytics, backups, console, content, files, overview, players, worlds};
 use settings::{defaults, general, sharing, templates};
 
 macro_rules! registry {
@@ -57,6 +57,7 @@ registry! {
     files => Files,
     players => Players,
     content => Content,
+    worlds => Worlds,
     backups => Backups,
     analytics => Analytics,
     server_settings => ServerSettings,

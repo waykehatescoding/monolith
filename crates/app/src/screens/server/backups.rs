@@ -130,7 +130,7 @@ fn digits(value: &str) -> String {
     value.chars().filter(char::is_ascii_digit).collect()
 }
 
-fn format_size(bytes: u64) -> String {
+pub(super) fn format_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     let value = bytes as f64;
     if value >= KB * KB * KB {
@@ -155,7 +155,7 @@ fn format_date(created_at: &str) -> String {
     }
 }
 
-fn format_age(created_at: &str) -> Option<String> {
+pub(super) fn format_age(created_at: &str) -> Option<String> {
     let minutes = Local::now()
         .signed_duration_since(parse_date(created_at)?)
         .num_minutes()

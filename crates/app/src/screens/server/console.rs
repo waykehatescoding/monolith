@@ -943,7 +943,8 @@ fn line_view<'a>(line: &ConsoleLine, query: &str) -> Element<'a, Message> {
         ConsoleLineType::System => MOSS,
     };
     let text = legacy_to_ansi(&line.text);
-    rich_text::<(), Message, _, _>(highlight(ansi_spans(&text, base), query))
+    rich_text(highlight(linkify(ansi_spans(&text, base)), query))
+        .on_link_click(Message::OpenLink)
         .size(TEXT_SM)
         .font(MONO)
         .width(Length::Fill)
@@ -1108,10 +1109,61 @@ fn legacy_to_ansi(input: &str) -> std::borrow::Cow<'_, str> {
     out.into()
 }
 
-fn highlight(
-    spans: Vec<Span<'static, (), iced::Font>>,
+fn linkify(
+    spans: Vec<Span<'static, String, iced::Font>>,
+) -> Vec<Span<'static, String, iced::Font>> {
+    let mut out = Vec::with_capacity(spans.len());
+    for piece in spans {
+        let text = piece.text.to_string();
+        let mut last = 0;
+        while let Some((start, end)) = find_url(&text, last) {
+            if start > last {
+                out.push(Span {
+                    text: text[last..start].to_owned().into(),
+                    ..piece.clone()
+                });
+            }
+            let url = &text[start..end];
+            out.push(
+                Span {
+                    text: url.to_owned().into(),
+                    ..piece.clone()
+                }
+                .link(url.to_string())
+                .underline(true),
+            );
+            last = end;
+        }
+        if last == 0 {
+            out.push(piece);
+        } else if last < text.len() {
+            out.push(Span {
+                text: text[last..].to_owned().into(),
+                ..piece
+            });
+        }
+    }
+    out
+}
+
+fn find_url(text: &str, from: usize) -> Option<(usize, usize)> {
+    let rest = &text[from..];
+    let start = from
+        + ["https://", "http://"]
+            .iter()
+            .filter_map(|scheme| rest.find(scheme))
+            .min()?;
+    let len = text[start..]
+        .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`'))
+        .unwrap_or(text.len() - start);
+    let url = text[start..start + len].trim_end_matches(['.', ',', ';', ':', ')', ']', '!', '?']);
+    Some((start, start + url.len()))
+}
+
+fn highlight<L: Clone>(
+    spans: Vec<Span<'static, L, iced::Font>>,
     query: &str,
-) -> Vec<Span<'static, (), iced::Font>> {
+) -> Vec<Span<'static, L, iced::Font>> {
     if query.is_empty() {
         return spans;
     }
@@ -1153,7 +1205,7 @@ fn highlight(
     out
 }
 
-fn ansi_spans(input: &str, base: Color) -> Vec<Span<'static, (), iced::Font>> {
+fn ansi_spans<L>(input: &str, base: Color) -> Vec<Span<'static, L, iced::Font>> {
     let mut color = base;
     let mut spans = Vec::new();
     for (segment, codes) in segments(input) {
@@ -1333,8 +1385,26 @@ mod tests {
     }
 
     #[test]
+    fn links_become_clickable() {
+        let spans = linkify(ansi_spans(
+            "See https://mclo.gs/abc. or http://x.io/a?b=1)",
+            LOG_INFO,
+        ));
+        let parts: Vec<_> = spans
+            .iter()
+            .map(|s| (s.text.to_string(), s.link.clone()))
+            .collect();
+        assert_eq!(parts[0], ("See ".to_string(), None));
+        assert_eq!(parts[1].1.as_deref(), Some("https://mclo.gs/abc"));
+        assert_eq!(parts[2].0, ". or ");
+        assert_eq!(parts[3].1.as_deref(), Some("http://x.io/a?b=1"));
+        assert_eq!(parts[4].0, ")");
+        assert_eq!(linkify(ansi_spans("no links here", LOG_INFO)).len(), 1);
+    }
+
+    #[test]
     fn highlight_splits_matches() {
-        let spans = highlight(ansi_spans("Steve joined steve", LOG_INFO), "steve");
+        let spans = highlight(ansi_spans::<()>("Steve joined steve", LOG_INFO), "steve");
         let texts: Vec<_> = spans.iter().map(|s| s.text.to_string()).collect();
         assert_eq!(texts, ["Steve", " joined ", "steve"]);
         assert!(spans[0].highlight.is_some() && spans[1].highlight.is_none());

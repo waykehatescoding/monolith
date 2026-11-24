@@ -9,7 +9,8 @@ use monolith_core::crash_analysis::{self, CrashCause};
 use monolith_core::events::Event;
 use monolith_core::log_filter::{filter_logs, line_level, LogLevel, LogView};
 use monolith_core::safety::get_safe_external_url;
-use monolith_core::server_logs::LogFile;
+use monolith_core::server_logs::{plain_text, LogFile};
+use monolith_core::server_store::sanitize_server_name;
 use monolith_core::types::{ConsoleLine, ConsoleLineType, ServerRuntimeStatus};
 use monolith_core::{server_logs, server_runner};
 use monolith_theme::style;
@@ -204,6 +205,8 @@ pub enum Message {
     OpenLog(LogFile),
     LogRead(LogFile, Result<Vec<ConsoleLine>, String>),
     BackToConsole,
+    Export,
+    Exported(Result<Option<String>, String>),
 }
 
 pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
@@ -381,6 +384,43 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                     ctx.error(format!("{} could not be opened. {reason}", file.name));
                     return update(state, Message::OpenLogs, ctx);
                 }
+            }
+            Task::none()
+        }
+        Message::Export => {
+            let Some(server) = state.server_id.as_deref().and_then(|id| ctx.server(id)) else {
+                return Task::none();
+            };
+            let name = format!("{}-console.log", sanitize_server_name(&server.name));
+            let content = state
+                .lines
+                .iter()
+                .map(|line| plain_text(&line.text))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Task::perform(
+                async move {
+                    let Some(target) = rfd::AsyncFileDialog::new()
+                        .set_file_name(name)
+                        .add_filter("Log file", &["log", "txt"])
+                        .save_file()
+                        .await
+                    else {
+                        return Ok(None);
+                    };
+                    tokio::fs::write(target.path(), content)
+                        .await
+                        .map(|_| Some(target.file_name()))
+                        .map_err(|e| e.to_string())
+                },
+                Message::Exported,
+            )
+        }
+        Message::Exported(result) => {
+            match result {
+                Ok(Some(name)) => ctx.success(format!("Console saved to {name}")),
+                Ok(None) => {}
+                Err(reason) => ctx.error(format!("The console was not saved. {reason}")),
             }
             Task::none()
         }
@@ -687,6 +727,11 @@ fn toolbar(state: &State) -> Element<'_, Message> {
             Icon::File,
             "Logs and crash reports",
             Some(Message::OpenLogs)
+        ),
+        tool(
+            Icon::Download,
+            "Save console to file",
+            (!state.lines.is_empty()).then_some(Message::Export)
         ),
         if state.uploading {
             tool(Icon::Restart, "Uploading", None)

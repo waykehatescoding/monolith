@@ -1033,7 +1033,7 @@ fn editor_view<'a>(editor: &'a Editor) -> Element<'a, Message> {
     column![header, area].spacing(SPACE_3).into()
 }
 
-fn editor_style(_: &iced::Theme, status: text_editor::Status) -> text_editor::Style {
+pub(crate) fn editor_style(_: &iced::Theme, status: text_editor::Status) -> text_editor::Style {
     let focused = matches!(status, text_editor::Status::Focused { .. });
     text_editor::Style {
         background: Background::Color(GROUND),

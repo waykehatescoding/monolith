@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use chrono::TimeDelta;
 use iced::widget::{
-    button, checkbox, column, container, pick_list, row, scrollable, text, text_input, toggler,
-    Space,
+    button, checkbox, column, container, pick_list, row, scrollable, text, text_editor, text_input,
+    toggler, Space,
 };
 use iced::{Alignment, Element, Length, Subscription, Task, Theme};
 use monolith_core::events::Event;
@@ -19,6 +19,7 @@ use monolith_theme::widget::sized;
 use monolith_theme::{style, UI_MEDIUM, UI_SEMIBOLD};
 
 use crate::ctx::{Confirm, Ctx};
+use crate::ui::busy_button;
 
 const WHITELIST_KEY: &str = "white-list";
 const OP_LEVELS: [u8; 4] = [1, 2, 3, 4];
@@ -107,6 +108,18 @@ fn ban_detail(entry: &ListEntry) -> String {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct Source {
+    id: String,
+    name: String,
+}
+
+impl std::fmt::Display for Source {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct State {
     server_id: Option<String>,
@@ -117,6 +130,8 @@ pub struct State {
     ops: Vec<ListEntry>,
     banned_ips: Vec<ListEntry>,
     whitelist_input: String,
+    bulk: text_editor::Content,
+    import_from: Option<Source>,
     ip_input: String,
     ip_reason: String,
     op_input: String,
@@ -140,6 +155,11 @@ pub struct Lists {
 pub enum Message {
     Loaded(String, bool, Lists),
     WhitelistInput(String),
+    BulkEdit(text_editor::Action),
+    AddBulk,
+    ImportFrom(Source),
+    Import,
+    AddNames(Vec<String>),
     OpInput(String),
     AddOp,
     RemoveOp(String),
@@ -232,14 +252,68 @@ async fn save_whitelist(
     outcome(result, done)
 }
 
-async fn add_whitelist(id: String, name: String, live: bool) -> Result<String, String> {
-    let entry = resolve(id.clone(), name).await?;
-    let mut list = server_props::get_list(id.clone(), WHITELIST).await;
-    let done = format!("{} can now join.", entry.name());
-    if !has_name(&list, entry.name()) {
-        list.push(entry);
+fn parse_names(text: &str) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for name in text.split(|c: char| c.is_whitespace() || c == ',' || c == ';') {
+        if !name.is_empty() && !names.iter().any(|n| n.eq_ignore_ascii_case(name)) {
+            names.push(name.to_string());
+        }
     }
-    save_whitelist(id, list, live, done).await
+    names
+}
+
+fn summary(added: &[String], failed: &[String]) -> Result<String, String> {
+    let done = match added {
+        [] => String::new(),
+        [name] => format!("{name} can now join."),
+        _ => format!("Added {} players to the whitelist.", added.len()),
+    };
+    if failed.is_empty() {
+        return Ok(done);
+    }
+    let missed = format!("Could not add {}.", failed.join(", "));
+    Err(format!("{done} {missed}").trim_start().to_string())
+}
+
+async fn add_names(id: String, names: Vec<String>, live: bool) -> Result<String, String> {
+    let (valid, invalid): (Vec<String>, Vec<String>) =
+        names.into_iter().partition(|name| valid_name(name));
+    let mut failed: Vec<String> = invalid
+        .into_iter()
+        .map(|name| format!("{name} (not a valid name)"))
+        .collect();
+    let resolved = server_props::resolve_players(id.clone(), valid).await;
+    let mut list = server_props::get_list(id.clone(), WHITELIST).await;
+    let mut added = Vec::new();
+    for (name, result) in resolved {
+        match result {
+            Ok(entry) if !has_name(&list, entry.name()) => {
+                added.push(entry.name().to_string());
+                list.push(entry);
+            }
+            Ok(_) => {}
+            Err(e) => failed.push(format!("{name} ({e})")),
+        }
+    }
+    let done = summary(&added, &failed);
+    if added.is_empty() {
+        return if failed.is_empty() {
+            Ok("Everyone is already on the whitelist.".into())
+        } else {
+            done
+        };
+    }
+    let saved = save_whitelist(id, list, live, String::new()).await;
+    saved.and(done)
+}
+
+async fn whitelist_names(id: String) -> Vec<String> {
+    server_props::get_list(id, WHITELIST)
+        .await
+        .iter()
+        .map(|e| e.name().to_string())
+        .filter(|name| !name.is_empty())
+        .collect()
 }
 
 async fn remove_whitelist(id: String, name: String, live: bool) -> Result<String, String> {
@@ -445,6 +519,8 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         && matches!(
             message,
             Message::AddWhitelist
+                | Message::AddBulk
+                | Message::Import
                 | Message::RemoveWhitelist(_)
                 | Message::AddOp
                 | Message::RemoveOp(_)
@@ -604,7 +680,44 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             }
             state.whitelist_input.clear();
             state.busy = true;
-            Task::perform(add_whitelist(id, name, live), Message::Done)
+            Task::perform(add_names(id, vec![name], live), Message::Done)
+        }
+        Message::BulkEdit(action) => {
+            state.bulk.perform(action);
+            Task::none()
+        }
+        Message::AddBulk => {
+            let names = parse_names(&state.bulk.text());
+            if names.is_empty() {
+                ctx.error("Paste player names separated by new lines, commas or spaces.");
+                return Task::none();
+            }
+            state.bulk = text_editor::Content::new();
+            update(state, Message::AddNames(names), ctx)
+        }
+        Message::ImportFrom(source) => {
+            state.import_from = Some(source);
+            Task::none()
+        }
+        Message::Import => {
+            let Some(source) = state.import_from.clone() else {
+                return Task::none();
+            };
+            state.busy = true;
+            Task::perform(whitelist_names(source.id), Message::AddNames)
+        }
+        Message::AddNames(names) => {
+            let names: Vec<String> = names
+                .into_iter()
+                .filter(|name| !has_name(&state.whitelist, name))
+                .collect();
+            if names.is_empty() {
+                state.busy = false;
+                ctx.info("Everyone is already on the whitelist.");
+                return Task::none();
+            }
+            state.busy = true;
+            Task::perform(add_names(id, names, live), Message::Done)
         }
         Message::RemoveWhitelist(name) => {
             let title = format!("Remove {name} from the whitelist?");
@@ -828,7 +941,7 @@ fn online_section<'a>(ctx: &'a Ctx, id: &str, busy: bool) -> Element<'a, Message
     section("Online now", hint, body)
 }
 
-fn whitelist_section(state: &State) -> Element<'_, Message> {
+fn whitelist_section<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let hint = if state.whitelist_on {
         "Everyone not listed below is turned away."
     } else {
@@ -863,6 +976,61 @@ fn whitelist_section(state: &State) -> Element<'_, Message> {
     ]
     .spacing(SPACE_2);
 
+    let bulk = column![
+        text_editor(&state.bulk)
+            .placeholder("Paste several names, one per line or separated by commas")
+            .on_action(Message::BulkEdit)
+            .size(TEXT_MD)
+            .padding(SPACE_3)
+            .height(Length::Fixed(96.0))
+            .style(super::files::editor_style),
+        row![
+            Space::new().width(Length::Fill),
+            busy_button(
+                "Add all",
+                "Adding",
+                state.busy,
+                Some(Message::AddBulk),
+                style::secondary,
+                BUTTON_MD,
+            ),
+        ],
+    ]
+    .spacing(SPACE_2);
+
+    let sources: Vec<Source> = ctx
+        .servers
+        .iter()
+        .filter(|server| Some(&server.id) != state.server_id.as_ref())
+        .map(|server| Source {
+            id: server.id.clone(),
+            name: server.name.clone(),
+        })
+        .collect();
+    let import: Element<'_, Message> = if sources.is_empty() {
+        Space::new().into()
+    } else {
+        row![
+            pick_list(sources, state.import_from.clone(), Message::ImportFrom)
+                .placeholder("Copy from another server")
+                .padding([6, 12])
+                .width(Length::Fill)
+                .style(style::pick)
+                .menu_style(style::pick_menu),
+            busy_button(
+                "Import whitelist",
+                "Importing",
+                state.busy,
+                state.import_from.is_some().then_some(Message::Import),
+                style::secondary,
+                BUTTON_MD,
+            ),
+        ]
+        .spacing(SPACE_2)
+        .align_y(Alignment::Center)
+        .into()
+    };
+
     let list: Element<'_, Message> = if state.whitelist.is_empty() {
         empty(
             "The whitelist is empty",
@@ -889,7 +1057,9 @@ fn whitelist_section(state: &State) -> Element<'_, Message> {
     section(
         "Whitelist",
         "Players you approve to join.",
-        column![switch, add, list].spacing(SPACE_4).into(),
+        column![switch, add, bulk, import, list]
+            .spacing(SPACE_4)
+            .into(),
     )
 }
 
@@ -1116,7 +1286,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     scrollable(
         column![
             online_section(ctx, id, state.busy),
-            whitelist_section(state),
+            whitelist_section(state, ctx),
             ops_section(state, is_online(ctx, id)),
             ban_section(state, is_online(ctx, id)),
             ip_section(state),
@@ -1183,6 +1353,39 @@ mod tests {
         assert_eq!(parse_ip("2001:DB8::1"), Some("2001:db8::1".into()));
         assert_eq!(parse_ip("300.1.1.1"), None);
         assert_eq!(parse_ip("Steve"), None);
+    }
+
+    #[test]
+    fn splits_pasted_names() {
+        assert_eq!(
+            parse_names("Steve, Alex\nsteve;Notch_fan  Dana\r\n"),
+            vec!["Steve", "Alex", "Notch_fan", "Dana"]
+        );
+        assert!(parse_names(" ,\n").is_empty());
+    }
+
+    #[test]
+    fn summarises_bulk_adds() {
+        let names = |list: &[&str]| list.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            summary(&names(&["Steve"]), &[]),
+            Ok("Steve can now join.".into())
+        );
+        assert_eq!(
+            summary(&names(&["Steve", "Alex"]), &[]),
+            Ok("Added 2 players to the whitelist.".into())
+        );
+        assert_eq!(
+            summary(
+                &names(&["Steve"]),
+                &names(&["Nobody (no such Minecraft account)"])
+            ),
+            Err("Steve can now join. Could not add Nobody (no such Minecraft account).".into())
+        );
+        assert_eq!(
+            summary(&[], &names(&["x (not a valid name)"])),
+            Err("Could not add x (not a valid name).".into())
+        );
     }
 
     #[test]

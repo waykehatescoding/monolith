@@ -1,4 +1,7 @@
 use std::ops::Range;
+use std::path::{Path, PathBuf};
+
+use walkdir::WalkDir;
 
 fn split_key(content: &str) -> Option<(String, &str)> {
     let (key, rest) = match content.chars().next()? {
@@ -146,6 +149,115 @@ pub fn validate(name: &str, text: &str) -> Result<(), (usize, String)> {
     }
 }
 
+const TEXT_EXTENSIONS: [&str; 12] = [
+    "txt",
+    "yml",
+    "yaml",
+    "json",
+    "json5",
+    "properties",
+    "toml",
+    "cfg",
+    "conf",
+    "mcfunction",
+    "ini",
+    "mcmeta",
+];
+const SKIPPED_FOLDERS: [&str; 8] = [
+    "logs",
+    "crash-reports",
+    "libraries",
+    "versions",
+    "cache",
+    "backups",
+    ".git",
+    "node_modules",
+];
+const MAX_SEARCH_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_HITS: usize = 500;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchHit {
+    pub path: String,
+    pub line: usize,
+    pub snippet: String,
+}
+
+pub fn match_lines(text: &str, query: &str) -> Vec<(usize, String)> {
+    let query = query.to_lowercase();
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| line.to_lowercase().contains(&query))
+        .map(|(i, line)| (i + 1, line.trim().chars().take(160).collect()))
+        .collect()
+}
+
+fn skipped_folder(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| SKIPPED_FOLDERS.contains(&name.to_ascii_lowercase().as_str()))
+        || path.join("level.dat").is_file()
+}
+
+fn text_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| TEXT_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+}
+
+pub fn search_dir(root: &Path, query: &str) -> Vec<SearchHit> {
+    let mut hits = Vec::new();
+    if query.trim().is_empty() {
+        return hits;
+    }
+    let files = WalkDir::new(root)
+        .into_iter()
+        .filter_entry(|entry| {
+            !(entry.file_type().is_dir() && entry.depth() > 0 && skipped_folder(entry.path()))
+        })
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_file() && text_file(entry.path()));
+    for entry in files {
+        if entry
+            .metadata()
+            .map_or(true, |meta| meta.len() > MAX_SEARCH_BYTES)
+        {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(entry.path()) else {
+            continue;
+        };
+        if bytes.contains(&0) {
+            continue;
+        }
+        let path = entry
+            .path()
+            .strip_prefix(root)
+            .unwrap_or(entry.path())
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/");
+        for (line, snippet) in match_lines(&String::from_utf8_lossy(&bytes), query) {
+            if hits.len() == MAX_HITS {
+                return hits;
+            }
+            hits.push(SearchHit {
+                path: path.clone(),
+                line,
+                snippet,
+            });
+        }
+    }
+    hits
+}
+
+pub async fn search_files(root: PathBuf, query: String) -> Vec<SearchHit> {
+    tokio::task::spawn_blocking(move || search_dir(&root, &query))
+        .await
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,5 +347,45 @@ mod tests {
         let (line, message) = validate("config.yaml", "a: 1\nb: [1, 2\nc: 3\n").unwrap_err();
         assert!(line >= 2 && !message.is_empty());
         assert!(validate("notes.txt", "{{{").is_ok());
+    }
+
+    #[test]
+    fn matches_lines_case_insensitively() {
+        assert_eq!(
+            match_lines("a: 1\n  Motd: Hello World  \nmotd2: x", "MOTD"),
+            [
+                (2, "Motd: Hello World".to_string()),
+                (3, "motd2: x".to_string())
+            ]
+        );
+        assert!(match_lines("abc", "z").is_empty());
+    }
+
+    #[test]
+    fn searches_config_files_only() {
+        let root = std::env::temp_dir().join(format!("monolith-search-{}", uuid::Uuid::new_v4()));
+        let write = |rel: &str, content: &[u8]| {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, content).unwrap();
+        };
+        write("server.properties", b"motd=needle\n");
+        write("plugins/Essentials/config.yml", b"a: 1\nb: Needle\n");
+        write("logs/notes.txt", b"needle");
+        write("world/level.dat", b"\0");
+        write("world/data/notes.txt", b"needle");
+        write("plugins/data.json", b"needle\0");
+        write("plugins/thing.jar", b"needle");
+        let mut hits = search_dir(&root, "needle");
+        hits.sort_by(|a, b| a.path.cmp(&b.path));
+        let _ = std::fs::remove_dir_all(&root);
+        let found: Vec<_> = hits.iter().map(|h| (h.path.as_str(), h.line)).collect();
+        assert_eq!(
+            found,
+            [
+                ("plugins/Essentials/config.yml", 2),
+                ("server.properties", 1)
+            ]
+        );
     }
 }

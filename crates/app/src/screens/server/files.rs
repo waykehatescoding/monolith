@@ -7,10 +7,11 @@ use iced::widget::{
     button, column, container, row, scrollable, text, text_editor, text_input, tooltip, Space,
 };
 use iced::{Alignment, Background, Border, Element, Length, Subscription, Task};
+use monolith_core::config_files::{self, SearchHit};
 use monolith_core::events::Event;
 use monolith_core::safety::{resolve_safe_server_path, sanitize_download_file_name};
+use monolith_core::server_files;
 use monolith_core::types::{FileEntry, SuccessResult};
-use monolith_core::{config_files, server_files};
 use monolith_theme::token::{
     AMBER, CORAL, FOCUS_WIDTH, GROUND, INK, INK_SECONDARY, INK_TERTIARY, MOSS, RADIUS_PANEL,
     SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, TEXT_LG, TEXT_MD, TEXT_SM, TEXT_XS,
@@ -35,6 +36,10 @@ pub struct State {
     notice: Option<String>,
     busy: bool,
     watch: u8,
+    query: String,
+    results: Option<Vec<SearchHit>>,
+    searching: bool,
+    jump: Option<usize>,
 }
 
 struct Editor {
@@ -89,6 +94,11 @@ pub enum Message {
     Upload,
     Uploaded(Result<String, String>),
     Explorer,
+    Query(String),
+    Search,
+    Found(String, Vec<SearchHit>),
+    ClearSearch,
+    OpenHit(String, usize),
 }
 
 impl State {
@@ -230,6 +240,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             reload(state, ctx)
         }
         Message::Enter(name) => {
+            state.results = None;
             state.path.push(name);
             state.entries.clear();
             state.loaded = false;
@@ -238,6 +249,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             reload(state, ctx)
         }
         Message::Crumb(depth) => {
+            state.results = None;
             state.path.truncate(depth);
             state.entries.clear();
             state.loaded = false;
@@ -302,6 +314,9 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                         leaving: false,
                         problem: None,
                     });
+                    if let (Some(line), Some(editor)) = (state.jump.take(), &mut state.editor) {
+                        go_to(&mut editor.content, line);
+                    }
                 }
                 Err(error) => state.notice = Some(error),
             }
@@ -475,6 +490,47 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                     Task::none()
                 }
             }
+        }
+        Message::Query(query) => {
+            state.query = query;
+            Task::none()
+        }
+        Message::Search => {
+            let query = state.query.trim().to_string();
+            let root = state.server_id.as_deref().and_then(|id| root_of(ctx, id));
+            let (Some(root), false) = (root, query.is_empty() || state.searching) else {
+                return Task::none();
+            };
+            state.searching = true;
+            Task::perform(
+                config_files::search_files(PathBuf::from(root), query.clone()),
+                move |hits| Message::Found(query.clone(), hits),
+            )
+        }
+        Message::Found(query, hits) => {
+            state.searching = false;
+            if query == state.query.trim() {
+                state.results = Some(hits);
+            }
+            Task::none()
+        }
+        Message::ClearSearch => {
+            state.query.clear();
+            state.results = None;
+            Task::none()
+        }
+        Message::OpenHit(path, line) => {
+            let mut parts: Vec<String> = path.split('/').map(String::from).collect();
+            let Some(name) = parts.pop() else {
+                return Task::none();
+            };
+            state.path = parts;
+            state.entries.clear();
+            state.loaded = false;
+            state.notice = None;
+            state.jump = Some(line);
+            let open = update(state, Message::Open(name), ctx);
+            Task::batch([reload(state, ctx), open])
         }
         Message::Explorer => {
             let Some(root) = state.server_id.as_deref().and_then(|id| root_of(ctx, id)) else {
@@ -750,6 +806,13 @@ fn browser_view<'a>(state: &'a State) -> Element<'a, Message> {
     let toolbar = row![
         crumbs,
         Space::new().width(Length::Fill),
+        text_input("Search config files", &state.query)
+            .on_input(Message::Query)
+            .on_submit(Message::Search)
+            .size(TEXT_MD)
+            .padding([8, 12])
+            .width(220)
+            .style(style::input),
         labeled(
             Icon::File,
             "New file",
@@ -785,7 +848,70 @@ fn browser_view<'a>(state: &'a State) -> Element<'a, Message> {
     if let Some(notice) = &state.notice {
         page = page.push(text(notice).size(TEXT_SM).color(AMBER));
     }
-    page.push(list_view(state)).into()
+    match &state.results {
+        Some(hits) => page.push(results_view(state, hits)).into(),
+        None if state.searching => page.push(searching_view()).into(),
+        None => page.push(list_view(state)).into(),
+    }
+}
+
+fn searching_view<'a>() -> Element<'a, Message> {
+    container(text("Searching files").size(TEXT_MD).style(style::muted))
+        .padding(SPACE_5)
+        .into()
+}
+
+fn results_view<'a>(state: &'a State, hits: &'a [SearchHit]) -> Element<'a, Message> {
+    let summary = match hits.len() {
+        0 => format!("No matches for \"{}\" in config files", state.query.trim()),
+        1 => "1 match".to_string(),
+        500.. => "Showing the first 500 matches".to_string(),
+        n => format!("{n} matches"),
+    };
+    let header = row![
+        text(summary)
+            .size(TEXT_MD)
+            .style(style::muted)
+            .width(Length::Fill),
+        sized(
+            text("Clear search").size(TEXT_MD).font(UI_MEDIUM),
+            BUTTON_MD
+        )
+        .style(style::ghost)
+        .on_press(Message::ClearSearch),
+    ]
+    .spacing(SPACE_3)
+    .align_y(Alignment::Center);
+    if state.searching {
+        return column![header, searching_view()].spacing(SPACE_3).into();
+    }
+    let rows = hits.iter().fold(column![].spacing(2), |list, hit| {
+        list.push(
+            button(
+                column![
+                    text(format!("{}:{}", hit.path, hit.line))
+                        .size(TEXT_SM)
+                        .font(MONO)
+                        .color(MOSS),
+                    text(hit.snippet.as_str())
+                        .size(TEXT_SM)
+                        .font(MONO)
+                        .color(INK_SECONDARY),
+                ]
+                .spacing(SPACE_1),
+            )
+            .width(Length::Fill)
+            .padding([6, 8])
+            .style(style::ghost)
+            .on_press(Message::OpenHit(hit.path.clone(), hit.line)),
+        )
+    });
+    column![
+        header,
+        scrollable(rows).style(style::scroll).height(Length::Fill)
+    ]
+    .spacing(SPACE_3)
+    .into()
 }
 
 fn crumb<'a>(label: &'a str, depth: usize, current: bool) -> Element<'a, Message> {

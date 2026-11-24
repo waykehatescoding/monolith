@@ -10,8 +10,8 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 use crate::paths::servers_dir;
 use crate::types::{ExportServerResult, ImportServerResult, ServerRecord, ServerRuntimeStatus};
 
-const MAX_IMPORT_ENTRIES: usize = 20000;
-const MAX_IMPORT_UNCOMPRESSED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+pub(crate) const MAX_IMPORT_ENTRIES: usize = 20000;
+pub(crate) const MAX_IMPORT_UNCOMPRESSED_BYTES: u64 = 4 * 1024 * 1024 * 1024;
 const MAX_IMPORT_METADATA_BYTES: u64 = 64 * 1024;
 const MAX_IMPORT_JAR_SCAN_BYTES: u64 = 256 * 1024 * 1024;
 const SKIPPED_EXPORT_PREFIXES: [&str; 3] = ["logs/", "backups/", "cache/"];

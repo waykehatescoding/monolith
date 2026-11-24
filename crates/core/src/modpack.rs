@@ -2,8 +2,9 @@ use crate::content_sources::{curseforge_api_key, curseforge_files};
 use crate::events::{emit, Event};
 use crate::modrinth::fetch_modrinth_versions;
 use crate::modrinth_installs::download_file;
+use crate::paths;
 use crate::safety::sanitize_download_file_name;
-use crate::server_transfer::safe_join;
+use crate::server_transfer::{safe_join, MAX_IMPORT_ENTRIES, MAX_IMPORT_UNCOMPRESSED_BYTES};
 use crate::types::{ServerCreationProgress, ServerCreationStage};
 use serde::Deserialize;
 use serde_json::json;
@@ -15,6 +16,13 @@ use zip::ZipArchive;
 
 const MRPACK_INDEX: &str = "modrinth.index.json";
 const CURSEFORGE_MANIFEST: &str = "manifest.json";
+const MAX_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
+const ALLOWED_HOSTS: [&str; 4] = [
+    "cdn.modrinth.com",
+    "github.com",
+    "raw.githubusercontent.com",
+    "gitlab.com",
+];
 const NO_KEY: &str = "CurseForge modpacks need your own CurseForge API key. Add it in Settings, or use a Modrinth .mrpack file instead.";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -156,9 +164,13 @@ fn curseforge_info(manifest: &CurseForgeManifest) -> ModpackInfo {
 
 fn read_text(archive: &mut ZipArchive<File>, name: &str) -> Option<Result<String, String>> {
     let mut entry = archive.by_name(name).ok()?;
+    if entry.size() > MAX_MANIFEST_BYTES {
+        return Some(Err("The modpack manifest is too large.".into()));
+    }
     let mut raw = String::new();
     Some(
         entry
+            .take(MAX_MANIFEST_BYTES)
             .read_to_string(&mut raw)
             .map(|_| raw)
             .map_err(|e| e.to_string()),
@@ -220,7 +232,7 @@ pub async fn download_modrinth_modpack(project_id: String) -> Result<PathBuf, St
         .or(files.first())
         .ok_or("This modpack has no downloadable file.")?;
     let name = sanitize_download_file_name(file["filename"].as_str().unwrap_or_default())?;
-    let dest = std::env::temp_dir().join("monolith-modpacks").join(name);
+    let dest = paths::user_data_dir().join("modpacks").join(name);
     download_file(
         file["url"].as_str().unwrap_or_default(),
         &dest,
@@ -228,6 +240,15 @@ pub async fn download_modrinth_modpack(project_id: String) -> Result<PathBuf, St
     )
     .await?;
     Ok(dest)
+}
+
+fn allowed_download(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|url| {
+        url.scheme() == "https"
+            && url
+                .host_str()
+                .is_some_and(|host| ALLOWED_HOSTS.contains(&host))
+    })
 }
 
 fn progress(done: usize, total: usize) {
@@ -247,6 +268,10 @@ fn progress(done: usize, total: usize) {
 fn extract_overrides(pack: &Path, server: &Path, folders: &[&str]) -> Result<(), String> {
     let file = File::open(pack).map_err(|e| e.to_string())?;
     let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
+    if archive.len() > MAX_IMPORT_ENTRIES {
+        return Err("The modpack has too many files.".into());
+    }
+    let mut total = 0u64;
     for folder in folders {
         let prefix = format!("{folder}/");
         for index in 0..archive.len() {
@@ -264,8 +289,17 @@ fn extract_overrides(pack: &Path, server: &Path, folders: &[&str]) -> Result<(),
             if let Some(dir) = dest.parent() {
                 std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
             }
+            let limit = entry.size();
+            total += limit;
+            if total > MAX_IMPORT_UNCOMPRESSED_BYTES {
+                return Err("The modpack is too large to extract.".into());
+            }
             let mut out = File::create(&dest).map_err(|e| e.to_string())?;
-            std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+            let written = std::io::copy(&mut (&mut entry).take(limit + 1), &mut out)
+                .map_err(|e| e.to_string())?;
+            if written > limit {
+                return Err(format!("{relative} is larger than the modpack says."));
+            }
         }
     }
     Ok(())
@@ -286,8 +320,9 @@ async fn install_mrpack(server: &Path, index: MrpackIndex) -> Result<Vec<String>
         }
         let url = file
             .downloads
-            .first()
-            .ok_or_else(|| format!("{} has no download link", file.path))?;
+            .iter()
+            .find(|url| allowed_download(url))
+            .ok_or_else(|| format!("{} has no download link from a trusted host", file.path))?;
         download_file(url, &dest, Some(&hashes))
             .await
             .map_err(|e| format!("{}: {e}", file.path))?;
@@ -419,6 +454,17 @@ mod tests {
         assert_eq!(info.loader_version.as_deref(), Some("47.1.106"));
         assert_eq!(info.files, 1);
         assert!(info.curseforge);
+    }
+
+    #[test]
+    fn only_trusted_hosts_are_downloaded() {
+        assert!(allowed_download("https://cdn.modrinth.com/data/a/b.jar"));
+        assert!(allowed_download(
+            "https://github.com/x/y/releases/download/1/z.jar"
+        ));
+        assert!(!allowed_download("http://cdn.modrinth.com/a.jar"));
+        assert!(!allowed_download("https://127.0.0.1/a.jar"));
+        assert!(!allowed_download("https://cdn.modrinth.com.evil.com/a.jar"));
     }
 
     #[test]

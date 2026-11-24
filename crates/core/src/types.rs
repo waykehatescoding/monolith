@@ -231,6 +231,14 @@ pub struct BackupConfig {
     pub exclusions: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_change: Option<bool>,
+}
+
+impl BackupConfig {
+    pub fn backs_up_before_change(&self) -> bool {
+        self.before_change.unwrap_or(true)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

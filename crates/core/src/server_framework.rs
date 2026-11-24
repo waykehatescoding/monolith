@@ -1,3 +1,4 @@
+use crate::backup_manager::create_backup_of_type;
 use crate::events::{emit, Event};
 use crate::java_manager::{ensure_java_installed, get_required_java_version, JavaInstallStage};
 use crate::safety::sanitize_download_file_name;
@@ -6,8 +7,8 @@ use crate::server_create::{
 };
 use crate::server_store::{load_server_list, save_server_list};
 use crate::types::{
-    ChangeServerFrameworkResult, ServerCreationProgress, ServerCreationStage, ServerRecord,
-    ServerRuntimeStatus,
+    BackupConfig, BackupType, ChangeServerFrameworkResult, ServerCreationProgress,
+    ServerCreationStage, ServerRecord, ServerRuntimeStatus,
 };
 use std::path::{Path, PathBuf};
 
@@ -78,6 +79,24 @@ async fn run_change(
     let server_path = PathBuf::from(&servers[index].server_path);
     let old_jar = servers[index].jar_file.clone();
     let ram_mb = servers[index].ram_mb;
+
+    let back_up = servers[index]
+        .backup_config
+        .as_ref()
+        .is_none_or(BackupConfig::backs_up_before_change);
+    if back_up {
+        send(progress(
+            ServerCreationStage::WritingFiles,
+            "Backing up the server...",
+            2.0,
+        ));
+        let name = format!("Before {framework} {version}");
+        let backup = create_backup_of_type(id, Some(&name), BackupType::Manual).await;
+        if !backup.success {
+            let reason = backup.error.unwrap_or_else(|| "Unknown error".into());
+            return Ok(Err(format!("Could not back up the server first: {reason}")));
+        }
+    }
 
     send(progress(
         ServerCreationStage::Downloading,

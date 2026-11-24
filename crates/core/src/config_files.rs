@@ -113,6 +113,39 @@ pub fn yaml_set(text: &str, path: &str, value: &str) -> Option<String> {
     Some(result)
 }
 
+pub fn validate(name: &str, text: &str) -> Result<(), (usize, String)> {
+    let ext = name
+        .rsplit_once('.')
+        .map(|(_, ext)| ext.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("json" | "mcmeta") => serde_json::from_str::<serde_json::Value>(text)
+            .map(|_| ())
+            .map_err(|e| {
+                let message = e.to_string();
+                let message = message
+                    .rsplit_once(" at line ")
+                    .map_or(message.as_str(), |(m, _)| m);
+                (e.line(), message.to_string())
+            }),
+        Some("toml") => toml::de::DeTable::parse(text).map(|_| ()).map_err(|e| {
+            let at = e.span().map_or(0, |span| span.start).min(text.len());
+            (
+                text[..at].matches('\n').count() + 1,
+                e.message().to_string(),
+            )
+        }),
+        Some("yml" | "yaml") => {
+            for event in saphyr_parser::Parser::new_from_str(text) {
+                if let Err(e) = event {
+                    return Err((e.marker().line(), e.info().to_string()));
+                }
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -190,5 +223,17 @@ mod tests {
         assert!(out.contains("  monsters: ''\r\n"));
         assert!(out.starts_with("# Paper config\r\nproxies:\r\n"));
         assert_eq!(yaml_set(sample, "nope", "1"), None);
+    }
+
+    #[test]
+    fn validates_by_extension() {
+        assert!(validate("a.json", "{\"a\": [1, 2]}").is_ok());
+        assert_eq!(validate("a.json", "{\n  \"a\": 1,\n}").unwrap_err().0, 3);
+        assert!(validate("a.toml", "[server]\nport = 25565\n").is_ok());
+        assert_eq!(validate("a.toml", "a = 1\nb = = 2\n").unwrap_err().0, 2);
+        assert!(validate("a.yml", "a:\n  b: [1, 2]\n").is_ok());
+        let (line, message) = validate("config.yaml", "a: 1\nb: [1, 2\nc: 3\n").unwrap_err();
+        assert!(line >= 2 && !message.is_empty());
+        assert!(validate("notes.txt", "{{{").is_ok());
     }
 }

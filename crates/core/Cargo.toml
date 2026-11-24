@@ -23,3 +23,5 @@ chrono.workspace = true
 sysinfo.workspace = true
 once_cell.workspace = true
 url.workspace = true
+toml.workspace = true
+saphyr-parser.workspace = true

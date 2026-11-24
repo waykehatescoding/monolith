@@ -9,8 +9,8 @@ use iced::widget::{
 use iced::{Alignment, Background, Border, Element, Length, Subscription, Task};
 use monolith_core::events::Event;
 use monolith_core::safety::{resolve_safe_server_path, sanitize_download_file_name};
-use monolith_core::server_files;
 use monolith_core::types::{FileEntry, SuccessResult};
+use monolith_core::{config_files, server_files};
 use monolith_theme::token::{
     AMBER, CORAL, FOCUS_WIDTH, GROUND, INK, INK_SECONDARY, INK_TERTIARY, MOSS, RADIUS_PANEL,
     SPACE_1, SPACE_2, SPACE_3, SPACE_4, SPACE_5, SPACE_6, TEXT_LG, TEXT_MD, TEXT_SM, TEXT_XS,
@@ -45,6 +45,7 @@ struct Editor {
     dirty: bool,
     saving: bool,
     leaving: bool,
+    problem: Option<(usize, String)>,
 }
 
 #[derive(Clone)]
@@ -71,6 +72,8 @@ pub enum Message {
     Opened(String, Vec<String>, Result<(String, String), String>),
     Edit(text_editor::Action),
     Save,
+    SaveAnyway,
+    GoTo(usize),
     Saved(Result<(), String>),
     Retry,
     Revert,
@@ -297,6 +300,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                         dirty: false,
                         saving: false,
                         leaving: false,
+                        problem: None,
                     });
                 }
                 Err(error) => state.notice = Some(error),
@@ -311,32 +315,27 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 let edit = action.is_edit();
                 editor.content.perform(action);
                 if edit {
+                    editor.problem = None;
                     editor.dirty = editor.content.text() != editor.original;
                 }
             }
             Task::none()
         }
         Message::Save => {
-            let (Some(id), Some(name)) = (
-                state.server_id.clone(),
-                state.editor.as_ref().map(|editor| editor.name.clone()),
-            ) else {
-                return Task::none();
-            };
-            let rel = state.rel(&name);
-            let Some(editor) = state.editor.as_mut() else {
-                return Task::none();
-            };
-            if editor.saving {
-                return Task::none();
+            if let Some(editor) = &mut state.editor {
+                if let Err(problem) = config_files::validate(&editor.name, &editor.content.text()) {
+                    editor.problem = Some(problem);
+                    return Task::none();
+                }
             }
-            editor.saving = true;
-            let text = editor.content.text();
-            editor.pending = text.clone();
-            Task::perform(
-                async move { check(server_files::write_server_file(id, rel, text).await) },
-                Message::Saved,
-            )
+            write(state)
+        }
+        Message::SaveAnyway => write(state),
+        Message::GoTo(line) => {
+            if let Some(editor) = &mut state.editor {
+                go_to(&mut editor.content, line);
+            }
+            Task::none()
         }
         Message::Saved(result) => {
             let Some(editor) = &mut state.editor else {
@@ -489,6 +488,40 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
     }
+}
+
+fn go_to(content: &mut text_editor::Content, line: usize) {
+    content.move_to(text_editor::Cursor {
+        position: text_editor::Position {
+            line: line.saturating_sub(1),
+            column: 0,
+        },
+        selection: None,
+    });
+}
+
+fn write(state: &mut State) -> Task<Message> {
+    let (Some(id), Some(name)) = (
+        state.server_id.clone(),
+        state.editor.as_ref().map(|editor| editor.name.clone()),
+    ) else {
+        return Task::none();
+    };
+    let rel = state.rel(&name);
+    let Some(editor) = state.editor.as_mut() else {
+        return Task::none();
+    };
+    if editor.saving {
+        return Task::none();
+    }
+    editor.saving = true;
+    editor.problem = None;
+    let text = editor.content.text();
+    editor.pending = text.clone();
+    Task::perform(
+        async move { check(server_files::write_server_file(id, rel, text).await) },
+        Message::Saved,
+    )
 }
 
 fn submit(state: &mut State, ctx: &Ctx) -> Task<Message> {
@@ -1032,7 +1065,37 @@ fn editor_view<'a>(editor: &'a Editor) -> Element<'a, Message> {
         .style(editor_style)
         .highlight_with::<Highlighter>(Syntax::of(&editor.name), highlight::format);
 
-    column![header, area].spacing(SPACE_3).into()
+    let mut page = column![header].spacing(SPACE_3);
+    if let Some((line, message)) = &editor.problem {
+        page = page.push(
+            container(
+                row![
+                    icon_colored(Icon::Warning, 16.0, CORAL),
+                    text(format!("Line {line}: {message}"))
+                        .size(TEXT_MD)
+                        .color(CORAL)
+                        .width(Length::Fill),
+                    sized(text("Go to line").size(TEXT_MD).font(UI_MEDIUM), BUTTON_MD)
+                        .style(style::ghost)
+                        .on_press(Message::GoTo(*line)),
+                    crate::ui::busy_button(
+                        "Save anyway",
+                        "Saving",
+                        editor.saving,
+                        Some(Message::SaveAnyway),
+                        style::secondary,
+                        BUTTON_MD,
+                    ),
+                ]
+                .spacing(SPACE_3)
+                .align_y(Alignment::Center),
+            )
+            .padding([SPACE_2, SPACE_4])
+            .width(Length::Fill)
+            .style(style::panel),
+        );
+    }
+    page.push(area).into()
 }
 
 pub(crate) fn editor_style(_: &iced::Theme, status: text_editor::Status) -> text_editor::Style {

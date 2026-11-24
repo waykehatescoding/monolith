@@ -19,7 +19,7 @@ use crate::screens::server::{
     analytics, backups, console, content, files, overview, players, settings as server_settings,
 };
 use crate::screens::settings::{defaults, general, sharing};
-use crate::screens::{self, assistant, create, onboarding, palette};
+use crate::screens::{self, assistant, create, onboarding, palette, remote};
 use crate::ui::confirm;
 use crate::ui::overlay::modal;
 use crate::ui::shortcuts::{self, Shortcut};
@@ -558,6 +558,7 @@ impl App {
                 assistant::on_show(&mut screens.assistant, ctx).map(S::Assistant)
             }
             Route::Empty => onboarding::on_show(&mut screens.onboarding, ctx).map(S::Onboarding),
+            Route::Remote => remote::on_show(&mut screens.remote, ctx).map(S::Remote),
         };
         task.map(Message::Screen)
     }
@@ -692,6 +693,12 @@ impl App {
                 Message::Goto(Route::Create)
             ),
             nav_button(
+                "Remote consoles",
+                Icon::Terminal,
+                matches!(ctx.route, Route::Remote),
+                Message::Goto(Route::Remote)
+            ),
+            nav_button(
                 "Settings",
                 Icon::Settings,
                 matches!(ctx.route, Route::Settings(_)),
@@ -768,6 +775,7 @@ impl App {
             ),
             Route::Create => mapped(create::view(&self.screens.create, ctx), S::Create),
             Route::Settings(page) => self.settings_view(page),
+            Route::Remote => mapped(remote::view(&self.screens.remote, ctx), S::Remote),
         };
         container(container(body).max_width(1100))
             .padding(Padding {

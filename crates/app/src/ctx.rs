@@ -81,6 +81,7 @@ pub enum Route {
     Create,
     Settings(SettingsPage),
     Empty,
+    Remote,
 }
 
 impl Route {
@@ -102,6 +103,7 @@ impl Route {
             "settings-updates" => Route::Settings(SettingsPage::Updates),
             "settings-about" => Route::Settings(SettingsPage::About),
             "empty" => Route::Empty,
+            "remote" => Route::Remote,
             _ => return None,
         })
     }

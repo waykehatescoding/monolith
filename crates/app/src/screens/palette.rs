@@ -42,6 +42,7 @@ enum Command {
     Settings(SettingsPage),
     OpenFolder,
     CopyAddress,
+    Remote,
 }
 
 struct Item {
@@ -174,6 +175,12 @@ fn items(query: &str, ctx: &Ctx) -> Vec<Item> {
         Some("Ctrl+N"),
         Command::NewServer,
     ));
+    all.push(action(
+        Icon::Terminal,
+        "Remote consoles".into(),
+        None,
+        Command::Remote,
+    ));
 
     for page in SettingsPage::ALL {
         all.push(Item {
@@ -227,6 +234,10 @@ fn run(command: Command, ctx: &Ctx) -> Task<Message> {
         }
         (Command::NewServer, _) => {
             ctx.navigate(Route::Create);
+            Task::none()
+        }
+        (Command::Remote, _) => {
+            ctx.navigate(Route::Remote);
             Task::none()
         }
         (Command::Settings(page), _) => {

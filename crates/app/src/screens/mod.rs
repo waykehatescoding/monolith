@@ -2,6 +2,7 @@ pub mod assistant;
 pub mod create;
 pub mod onboarding;
 pub mod palette;
+pub mod remote;
 pub mod server;
 pub mod settings;
 pub mod system;
@@ -67,4 +68,5 @@ registry! {
     palette => Palette,
     onboarding => Onboarding,
     system => System,
+    remote => Remote,
 }

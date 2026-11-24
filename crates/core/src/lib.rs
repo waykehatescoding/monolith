@@ -9,6 +9,7 @@ pub mod file_streaming;
 pub mod java_manager;
 pub mod lifecycle;
 pub mod log_filter;
+pub mod modpack;
 pub mod modrinth;
 pub mod modrinth_installs;
 pub mod ngrok_manager;

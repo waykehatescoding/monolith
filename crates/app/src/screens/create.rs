@@ -11,6 +11,10 @@ use iced::{clipboard, Alignment, Element, Length, Subscription, Task};
 use monolith_core::default_plugins::list_default_plugins;
 use monolith_core::events::Event;
 use monolith_core::java_manager::get_required_java_version;
+use monolith_core::modpack::{
+    download_modrinth_modpack, inspect_modpack, install_modpack, ModpackInfo,
+};
+use monolith_core::modrinth::search_modrinth;
 use monolith_core::ngrok_manager::get_local_ip;
 use monolith_core::server_create::{create_server, get_minecraft_versions};
 use monolith_core::server_runner::start_server;
@@ -18,7 +22,7 @@ use monolith_core::server_stats::get_system_info;
 use monolith_core::server_transfer::import_server;
 use monolith_core::types::{
     CreateServerParams, CreateServerResult, DefaultPlugin, DefaultPluginSource, MinecraftVersion,
-    ServerCreationProgress, ServerCreationStage, ServerRecord,
+    ModrinthSearchHit, ServerCreationProgress, ServerCreationStage, ServerRecord,
 };
 use monolith_theme::token::*;
 use monolith_theme::{icon, icon_colored, style, Icon, MONO, UI_MEDIUM, UI_SEMIBOLD};
@@ -34,6 +38,7 @@ enum Step {
     #[default]
     Name,
     Platform,
+    Modpack,
     Memory,
     Plugins,
     Review,
@@ -122,6 +127,12 @@ pub struct State {
     starting: bool,
     start_error: Option<String>,
     picking: bool,
+    modpack: Option<(PathBuf, ModpackInfo)>,
+    pack_query: String,
+    pack_results: Option<Result<Vec<ModrinthSearchHit>, String>>,
+    pack_searching: bool,
+    pack_loading: Option<String>,
+    pack_error: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -153,6 +164,15 @@ pub enum Message {
     Import,
     ImportPicked(Option<PathBuf>),
     Imported(CreateServerResult),
+    UseModpack,
+    PackQuery(String),
+    PackSearch,
+    PackSearched(Result<Vec<ModrinthSearchHit>, String>),
+    PackPick(String, String),
+    PackFile,
+    PackFilePicked(Option<PathBuf>),
+    PackLoaded(Result<(PathBuf, ModpackInfo), String>),
+    PackInstalled(ServerRecord, Result<Vec<String>, String>),
 }
 
 fn plugin_key(plugin: &DefaultPlugin) -> &str {
@@ -239,11 +259,15 @@ impl State {
             .collect()
     }
 
+    fn plugin_step(&self) -> bool {
+        self.platform.plugins() && self.modpack.is_none()
+    }
+
     fn next_step(&self) -> Step {
         match self.step {
             Step::Name => Step::Platform,
-            Step::Platform => Step::Memory,
-            Step::Memory if self.platform.plugins() => Step::Plugins,
+            Step::Platform | Step::Modpack => Step::Memory,
+            Step::Memory if self.plugin_step() => Step::Plugins,
             Step::Memory | Step::Plugins => Step::Review,
             other => other,
         }
@@ -252,9 +276,11 @@ impl State {
     fn previous_step(&self) -> Step {
         match self.step {
             Step::Platform => Step::Name,
+            Step::Modpack => Step::Platform,
+            Step::Memory if self.modpack.is_some() => Step::Modpack,
             Step::Memory => Step::Platform,
             Step::Plugins => Step::Memory,
-            Step::Review if self.platform.plugins() => Step::Plugins,
+            Step::Review if self.plugin_step() => Step::Plugins,
             Step::Review => Step::Memory,
             Step::Creating => Step::Review,
             other => other,
@@ -285,6 +311,24 @@ fn name_issue(name: &str, ctx: &Ctx) -> Option<&'static str> {
         .then_some("You already have a server with this name. Pick a different one.")
 }
 
+fn search_packs(query: &str) -> Task<Message> {
+    let params = serde_json::json!({
+        "query": query.trim(),
+        "projectType": "modpack",
+        "limit": 10,
+        "sort": if query.trim().is_empty() { "downloads" } else { "relevance" },
+    });
+    Task::perform(
+        async move { search_modrinth(params).await.map(|found| found.hits) },
+        Message::PackSearched,
+    )
+}
+
+async fn load_pack(path: PathBuf) -> Result<(PathBuf, ModpackInfo), String> {
+    let info = inspect_modpack(path.clone()).await?;
+    Ok((path, info))
+}
+
 fn load_versions(platform: Platform) -> Task<Message> {
     Task::perform(
         get_minecraft_versions(platform.name().to_string()),
@@ -303,6 +347,7 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             let ready = match state.step {
                 Step::Name => state.name_ready(ctx),
                 Step::Platform => state.version.is_some(),
+                Step::Modpack => state.modpack.is_some(),
                 Step::Memory | Step::Plugins => true,
                 _ => false,
             };
@@ -313,6 +358,10 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::Back => {
             state.error = None;
+            if state.step == Step::Modpack {
+                state.modpack = None;
+                state.pack_error = None;
+            }
             state.step = state.previous_step();
             Task::none()
         }
@@ -395,16 +444,20 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
             Task::none()
         }
         Message::Create => {
-            let Some(version) = state.version.clone() else {
-                return Task::none();
+            let (framework, version) = match &state.modpack {
+                Some((_, info)) => (info.framework.clone(), info.game_version.clone()),
+                None => match state.version.clone() {
+                    Some(version) => (state.platform.name().to_string(), version),
+                    None => return Task::none(),
+                },
             };
             if state.ram == 0 {
                 return Task::none();
             }
-            let compatible = state.platform.plugins();
+            let compatible = state.plugin_step();
             let params = CreateServerParams {
                 name: state.name.trim().to_string(),
-                framework: state.platform.name().to_string(),
+                framework,
                 version,
                 ram_mb: state.ram,
                 enable_analytics: Some(compatible && state.analytics),
@@ -417,7 +470,17 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
         }
         Message::Created(result) => {
             match result.server {
-                Some(server) if result.success => state.finish(server, false, ctx),
+                Some(server) if result.success => {
+                    if let Some((path, _)) = &state.modpack {
+                        state.progress = None;
+                        let path = path.clone();
+                        let server_path = server.server_path.clone();
+                        return Task::perform(install_modpack(server_path, path), move |result| {
+                            Message::PackInstalled(server.clone(), result)
+                        });
+                    }
+                    state.finish(server, false, ctx)
+                }
                 _ => {
                     state.error = Some(result.error.unwrap_or_else(|| {
                         "The server could not be created. Check your connection and try again."
@@ -521,6 +584,88 @@ pub fn update(state: &mut State, message: Message, ctx: &Ctx) -> Task<Message> {
                 Message::Imported,
             )
         }
+        Message::UseModpack => {
+            state.step = Step::Modpack;
+            if state.pack_results.is_none() && !state.pack_searching {
+                state.pack_searching = true;
+                return search_packs(&state.pack_query);
+            }
+            Task::none()
+        }
+        Message::PackQuery(query) => {
+            state.pack_query = query;
+            Task::none()
+        }
+        Message::PackSearch => {
+            state.pack_searching = true;
+            search_packs(&state.pack_query)
+        }
+        Message::PackSearched(result) => {
+            state.pack_searching = false;
+            state.pack_results = Some(result);
+            Task::none()
+        }
+        Message::PackPick(project_id, title) => {
+            state.pack_loading = Some(title);
+            state.pack_error = None;
+            state.modpack = None;
+            Task::perform(
+                async move { load_pack(download_modrinth_modpack(project_id).await?).await },
+                Message::PackLoaded,
+            )
+        }
+        Message::PackFile => {
+            if state.picking || state.pack_loading.is_some() {
+                return Task::none();
+            }
+            state.picking = true;
+            Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .set_title("Choose a modpack")
+                        .add_filter("Modpack", &["mrpack", "zip"])
+                        .pick_file()
+                        .await
+                        .map(|file| file.path().to_path_buf())
+                },
+                Message::PackFilePicked,
+            )
+        }
+        Message::PackFilePicked(None) => {
+            state.picking = false;
+            Task::none()
+        }
+        Message::PackFilePicked(Some(path)) => {
+            state.picking = false;
+            state.pack_loading = path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned());
+            state.pack_error = None;
+            state.modpack = None;
+            Task::perform(load_pack(path), Message::PackLoaded)
+        }
+        Message::PackLoaded(result) => {
+            state.pack_loading = None;
+            match result {
+                Ok(pack) => state.modpack = Some(pack),
+                Err(error) => state.pack_error = Some(error),
+            }
+            Task::none()
+        }
+        Message::PackInstalled(server, result) => {
+            match result {
+                Ok(manual) if !manual.is_empty() => ctx.info(format!(
+                    "CurseForge does not allow downloading {}. Get them from CurseForge and put them in the mods folder.",
+                    manual.join(", ")
+                )),
+                Ok(_) => {}
+                Err(error) => ctx.error(format!(
+                    "The server was created, but the modpack did not fully install. {error}"
+                )),
+            }
+            state.finish(server, false, ctx);
+            Task::none()
+        }
         Message::Imported(result) => {
             match result.server {
                 Some(server) if result.success => state.finish(server, true, ctx),
@@ -571,6 +716,7 @@ pub fn view<'a>(state: &'a State, ctx: &'a Ctx) -> Element<'a, Message> {
     let body = match state.step {
         Step::Name => name_step(state, ctx),
         Step::Platform => platform_step(state),
+        Step::Modpack => modpack_step(state),
         Step::Memory => memory_step(state),
         Step::Plugins => plugins_step(state),
         Step::Review => review_step(state),
@@ -764,14 +910,138 @@ fn platform_step(state: &State) -> Column<'_, Message> {
         .into(),
     };
 
+    let modpack = row![
+        text("Want a ready-made modpack?")
+            .size(TEXT_SM)
+            .style(style::muted),
+        link("Start from a modpack", Message::UseModpack),
+    ]
+    .align_y(Alignment::Center);
+
     step_layout(
         heading(
             "Choose a platform".into(),
             "The platform decides what your server can run. Paper is a safe pick.",
         ),
-        column![choices, version].spacing(SPACE_5).into(),
+        column![choices, version, modpack].spacing(SPACE_5).into(),
         footer(
             primary("Continue", state.version.is_some().then_some(Message::Next)),
+            true,
+        ),
+    )
+}
+
+fn modpack_step(state: &State) -> Column<'_, Message> {
+    let search = row![
+        text_input("Search Modrinth modpacks", &state.pack_query)
+            .on_input(Message::PackQuery)
+            .on_submit(Message::PackSearch)
+            .padding([SPACE_2, SPACE_3])
+            .style(style::input)
+            .width(Length::Fill),
+        busy_button(
+            "Search",
+            "Searching",
+            state.pack_searching,
+            Some(Message::PackSearch),
+            style::secondary,
+            BUTTON_MD,
+        ),
+    ]
+    .spacing(SPACE_2)
+    .align_y(Alignment::Center);
+
+    let results: Element<Message> = match &state.pack_results {
+        None => text("Loading modpacks")
+            .size(TEXT_SM)
+            .style(style::muted)
+            .into(),
+        Some(Err(error)) => text(format!("Could not reach Modrinth: {error}"))
+            .size(TEXT_SM)
+            .style(style::colored(CORAL))
+            .into(),
+        Some(Ok(hits)) if hits.is_empty() => text("No modpacks matched. Try a shorter search.")
+            .size(TEXT_SM)
+            .style(style::muted)
+            .into(),
+        Some(Ok(hits)) => {
+            let mut list = column![].spacing(SPACE_1);
+            for hit in hits {
+                let selected = state
+                    .modpack
+                    .as_ref()
+                    .is_some_and(|(_, info)| info.name == hit.title);
+                list = list.push(
+                    button(
+                        column![
+                            text(&hit.title).size(TEXT_MD).font(UI_MEDIUM),
+                            text(format!("by {}", hit.author))
+                                .size(TEXT_SM)
+                                .style(style::muted)
+                        ]
+                        .spacing(2),
+                    )
+                    .width(Length::Fill)
+                    .padding([SPACE_2, SPACE_3])
+                    .style(style::sidebar_item(selected))
+                    .on_press_maybe(
+                        state
+                            .pack_loading
+                            .is_none()
+                            .then(|| Message::PackPick(hit.project_id.clone(), hit.title.clone())),
+                    ),
+                );
+            }
+            list.into()
+        }
+    };
+
+    let file = row![
+        text("Have a .mrpack or CurseForge zip?")
+            .size(TEXT_SM)
+            .style(style::muted),
+        link("Choose a file", Message::PackFile),
+    ]
+    .align_y(Alignment::Center);
+
+    let mut content = column![search, results, file].spacing(SPACE_4);
+    if let Some(name) = &state.pack_loading {
+        content = content.push(
+            text(format!("Getting {name}"))
+                .size(TEXT_SM)
+                .style(style::muted),
+        );
+    } else if let Some(error) = &state.pack_error {
+        content = content.push(text(error).size(TEXT_SM).style(style::colored(CORAL)));
+    } else if let Some((_, info)) = &state.modpack {
+        content = content.push(
+            column![
+                text(format!("{} {}", info.name, info.version))
+                    .size(TEXT_MD)
+                    .font(UI_MEDIUM),
+                text(format!(
+                    "{} {}, {} server files",
+                    info.framework, info.game_version, info.files
+                ))
+                .size(TEXT_SM)
+                .style(style::muted),
+            ]
+            .spacing(2),
+        );
+    }
+
+    step_layout(
+        heading(
+            "Start from a modpack".into(),
+            "Monolith installs the loader, downloads the server-side mods and copies the pack's config.",
+        ),
+        content.into(),
+        footer(
+            primary(
+                "Continue",
+                (state.modpack.is_some() && state.pack_loading.is_none())
+                    .then_some(Message::Next),
+            ),
             true,
         ),
     )
@@ -941,15 +1211,27 @@ fn review_row<'a>(label: &'a str, value: String) -> Element<'a, Message> {
 }
 
 fn review_step(state: &State) -> Column<'_, Message> {
-    let version = state.version.clone().unwrap_or_default();
+    let (framework, version) = match &state.modpack {
+        Some((_, info)) => (info.framework.as_str(), info.game_version.clone()),
+        None => (
+            state.platform.name(),
+            state.version.clone().unwrap_or_default(),
+        ),
+    };
     let java = get_required_java_version(&version);
     let mut rows = column![
         review_row("Name", state.name.trim().to_string()),
-        review_row("Platform", format!("{} {}", state.platform.name(), version)),
+        review_row("Platform", format!("{framework} {version}")),
         review_row("Memory", format_gb(state.ram)),
     ]
     .spacing(SPACE_3);
-    if state.platform.plugins() {
+    if let Some((_, info)) = &state.modpack {
+        rows = rows.push(review_row(
+            "Modpack",
+            format!("{} {}", info.name, info.version),
+        ));
+    }
+    if state.plugin_step() {
         let plugins = match state.enabled_keys().len() {
             0 => "None".to_string(),
             1 => "1 default plugin".to_string(),

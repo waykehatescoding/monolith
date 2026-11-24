@@ -510,6 +510,15 @@ async fn curseforge_versions(
         .unwrap_or_default())
 }
 
+pub(crate) async fn curseforge_files(file_ids: &[u64]) -> Result<Vec<Value>, String> {
+    let url = api_url(CURSEFORGE_API, &["mods", "files"])?;
+    let data = curseforge(CLIENT.post(url).json(&json!({ "fileIds": file_ids }))).await?;
+    Ok(data["data"]
+        .as_array()
+        .map(|items| items.iter().map(curseforge_file).collect())
+        .unwrap_or_default())
+}
+
 fn curseforge_file(file: &Value) -> Value {
     let sha1 = file["hashes"]
         .as_array()

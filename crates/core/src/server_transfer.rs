@@ -254,7 +254,7 @@ fn detect_imported_server(
     })
 }
 
-fn safe_join(base: &Path, name: &str) -> Option<PathBuf> {
+pub(crate) fn safe_join(base: &Path, name: &str) -> Option<PathBuf> {
     let mut out = base.to_path_buf();
     let mut depth = 0usize;
     for component in Path::new(name).components() {
